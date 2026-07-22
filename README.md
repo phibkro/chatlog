@@ -13,6 +13,7 @@ analysis files are mode 0600 inside mode 0700 directories and are gitignored.
 ```sh
 bun run ingest
 bun run derive
+bun run refine
 bun run query search 'phrase AND another' 20
 bun run query semantic 'meaning of the problem' 10 40
 bun run query get <session-id-or-hash> [turn-index]
@@ -20,6 +21,9 @@ bun run query grok 'topic' 10
 bun run query ask 'what did I try last time for X' 10
 bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
+bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
+bun run query candidate <candidate-id>
+bun run query eval-plan <candidate-id>
 bun run query stats
 bun run query models
 bun run query tokens
@@ -68,6 +72,31 @@ unchanged hash. The derivation recipe itself is hashed, so implementation drift
 causes an intentional rebuild rather than stale mixed-version artifacts.
 Ingest likewise records a redaction-recipe version and re-adapts unchanged
 source files when that security boundary changes.
+
+## Knowledge refinery
+
+`refine` mines the redacted structural artifacts for patterns repeated in at
+least three distinct logical sessions. It emits typed, content-addressed
+**curation candidates**, never promoted knowledge:
+
+- successful recurring procedure -> existing `write-a-skill` workflow;
+- recurring landmine -> the same workflow, as a gotcha-oriented skill;
+- recurring fact or decision -> existing `writing-memory-entries` workflow,
+  with an ADR preferred when the decision itself is authoritative;
+- repeatedly re-supplied task context -> nearest authoritative `CLAUDE.md`;
+- stable external reference lookup -> a deferred reference-wiki follow-up.
+
+Frequency is only a nomination signal. Each candidate includes diverse session
+evidence, stable turn pointers, rejection checks, and an unmeasured paired
+`agent-eval/promotion-v1` plan. Evaluation remains explicitly ineligible until
+a curator accepts and installs the item through its intended existing channel.
+Then compare at least three control/treatment runs from the same clean commit,
+measuring gate pass, tokens/time to gate, interventions, and explicit
+re-derivation. Keep what measurably helps; revise or remove what does not.
+
+The refinery has no accept, install, or promote command. It does not write
+skills, memory, ADRs, `CLAUDE.md`, or wiki pages. See
+`docs/knowledge-refinery.md` for the curation and measurement contract.
 
 
 ## Adapter seam

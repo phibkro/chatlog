@@ -10,6 +10,8 @@ import { deriveCorpus } from "./derive";
 import { agentAsk, agentAskLexical, agentGet, agentGrok, agentProject, agentSearch, agentSemanticSearch } from "./agent-query";
 import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTime } from "./duckdb";
 import { redact } from "./redact";
+import { refineCorpus } from "./refinery";
+import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
@@ -24,7 +26,9 @@ const localAdapters = () => {
 if (command === "ingest") {
   console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
 } else if (command === "derive") {
-  console.log(JSON.stringify(await deriveCorpus(root), null, 2));
+  console.log(JSON.stringify({ derived: await deriveCorpus(root), refinery: await refineCorpus(root) }, null, 2));
+} else if (command === "refine") {
+  console.log(JSON.stringify(await refineCorpus(root, Number(subcommand ?? 3)), null, 2));
 } else if (command === "query") {
   const db = openAnalysis(`${root}/analysis/chatlog.sqlite`);
   try {
@@ -49,6 +53,14 @@ if (command === "ingest") {
     } else if (subcommand === "project") {
       if (!args[0]) throw new Error("usage: bun run query project <exact-project-path>");
       console.log(JSON.stringify(await agentProject(db, root, args[0]), null, 2));
+    } else if (subcommand === "refinery") {
+      console.log(JSON.stringify(await agentRefinery(root, args[0], Number(args[1] ?? 30)), null, 2));
+    } else if (subcommand === "candidate") {
+      if (!args[0]) throw new Error("usage: bun run query candidate <candidate-id>");
+      console.log(JSON.stringify(await agentRefineryCandidate(root, args[0]), null, 2));
+    } else if (subcommand === "eval-plan") {
+      if (!args[0]) throw new Error("usage: bun run query eval-plan <candidate-id>");
+      console.log(JSON.stringify(await agentRefineryEvalPlan(root, args[0]), null, 2));
     } else if (subcommand === "stats") console.log(JSON.stringify(queryStats(db), null, 2));
     else if (subcommand === "legacy-search") {
       if (!args[0]) throw new Error("usage: bun run query legacy-search <fts-expression> [limit]");
@@ -61,11 +73,11 @@ if (command === "ingest") {
       console.log(JSON.stringify(await duckUsageOverTime(root, bucket, Number(args[1] ?? 60)), null, 2));
     } else if (subcommand === "tools") console.log(JSON.stringify(await duckToolFrequency(root, Number(args[0] ?? 30)), null, 2));
     else if (subcommand === "lengths") console.log(JSON.stringify(await duckSessionLengths(root), null, 2));
-    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|stats|models|tokens|usage-time|tools|lengths>");
+    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
   } catch (error: any) {
     console.log(JSON.stringify({ error: { message: redact(String(error?.message ?? error)), command: subcommand ?? null } }, null, 2));
     process.exitCode = 1;
   } finally { db.close(); }
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|derive|query>");
+  throw new Error("usage: bun run src/cli.ts <ingest|derive|refine|query>");
 }

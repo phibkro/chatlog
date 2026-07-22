@@ -5,6 +5,7 @@ import { backfillCacheWrite, indexConversation, openAnalysis } from "./analysis"
 import { withIngestLock } from "./lock";
 import { deriveCorpus, type DeriveSummary } from "./derive";
 import { redact, REDACTION_RECIPE } from "./redact";
+import { refineCorpus, type RefinerySummary } from "./refinery";
 
 interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
 interface Manifest { version: 1; redactionRecipe?: string; sources: Record<string, ManifestEntry> }
@@ -45,7 +46,7 @@ export function canonicalizeConversation(value: Omit<Conversation, "contentHash"
 
 export interface IngestSummary {
   discovered: Record<string, number>; ingested: Record<string, number>; skipped: Record<string, number>;
-  partialTails: number; changedDuringRead: number; corpusBytes: number; derived?: DeriveSummary;
+  partialTails: number; changedDuringRead: number; corpusBytes: number; derived?: DeriveSummary; refinery?: RefinerySummary;
 }
 
 export async function ingest(adapters: SourceAdapter[], root: string): Promise<IngestSummary> {
@@ -99,5 +100,6 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
   }
   summary.corpusBytes = await size(corpusDir);
   summary.derived = await deriveCorpus(root);
+  summary.refinery = await refineCorpus(root);
   return summary;
 }

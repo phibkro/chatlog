@@ -14,6 +14,9 @@ out of scope.
 | `chatlog_ask` | `{question, limit?}` | Hosted semantic rerank followed by chronological prior attempts and resolutions |
 | `chatlog_ask_lexical` | `{question, limit?}` | Zero-egress lexical prior-attempt query |
 | `chatlog_derive` | `{}` | Incremental derivation counts (`processed`, `skipped`, recipe drift) |
+| `chatlog_refinery` | `{type?, limit?}` | Typed rule-of-three nominations, frequency, routes, and evidence pointers |
+| `chatlog_candidate` | `{id}` | One candidate's bounded evidence, curation checks, and evaluation contract |
+| `chatlog_eval_plan` | `{id}` | Ineligible-until-curated paired evaluation shape for `agent-eval` |
 
 Discovery tools never return complete turn bodies. Their snippets are bounded
 and secret-redacted, and every evidence item carries a stable URI:
@@ -43,3 +46,8 @@ recipe change intentionally rebuilds all affected artifacts.
 Search is backed by SQLite FTS5. Analytical fields in project and rollup tools
 are computed by DuckDB directly over `derived/objects/*/*.json`, invoked through
 the sanctioned Nix shell in offline mode rather than a project dependency.
+
+Refinery tools are read-only. They deliberately expose no acceptance or
+promotion operation: accepted knowledge must pass through the existing
+skill/memory/ADR/`CLAUDE.md` discipline, where its authoritative home and scope
+can be reviewed. The reference-wiki tool is intentionally absent and deferred.

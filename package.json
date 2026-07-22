@@ -5,6 +5,7 @@
   "scripts": {
     "ingest": "bun run src/cli.ts ingest",
     "derive": "bun run src/cli.ts derive",
+    "refine": "bun run src/cli.ts refine",
     "query": "bun run src/cli.ts query",
     "test": "bun test",
     "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli"

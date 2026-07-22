@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "ingest": "bun run src/cli.ts ingest",
-    "scheduled-ingest": "bun run src/cli.ts scheduled-ingest",
+    "derive": "bun run src/cli.ts derive",
     "query": "bun run src/cli.ts query",
     "test": "bun test",
     "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli"

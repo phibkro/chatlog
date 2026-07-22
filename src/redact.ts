@@ -9,6 +9,10 @@ const RULES: Array<[RegExp, string]> = [
   [/(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|password)\b\s*["']?\s*[:=]\s*["']?)[^\s,"'}]{8,}/gi, "$1[REDACTED_SECRET]"],
 ];
 
+// Bump when redaction semantics change. Ingest persists this value so existing
+// source files are re-adapted even when their size and mtime are unchanged.
+export const REDACTION_RECIPE = "canonical-conversation-v2";
+
 export function redact(text: string): string {
   return RULES.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
 }

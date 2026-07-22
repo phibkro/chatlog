@@ -1,3 +1,0 @@
-# Every ten minutes. The application owns overlap locking and writes its local,
-# mode-0600 run ledger to analysis/ingest-runs.jsonl.
-*/10 * * * * umask 077; cd /srv/share/projects/chatlog && /home/nori/.nix-profile/bin/bun run scheduled-ingest >/dev/null 2>&1

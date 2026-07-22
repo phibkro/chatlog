@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Conversation, SourceAdapter } from "./types";
-import { indexConversation, openAnalysis } from "./analysis";
+import { backfillCacheWrite, indexConversation, openAnalysis } from "./analysis";
 
 interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
 interface Manifest { version: 1; sources: Record<string, ManifestEntry> }
@@ -46,6 +46,8 @@ export async function ingest(adapters: SourceAdapter[], root: string): Promise<I
   const db = openAnalysis(dbPath);
   const summary: IngestSummary = { discovered: {}, ingested: {}, skipped: {}, partialTails: 0, changedDuringRead: 0, corpusBytes: 0 };
   try {
+    const backfilled = await backfillCacheWrite(db, corpusDir);
+    if (backfilled) console.error(`analysis: backfilled cache-write totals for ${backfilled} corpus objects`);
     for (const adapter of adapters) {
       const files = await adapter.discover();
       summary.discovered[adapter.harness] = files.length;

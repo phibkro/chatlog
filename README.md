@@ -15,12 +15,21 @@ bun run ingest
 bun run query stats
 bun run query search 'phrase AND another'
 bun run query models
+bun run query tokens
+bun run query usage-time month 30
+bun run query tools 30
+bun run query lengths
 ```
 
 The analysis database is SQLite via Bun's built-in driver, including an FTS5
 index over every canonical turn. This uses the SQLite option allowed by the
 brief because a DuckDB runtime was not present locally and dependencies must not
 be fetched over the network.
+
+`current_token_usage` keeps provider-reported totals intact while exposing
+`non_cached_tokens`, `cache_read_tokens`, and `cache_write_tokens` separately.
+For Codex, cached input is a subset of input and is subtracted for the
+non-cached measure; Claude Code and pi report their cache fields separately.
 
 ## Adapter seam
 

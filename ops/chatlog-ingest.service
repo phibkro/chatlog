@@ -1,0 +1,16 @@
+[Unit]
+Description=Incrementally ingest local AI chat logs
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/share/projects/chatlog
+ExecStart=/home/nori/.nix-profile/bin/bun run scheduled-ingest
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/nori/.claude /home/nori/.codex /home/nori/.pi
+ReadWritePaths=/srv/share/projects/chatlog
+RestrictAddressFamilies=AF_UNIX
+UMask=0077

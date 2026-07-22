@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh local AI chatlog corpus every ten minutes
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=10m
+Persistent=true
+RandomizedDelaySec=30s
+Unit=chatlog-ingest.service
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import type { Conversation, SourceAdapter } from "./types";
 import { backfillCacheWrite, indexConversation, openAnalysis } from "./analysis";
+import { withIngestLock } from "./lock";
 
 interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
 interface Manifest { version: 1; sources: Record<string, ManifestEntry> }
@@ -37,6 +38,10 @@ export interface IngestSummary {
 }
 
 export async function ingest(adapters: SourceAdapter[], root: string): Promise<IngestSummary> {
+  return withIngestLock(root, () => ingestUnlocked(adapters, root));
+}
+
+async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<IngestSummary> {
   const corpusDir = join(root, "corpus");
   const manifestPath = join(corpusDir, "manifest.json");
   const dbPath = join(root, "analysis", "chatlog.sqlite");

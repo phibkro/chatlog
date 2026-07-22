@@ -12,6 +12,7 @@ analysis files are mode 0600 inside mode 0700 directories and are gitignored.
 
 ```sh
 bun run ingest
+bun run scheduled-ingest
 bun run query stats
 bun run query search 'phrase AND another'
 bun run query models
@@ -30,6 +31,19 @@ be fetched over the network.
 `non_cached_tokens`, `cache_read_tokens`, and `cache_write_tokens` separately.
 For Codex, cached input is a subset of input and is subtracted for the
 non-cached measure; Claude Code and pi report their cache fields separately.
+
+## Scheduled refresh
+
+Every ingest owns `analysis/ingest.lock`, so a timer cannot overlap a manual or
+previous scheduled run. A dead process's lock is recovered on the next run.
+`scheduled-ingest` also appends a secret-redacted, mode-0600 status record to
+`analysis/ingest-runs.jsonl`; it never contacts the network.
+
+`ops/crontab.example` is the minimal cron shape. Hardened systemd-user service
+and timer examples are also in `ops/`; they make all three source trees
+read-only, allow writes only in this repository, and deny Internet address
+families. These are examples only: this repository does not install or enable a
+scheduler automatically.
 
 ## Adapter seam
 

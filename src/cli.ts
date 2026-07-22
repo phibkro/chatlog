@@ -5,18 +5,23 @@ import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
 import { PiAdapter } from "./adapters/pi";
 import { ingest } from "./ingest";
+import { scheduledIngest } from "./scheduled";
 import { openAnalysis, queryModels, querySearch, querySessionLengths, queryStats, queryTokenUsage, queryToolFrequency, queryUsageOverTime } from "./analysis";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
-if (command === "ingest") {
+const localAdapters = () => {
   const home = homedir();
-  const adapters = [
+  return [
     new ClaudeAdapter(`${home}/.claude/projects`),
     new CodexAdapter(`${home}/.codex/sessions`),
     new PiAdapter(`${home}/.pi/agent/sessions`),
   ];
-  console.log(JSON.stringify(await ingest(adapters, root), null, 2));
+};
+if (command === "ingest") {
+  console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
+} else if (command === "scheduled-ingest") {
+  console.log(JSON.stringify(await scheduledIngest(localAdapters(), root), null, 2));
 } else if (command === "query") {
   const db = openAnalysis(`${root}/analysis/chatlog.sqlite`);
   try {

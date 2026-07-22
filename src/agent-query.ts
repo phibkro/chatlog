@@ -5,19 +5,41 @@ import type { Conversation } from "./types";
 import type { DerivedConversation, Evidence, Pointer } from "./derive";
 import { loadDerived } from "./derive";
 import { duckProjectAnalytics } from "./duckdb";
+import { rerankHosted } from "./hosted-rerank";
 
 export interface SearchHit {
   sessionId: string; conversationHash: string; project: string; harness: string; model: string;
   score: number; snippet: string; pointer: Pointer;
 }
 
-export function agentSearch(db: Database, query: string, limit = 20): { query: string; hits: SearchHit[] } {
+export function agentSearch(db: Database, query: string, limit = 20, snippetTokens = 28, contentRolesOnly = false): { query: string; hits: SearchHit[] } {
   const rows = db.query(`SELECT c.id sessionId, c.content_hash conversationHash, c.project, c.harness, c.model,
-    -bm25(turns_fts) score, snippet(turns_fts, 0, '[', ']', ' … ', 28) snippet, f.turn_index turnIndex
+    -bm25(turns_fts) score, snippet(turns_fts, 0, '[', ']', ' … ', ?) snippet, f.turn_index turnIndex
     FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
-    WHERE turns_fts MATCH ? ORDER BY bm25(turns_fts) LIMIT ?`).all(query, limit) as any[];
+    JOIN turns t ON t.content_hash=f.content_hash AND t.turn_index=f.turn_index
+    WHERE turns_fts MATCH ? AND (?=0 OR t.role IN ('user','assistant'))
+    ORDER BY bm25(turns_fts) LIMIT ?`).all(snippetTokens, query, contentRolesOnly ? 1 : 0, limit) as any[];
   return { query, hits: rows.map((row) => ({ ...row, pointer: { turnIndex: row.turnIndex, uri: `chatlog://conversation/${row.conversationHash}/turn/${row.turnIndex}` }, turnIndex: undefined }))
     .map(({ turnIndex: _, ...row }) => row) as SearchHit[] };
+}
+
+export interface SemanticHit extends SearchHit { semanticScore: number; reason: string; lexicalScore: number }
+type RerankFn = typeof rerankHosted;
+export async function agentSemanticSearch(db: Database, root: string, query: string, limit = 10, candidateLimit = 40, rerank: RerankFn = rerankHosted): Promise<unknown> {
+  const words = askTerms(query);
+  if (!words.length) throw new Error("semantic search needs a concrete topic");
+  const expression = words.map((word) => `"${word.replaceAll('"', '""')}"`).join(" OR ");
+  const local = agentSearch(db, expression, Math.max(limit, Math.min(50, candidateLimit)), 80, true);
+  const byId = new Map(local.hits.map((hit, index) => [`c${index}`, hit]));
+  const reranked = await rerank(root, query, [...byId].map(([id, hit]) => ({ id, text: hit.snippet })));
+  const hits: SemanticHit[] = reranked.rankings.slice(0, limit).map((ranking) => {
+    const hit = byId.get(ranking.id)!;
+    return { ...hit, lexicalScore: hit.score, score: ranking.score, semanticScore: ranking.score, reason: ranking.reason };
+  });
+  return { mode: "hosted-llm-rerank", query, candidateExpression: expression, localCandidateCount: local.hits.length, hits, rerank: {
+    provider: reranked.provider, requestedModel: reranked.requestedModel, responseModel: reranked.responseModel,
+    cached: reranked.cached, requestHash: reranked.requestHash, egress: reranked.egress,
+  } };
 }
 
 async function canonical(root: string, hash: string): Promise<Conversation> {
@@ -80,7 +102,7 @@ function askTerms(question: string): string[] {
   const stripped = question.replace(/what did (?:i|we) try last time for/i, "");
   return [...new Set((stripped.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? []).filter((x) => !ASK_STOP.has(x)))].slice(0, 8);
 }
-export async function agentAsk(db: Database, root: string, question: string, limit = 10): Promise<unknown> {
+export async function agentAskLexical(db: Database, root: string, question: string, limit = 10): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
   const quoted = words.map((word) => `"${word.replaceAll('"', '""')}"`);
@@ -113,6 +135,38 @@ export async function agentAsk(db: Database, root: string, question: string, lim
   const sessions = candidates.slice(0, limit);
   const outcomes = Object.fromEntries(["success", "failure", "mixed", "unknown"].map((status) => [status, sessions.filter((x) => x.outcome.status === status).length]));
   return { question, interpretedTopic: words, searchExpression: expression, matchedSessions: grouped.size, outcomes, sessions };
+}
+
+export async function agentAsk(db: Database, root: string, question: string, limit = 10, rerank: RerankFn = rerankHosted): Promise<unknown> {
+  const words = askTerms(question);
+  if (!words.length) throw new Error("ask needs a concrete task/topic");
+  const semantic = await agentSemanticSearch(db, root, question, Math.max(limit * 6, 30), 50, rerank) as any;
+  const qualified = semantic.hits.filter((hit: SemanticHit) => hit.semanticScore >= 40);
+  const pool: SemanticHit[] = qualified.length ? qualified : semantic.hits;
+  const grouped = new Map<string, SemanticHit[]>();
+  for (const hit of pool) {
+    const hits = grouped.get(hit.conversationHash) ?? [];
+    if (hits.length < 3) hits.push(hit);
+    grouped.set(hit.conversationHash, hits);
+  }
+  const candidates: any[] = [];
+  for (const [hash, matches] of grouped) {
+    const artifact = await loadDerived(root, hash);
+    candidates.push({
+      sessionId: artifact.sessionId, conversationHash: hash, project: artifact.project, harness: artifact.harness,
+      model: artifact.model, endedAt: artifact.endedAt,
+      semanticMatches: matches.map(({ semanticScore, reason, snippet, pointer }) => ({ semanticScore, reason, snippet, pointer })),
+      priorProblems: relevant(artifact.problems, words, 2).map(({ pointer, snippet }) => ({ pointer, snippet })),
+      attempts: relevant(artifact.attempts, words, 5), decisions: relevant(artifact.decisions, words, 3),
+      outcome: { status: artifact.outcome.status }, resolutionPointers: artifact.outcome.evidence.slice(0, 2),
+    });
+  }
+  // "Last time" is chronological after the semantic relevance gate.
+  candidates.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
+  const sessions = candidates.slice(0, limit);
+  const outcomes = Object.fromEntries(["success", "failure", "mixed", "unknown"].map((status) => [status, sessions.filter((x) => x.outcome.status === status).length]));
+  return { mode: "hosted-llm-rerank", question, interpretedTopic: words, relevanceThreshold: qualified.length ? 40 : null,
+    localCandidateCount: semantic.localCandidateCount, matchedSessions: grouped.size, outcomes, sessions, rerank: semantic.rerank };
 }
 
 function addExample(target: any, artifact: DerivedConversation, evidence: Evidence): void {

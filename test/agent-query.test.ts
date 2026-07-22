@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { agentGet, agentGrok, agentSearch } from "../src/agent-query";
+import { agentAsk, agentGet, agentGrok, agentSearch, agentSemanticSearch } from "../src/agent-query";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { deriveCorpus } from "../src/derive";
 import type { Conversation } from "../src/types";
@@ -17,6 +17,7 @@ test("agent queries return bounded structure and dereference pointers on demand"
     turns: [
       { role: "user", content: "Repair the DuckDB projection failure" },
       { role: "assistant", content: "I decided to regenerate the projection, then tests passed." },
+      { role: "tool", content: "failure forbiddenpayload from tool output" },
     ],
   };
   const objectDir = join(root, "corpus", "objects", "cc");
@@ -33,9 +34,28 @@ test("agent queries return bounded structure and dereference pointers on demand"
     expect(search.hits[0].pointer.uri).toBe(`chatlog://conversation/${hash}/turn/0`);
     expect((await agentGet(db, root, hash.slice(0, 12), 0) as any).turn.content).toContain("DuckDB");
     const grok = await agentGrok(db, root, "DuckDB", 1) as any;
-    expect(grok.sessions[0].shape.turns).toBe(2);
+    expect(grok.sessions[0].shape.turns).toBe(3);
     expect(grok.sessions[0].turns).toBeUndefined();
     expect(grok.sessions[0].conversation).toBeUndefined();
+    let semanticCandidates: any[] = [];
+    const semantic = await agentSemanticSearch(db, root, "DuckDB failure", 1, 5, (async (_root: string, _query: string, candidates: any[]) => {
+      semanticCandidates = candidates;
+      return {
+        rankings: candidates.map((candidate, index) => ({ id: candidate.id, score: 90 - index, reason: "same meaning" })),
+        provider: "test", requestedModel: "test", responseModel: "test", cached: false, requestHash: "d".repeat(64),
+        egress: { performed: true, queryChars: 20, candidateCount: candidates.length, candidateChars: 20, maxCandidateChars: 600, sentFields: [], excluded: [] },
+      };
+    }) as any) as any;
+    expect(semantic.mode).toBe("hosted-llm-rerank");
+    expect(semantic.hits[0].semanticScore).toBe(90);
+    expect(JSON.stringify(semanticCandidates)).not.toContain("forbiddenpayload");
+    const ask = await agentAsk(db, root, "what did I try last time for DuckDB failure", 1, (async (_root: string, _query: string, candidates: any[]) => ({
+      rankings: candidates.map((candidate) => ({ id: candidate.id, score: 95, reason: "same failure" })),
+      provider: "test", requestedModel: "test", responseModel: "test", cached: false, requestHash: "e".repeat(64),
+      egress: { performed: true, queryChars: 20, candidateCount: candidates.length, candidateChars: 20, maxCandidateChars: 600, sentFields: [], excluded: [] },
+    })) as any) as any;
+    expect(ask.mode).toBe("hosted-llm-rerank");
+    expect(ask.sessions[0].semanticMatches[0].reason).toBe("same failure");
   } finally {
     db.close();
   }

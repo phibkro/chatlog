@@ -14,9 +14,11 @@ analysis files are mode 0600 inside mode 0700 directories and are gitignored.
 bun run ingest
 bun run derive
 bun run query search 'phrase AND another' 20
+bun run query semantic 'meaning of the problem' 10 40
 bun run query get <session-id-or-hash> [turn-index]
 bun run query grok 'topic' 10
 bun run query ask 'what did I try last time for X' 10
+bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
 bun run query stats
 bun run query models
@@ -41,6 +43,22 @@ Agent-facing discovery commands return bounded snippets, derived structure, and
 `chatlog://conversation/<hash>/turn/<index>` pointers. `get` is the explicit
 on-demand boundary for a full conversation or a single turn. See
 `docs/mcp-tool-shape.md` for the matching future MCP contract.
+
+`semantic` and `ask` retrieve candidates locally with FTS5, then ask a hosted
+GPT or Claude model to rerank those snippets by meaning. `ask-lexical` preserves
+the zero-egress form. Reranking sends only a redacted query plus opaque candidate
+IDs and at most 600 redacted characters per user/assistant snippet, with 50
+candidates maximum. It excludes session/conversation IDs, project paths,
+timestamps, full turns, tool-role output, tool arguments/results, and token
+usage. Every JSON result reports the exact egress surface and whether a hosted
+call occurred.
+
+Select `CHATLOG_RERANK_PROVIDER=openrouter|openai|anthropic` and optionally
+`CHATLOG_RERANK_MODEL`. OpenAI and Anthropic use their standard API-key
+environment variables. OpenRouter uses `OPENROUTER_API_KEY`, falling back to the
+machine's existing pi OpenRouter credential. Responses are cached under a hash
+of the redacted query, exact candidates, provider, model, and rerank recipe;
+identical calls perform no further egress.
 
 `derive` writes deterministic structural artifacts beneath `derived/objects`
 and a mode-0600 manifest keyed by conversation hash. A second run skips every

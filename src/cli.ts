@@ -12,6 +12,7 @@ import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTim
 import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
+import { emitPiBridge, type PiBridgeMode } from "./bridge";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
@@ -78,6 +79,11 @@ if (command === "ingest") {
     console.log(JSON.stringify({ error: { message: redact(String(error?.message ?? error)), command: subcommand ?? null } }, null, 2));
     process.exitCode = 1;
   } finally { db.close(); }
+} else if (command === "bridge") {
+  if (subcommand !== "emit-pi" || !args[0]) throw new Error("usage: bun run src/cli.ts bridge emit-pi <conversation-hash> [history|summary] [output-path]");
+  const mode = (args[1] ?? "summary") as PiBridgeMode;
+  if (mode !== "history" && mode !== "summary") throw new Error("bridge mode must be history or summary");
+  console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|derive|refine|query>");
+  throw new Error("usage: bun run src/cli.ts <ingest|derive|refine|query|bridge>");
 }

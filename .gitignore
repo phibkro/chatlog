@@ -1,5 +1,6 @@
 corpus/
 analysis/
 derived/
+bridge/
 *.tmp
 node_modules/

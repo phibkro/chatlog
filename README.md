@@ -30,6 +30,8 @@ bun run query tokens
 bun run query usage-time month 30
 bun run query tools 30
 bun run query lengths
+bun run src/cli.ts bridge emit-pi <conversation-hash> summary
+bun run src/cli.ts bridge emit-pi <conversation-hash> history
 ```
 
 The query surface is deliberately hybrid. SQLite FTS5 owns ranked full-text
@@ -97,6 +99,18 @@ re-derivation. Keep what measurably helps; revise or remove what does not.
 The refinery has no accept, install, or promote command. It does not write
 skills, memory, ADRs, `CLAUDE.md`, or wiki pages. See
 `docs/knowledge-refinery.md` for the curation and measurement contract.
+
+## Cross-harness handoff spike
+
+`bridge emit-pi` is an experimental, content-addressed target emitter. `summary`
+creates the recommended one-message, pointer-rich handoff; `history` reconstructs
+a lossy Pi v3 message history. Both re-redact output, exclude source
+system/developer policy, and keep historical tool activity inert. They write
+only beneath this repository's ignored `bridge/` tree unless an explicit output
+path is given; they never register or modify a live harness session.
+
+This is reconstruction, not native cross-harness resume. See
+`docs/cross-harness-continuity-findings.md` and the corresponding design spec.
 
 
 ## Adapter seam

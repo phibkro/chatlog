@@ -51,3 +51,7 @@ Wiki candidates are held for a later operator-approved increment. That future
 surface may point to stable external reference material only. It must link, not
 copy; must not restate project-local truth; and must not become a god-wiki or a
 second documentation hierarchy.
+
+Measured selection and disposition records live under `docs/promotion-runs/`.
+They are audit provenance, not promoted knowledge; rejected treatment artifacts
+remain evaluation fixtures only when needed to reproduce the measurement.

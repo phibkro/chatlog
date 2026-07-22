@@ -59,6 +59,8 @@ environment variables. OpenRouter uses `OPENROUTER_API_KEY`, falling back to the
 machine's existing pi OpenRouter credential. Responses are cached under a hash
 of the redacted query, exact candidates, provider, model, and rerank recipe;
 identical calls perform no further egress.
+The OpenRouter fallback defaults to its zero-priced hosted GPT OSS 20B route;
+set `CHATLOG_RERANK_MODEL` to pin another GPT or Claude model.
 
 `derive` writes deterministic structural artifacts beneath `derived/objects`
 and a mode-0600 manifest keyed by conversation hash. A second run skips every

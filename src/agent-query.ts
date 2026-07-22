@@ -29,14 +29,22 @@ export async function agentSemanticSearch(db: Database, root: string, query: str
   const words = askTerms(query);
   if (!words.length) throw new Error("semantic search needs a concrete topic");
   const expression = words.map((word) => `"${word.replaceAll('"', '""')}"`).join(" OR ");
-  const local = agentSearch(db, expression, Math.max(limit, Math.min(50, candidateLimit)), 80, true);
-  const byId = new Map(local.hits.map((hit, index) => [`c${index}`, hit]));
+  const wanted = Math.max(limit, Math.min(50, candidateLimit));
+  const retrieved = agentSearch(db, expression, Math.min(200, wanted * 4), 80, true);
+  const selected: SearchHit[] = []; const perSession = new Map<string, number>(); const seenText = new Set<string>();
+  for (const hit of retrieved.hits) {
+    const normalized = hit.snippet.replace(/[\[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (seenText.has(normalized) || (perSession.get(hit.sessionId) ?? 0) >= 2) continue;
+    seenText.add(normalized); perSession.set(hit.sessionId, (perSession.get(hit.sessionId) ?? 0) + 1); selected.push(hit);
+    if (selected.length === wanted) break;
+  }
+  const byId = new Map(selected.map((hit, index) => [`c${index}`, hit]));
   const reranked = await rerank(root, query, [...byId].map(([id, hit]) => ({ id, text: hit.snippet })));
   const hits: SemanticHit[] = reranked.rankings.slice(0, limit).map((ranking) => {
     const hit = byId.get(ranking.id)!;
     return { ...hit, lexicalScore: hit.score, score: ranking.score, semanticScore: ranking.score, reason: ranking.reason };
   });
-  return { mode: "hosted-llm-rerank", query, candidateExpression: expression, localCandidateCount: local.hits.length, hits, rerank: {
+  return { mode: "hosted-llm-rerank", query, candidateExpression: expression, retrievedCandidateCount: retrieved.hits.length, localCandidateCount: selected.length, hits, rerank: {
     provider: reranked.provider, requestedModel: reranked.requestedModel, responseModel: reranked.responseModel,
     cached: reranked.cached, requestHash: reranked.requestHash, egress: reranked.egress,
   } };
@@ -140,8 +148,11 @@ export async function agentAskLexical(db: Database, root: string, question: stri
 export async function agentAsk(db: Database, root: string, question: string, limit = 10, rerank: RerankFn = rerankHosted): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
-  const semantic = await agentSemanticSearch(db, root, question, Math.max(limit * 6, 30), 50, rerank) as any;
-  const qualified = semantic.hits.filter((hit: SemanticHit) => hit.semanticScore >= 40);
+  const candidateLimit = Math.min(50, Math.max(limit * 8, 24));
+  const semantic = await agentSemanticSearch(db, root, question, candidateLimit, candidateLimit, rerank) as any;
+  const bestScore = Math.max(0, ...semantic.hits.map((hit: SemanticHit) => hit.semanticScore));
+  const relevanceThreshold = Math.max(60, bestScore - 20);
+  const qualified = semantic.hits.filter((hit: SemanticHit) => hit.semanticScore >= relevanceThreshold);
   const pool: SemanticHit[] = qualified.length ? qualified : semantic.hits;
   const grouped = new Map<string, SemanticHit[]>();
   for (const hit of pool) {
@@ -165,7 +176,7 @@ export async function agentAsk(db: Database, root: string, question: string, lim
   candidates.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
   const sessions = candidates.slice(0, limit);
   const outcomes = Object.fromEntries(["success", "failure", "mixed", "unknown"].map((status) => [status, sessions.filter((x) => x.outcome.status === status).length]));
-  return { mode: "hosted-llm-rerank", question, interpretedTopic: words, relevanceThreshold: qualified.length ? 40 : null,
+  return { mode: "hosted-llm-rerank", question, interpretedTopic: words, relevanceThreshold: qualified.length ? relevanceThreshold : null,
     localCandidateCount: semantic.localCandidateCount, matchedSessions: grouped.size, outcomes, sessions, rerank: semantic.rerank };
 }
 

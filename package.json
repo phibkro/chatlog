@@ -1,0 +1,11 @@
+{
+  "name": "local-chatlog-corpus",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ingest": "bun run src/cli.ts ingest",
+    "query": "bun run src/cli.ts query",
+    "test": "bun test",
+    "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli"
+  }
+}

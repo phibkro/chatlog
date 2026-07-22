@@ -1,0 +1,4 @@
+corpus/
+analysis/
+*.tmp
+node_modules/

@@ -1,6 +1,6 @@
 # Product foundation: deployment and bounded agent recall
 
-Status: active  
+Status: completed
 Base: `b8a2b21` (`product-workbench`)  
 Owner: GPT-5/Codex integration lead  
 Review model: Fable 5, read-only
@@ -184,3 +184,37 @@ Every worker reports:
 Review findings contain severity, file/evidence, failure scenario, why tests
 miss it, and the smallest acceptable correction. The integration lead owns
 final architectural decisions.
+
+## Results
+
+Completed on 2026-07-23.
+
+- Workbench and the stdio MCP server are packaged as standalone Nix apps.
+- The opt-in Home Manager service defaults to loopback and rejects a
+  non-loopback host during evaluation; remote access remains a Tailscale Serve
+  boundary.
+- MCP defaults to `coding`, filters domains and user/assistant roles in SQL
+  before limiting, and requires current index/object domain agreement before
+  resolving evidence.
+- Evidence denial is uniform for missing, superseded, policy-hidden,
+  domain-mismatched, and tool-role pointers.
+- Fable 5 reported two Medium and six Low findings in its first read-only
+  review. Commit `102249f` closed all eight; its second read-only pass found no
+  remaining actionable findings.
+- `bun run check` passes 28 tests with 185 assertions and bundles the CLI, MCP,
+  Workbench server, and browser application.
+- `nix flake check --offline` builds the package and validates the Home Manager
+  module. The packaged MCP executable completed an initialize/list transcript
+  against a copy-on-write real-corpus snapshot.
+- The same snapshot confirmed default `coding` policy, eight bounded search
+  hits, eight recent sessions, a 1,095-session project brief with no missing
+  derivations, and one bounded user-turn evidence resolution. No conversation
+  content was reported.
+
+Residual accepted boundaries:
+
+- Workbench has no application login and treats tailnet ACLs as authorization.
+- User-service hardening is evaluation-tested; enabling it in the workstation
+  Home Manager configuration remains a separate operator deployment action.
+- MCP trusts its local stdio client; whole-object JSON reads and input line
+  length are not hardened against a malicious local client in Wave 1.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createInterface } from "node:readline";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { EVIDENCE_URI_PATTERN } from "../evidence-uri";
 import { redact } from "../redact";
 import { McpData } from "./data";
@@ -197,7 +198,8 @@ export async function runMcpStdio(data: McpData): Promise<void> {
 }
 
 if (import.meta.main) {
-  const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, "../.."));
+  const defaultRoot = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "chatlog");
+  const root = resolve(process.env.CHATLOG_DATA_ROOT ?? defaultRoot);
   let data: McpData | undefined;
   try {
     data = new McpData(root);

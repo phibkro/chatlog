@@ -118,22 +118,23 @@ stricter one-turn, 12,000-character evidence boundary. See
 `docs/mcp-tool-shape.md` for its implemented contract.
 
 `semantic` and `ask` retrieve candidates locally with FTS5, then ask a hosted
-GPT or Claude model to rerank those snippets by meaning. `ask-lexical` preserves
-the zero-egress form. Reranking sends only a redacted query plus opaque candidate
-IDs and at most 600 redacted characters per user/assistant snippet, with 50
-candidates maximum. It excludes session/conversation IDs, project paths,
-timestamps, full turns, tool-role output, tool arguments/results, and token
-usage. Every JSON result reports the exact egress surface and whether a hosted
-call occurred.
+GPT or Claude model to rerank those snippets by meaning. Hosted reranking is
+disabled unless `CHATLOG_ALLOW_EGRESS=1` is set for that invocation;
+`ask-lexical` preserves the zero-egress form. Reranking sends only a redacted
+query plus opaque candidate IDs and at most 600 redacted characters per
+user/assistant snippet, with 50 candidates maximum. It excludes
+session/conversation IDs, project paths, timestamps, full turns, tool-role
+output, tool arguments/results, and token usage. Every JSON result reports the
+exact egress surface and whether a hosted call occurred.
 
-Select `CHATLOG_RERANK_PROVIDER=openrouter|openai|anthropic` and optionally
-`CHATLOG_RERANK_MODEL`. OpenAI and Anthropic use their standard API-key
-environment variables. OpenRouter uses `OPENROUTER_API_KEY`, falling back to the
-machine's existing pi OpenRouter credential. Responses are cached under a hash
-of the redacted query, exact candidates, provider, model, and rerank recipe;
-identical calls perform no further egress.
-The OpenRouter fallback defaults to its zero-priced hosted GPT OSS 20B route;
-set `CHATLOG_RERANK_MODEL` to pin another GPT or Claude model.
+Set `CHATLOG_ALLOW_EGRESS=1`, select
+`CHATLOG_RERANK_PROVIDER=openrouter|openai|anthropic`, and optionally set
+`CHATLOG_RERANK_MODEL`. Providers use only their standard API-key environment
+variables; Chatlog does not search other harness credential stores. Responses
+are cached under a hash of the redacted query, exact candidates, provider,
+model, and rerank recipe; identical calls perform no further egress.
+OpenRouter defaults to the paid `openai/gpt-4.1-mini` route; set
+`CHATLOG_RERANK_MODEL` to pin another GPT or Claude model.
 
 `derive` writes deterministic structural artifacts beneath `derived/objects`
 and a mode-0600 manifest keyed by conversation hash. A second run skips every

@@ -14,7 +14,7 @@ an allow-list at agent retrieval boundaries.
 | Workbench | all locally indexed domains | Human-controlled evidence viewer |
 | Existing CLI | unchanged | Backward compatibility; operator invokes it directly |
 | MCP | `coding` | Safe default for autonomous coding agents |
-| Hosted reranking | existing explicit opt-in contract | Bounded redacted egress |
+| Hosted reranking | disabled unless `CHATLOG_ALLOW_EGRESS=1` | Bounded redacted egress requires per-invocation authorization |
 
 The MCP server reads `CHATLOG_MCP_DOMAINS` as a comma-separated allow-list.
 Unset or empty selects `coding`.

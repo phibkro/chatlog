@@ -2,6 +2,7 @@
   lib,
   stdenvNoCC,
   bun,
+  duckdb,
   makeWrapper,
 }:
 
@@ -36,6 +37,7 @@ stdenvNoCC.mkDerivation {
 
     makeWrapper ${lib.getExe bun} "$out/bin/chatlog" \
       --chdir "$out/share/chatlog" \
+      --prefix PATH : ${lib.makeBinPath [ duckdb ]} \
       --add-flags "run $out/share/chatlog/src/cli.ts"
 
     makeWrapper ${lib.getExe bun} "$out/bin/chatlog-workbench" \

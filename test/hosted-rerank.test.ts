@@ -2,7 +2,39 @@ import { expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rerankHosted, type RerankConfig } from "../src/hosted-rerank";
+import { rerankHosted, resolveRerankConfig, type RerankConfig } from "../src/hosted-rerank";
+
+test("hosted rerank requires explicit egress authorization and environment credentials", async () => {
+  const keys = [
+    "CHATLOG_ALLOW_EGRESS",
+    "CHATLOG_RERANK_PROVIDER",
+    "CHATLOG_RERANK_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.OPENROUTER_API_KEY = "test-key";
+    await expect(resolveRerankConfig()).rejects.toThrow("CHATLOG_ALLOW_EGRESS=1");
+
+    process.env.CHATLOG_ALLOW_EGRESS = "1";
+    const config = await resolveRerankConfig();
+    expect(config).toMatchObject({
+      provider: "openrouter",
+      model: "openai/gpt-4.1-mini",
+      credentialSource: "environment",
+    });
+    expect(config.model).not.toContain(":free");
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 
 test("hosted rerank redacts and bounds egress, then serves a content-addressed cache hit", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-rerank-"));

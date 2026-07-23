@@ -8,7 +8,7 @@ function source(root: string): string {
   return `(SELECT d.* FROM ${objects} d SEMI JOIN ${current} c USING(conversationHash))`;
 }
 async function query(sql: string): Promise<any[]> {
-  const result = await $`nix shell --offline nixpkgs#duckdb -c duckdb -json -c ${sql}`.quiet();
+  const result = await $`duckdb -json -c ${sql}`.quiet();
   const output = result.stdout.toString().trim();
   return output ? JSON.parse(output) : [];
 }

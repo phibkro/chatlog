@@ -1,10 +1,9 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { redact } from "./redact";
 
 const RECIPE = "semantic-rerank-v2";
-const DEFAULT_MODEL = "openai/gpt-oss-20b:free";
+const DEFAULT_MODEL = "openai/gpt-4.1-mini";
 const MAX_CANDIDATE_CHARS = 600;
 
 export interface RerankCandidate { id: string; text: string }
@@ -31,14 +30,9 @@ async function atomicWrite(path: string, data: string): Promise<void> {
   await writeFile(temp, data, { mode: 0o600 });
   await rename(temp, path); await chmod(path, 0o600);
 }
-async function piOpenRouterKey(): Promise<string | undefined> {
-  try {
-    const auth = JSON.parse(await readFile(join(homedir(), ".pi", "agent", "auth.json"), "utf8"));
-    return typeof auth?.openrouter?.key === "string" ? auth.openrouter.key : undefined;
-  } catch { return undefined; }
-}
-
 export async function resolveRerankConfig(): Promise<RerankConfig> {
+  if (process.env.CHATLOG_ALLOW_EGRESS !== "1")
+    throw new Error("Hosted reranking is disabled by default; set CHATLOG_ALLOW_EGRESS=1 to send bounded redacted snippets");
   const selected = process.env.CHATLOG_RERANK_PROVIDER?.toLowerCase();
   const model = process.env.CHATLOG_RERANK_MODEL;
   if (selected === "anthropic" || (!selected && process.env.ANTHROPIC_API_KEY)) {
@@ -52,9 +46,9 @@ export async function resolveRerankConfig(): Promise<RerankConfig> {
     if (!apiKey) throw new Error("CHATLOG_RERANK_PROVIDER=openai requires OPENAI_API_KEY");
     return { provider: "openai", model: model ?? "gpt-4.1-mini", apiKey, endpoint: process.env.CHATLOG_RERANK_ENDPOINT ?? "https://api.openai.com/v1/chat/completions", credentialSource: "environment" };
   }
-  const apiKey = process.env.OPENROUTER_API_KEY ?? await piOpenRouterKey();
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("No hosted rerank credential: set OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY");
-  return { provider: "openrouter", model: model ?? DEFAULT_MODEL, apiKey, endpoint: process.env.CHATLOG_RERANK_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions", credentialSource: process.env.OPENROUTER_API_KEY ? "environment" : "pi-openrouter" };
+  return { provider: "openrouter", model: model ?? DEFAULT_MODEL, apiKey, endpoint: process.env.CHATLOG_RERANK_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions", credentialSource: "environment" };
 }
 
 function extractJson(text: string): any {

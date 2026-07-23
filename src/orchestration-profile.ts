@@ -36,10 +36,10 @@ function snippet(text: string): string {
   const clean = redact(text).replace(/\s+/g, " ").trim();
   return clean.length > 300 ? clean.slice(0, 299) + "…" : clean;
 }
-function isOperatorTurn(turn: Turn, prior?: Turn): boolean {
+export function isOperatorTurn(turn: Turn, prior?: Turn): boolean {
   if (turn.role !== "user" || !turn.content.trim() || prior?.toolCalls?.length) return false;
   const text = turn.content.trim();
-  return !/^(?:<teammate-message|<task-notification|<codex_internal_context|<system-reminder|<persisted-output|\{\s*"success"|\d+\s*[:\t]|Another Claude session|Base directory for this skill|Usage:|Task #\d+|Checkpoint report:|File (?:created|updated)|The file |The following is the Codex agent history|This session is being continued|#\s+(?:AGENTS|CLAUDE)\.md instructions)/i.test(text)
+  return !/^(?:<teammate-message|<task-notification|<codex_internal_context|<system-reminder|<persisted-output|\{\s*"success"|\d+\s*[:\t]|\.\.\.\/|diff --git|Web search results|HEAD:|Script completed|Another Claude session|Base directory for this skill|Usage:|Task #\d+|Checkpoint report:|File (?:created|updated)|The file |The following is the Codex agent history|This session is being continued|#\s+(?:AGENTS|CLAUDE)\.md instructions)/i.test(text)
     && !/\b(?:idle_notification|external_agent_tool_result)\b/.test(text);
 }
 export function classifyOrchestrationTurn(text: string): Array<{ pole: OrchestrationPole; signal: SignalName }> {

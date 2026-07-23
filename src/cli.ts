@@ -14,6 +14,7 @@ import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
 import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
+import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
@@ -57,7 +58,8 @@ if (command === "ingest") {
       console.log(JSON.stringify(await agentProject(db, root, args[0]), null, 2));
     } else if (subcommand === "orchestration-profile") {
       const derivation = await deriveOrchestrationProfile(root);
-      console.log(JSON.stringify({ derivation, report: await loadOrchestrationProfile(root) }, null, 2));
+      const roleDerivation = await deriveRoleSegmentation(root);
+      console.log(JSON.stringify({ derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) } }, null, 2));
     } else if (subcommand === "refinery") {
       console.log(JSON.stringify(await agentRefinery(root, args[0], Number(args[1] ?? 30)), null, 2));
     } else if (subcommand === "candidate") {

@@ -87,10 +87,17 @@ claim carries resolvable `chatlog://` evidence.
 
 The default command is entirely local and declares `egress.surface: "none"`.
 It also reports calibration agreement against the checked-in hand labels and
-held-out accuracy versus base rate. The artifact contains no role segmentation
-or promoted configuration, and does not emit model-routing names. Re-running on
-an unchanged derived corpus projection and miner recipe returns the identical
-content hash.
+held-out accuracy versus base rate. Slice 2 adds a separately content-addressed
+per-role projection to the same command. Roles are inferred from explicit launch
+prompts and embedded skill/Herdr labels, with delegation, mutation, and research
+tool shape as supporting signals; project and harness remain provenance rather
+than hardcoded role mappings. The report publishes the labelled-sample confusion
+rows, per-role decision boundaries, and a distinguishability test using Wilson
+95% intervals.
+
+Neither artifact promotes configuration or emits model-routing names. Re-running
+on an unchanged derived corpus projection and miner recipe returns identical
+content hashes.
 
 ## Knowledge refinery
 

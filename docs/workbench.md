@@ -1,0 +1,177 @@
+# Chatlog Workbench
+
+Workbench is the human-facing surface over Chatlog's local, content-addressed
+conversation corpus. It is designed for a technically curious operator who
+wants useful recall and evidence without turning private session history into a
+hosted telemetry product.
+
+## What it surfaces
+
+- **Today** — corpus health, recent work, active projects, and the latest
+  evidence-backed orchestration finding.
+- **Projects** — project-level activity with a drill-down into individual
+  sessions.
+- **Recall** — local SQLite FTS5 search. Results carry
+  `chatlog://conversation/<hash>/turn/<index>` pointers, and the evidence viewer
+  resolves the canonical redacted turn on demand.
+- **Patterns** — inferred role boundaries, measured agent experiments, and
+  knowledge-refinery candidates. A candidate is a prompt for review, never an
+  automatic configuration change.
+- **Sources** — connected harnesses, discovered exports, planned connectors,
+  provenance domains, and their privacy behavior.
+
+Workbench is intentionally not a transcript-first chat viewer. It starts with
+projects, evidence, and reusable findings; full turn content stays behind an
+explicit evidence action.
+
+## Run it
+
+```sh
+bun run ingest
+bun run derive
+bun run refine
+bun run workbench
+```
+
+Open `http://127.0.0.1:4789`. The server is read-only and binds to loopback by
+default.
+
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CHATLOG_DATA_ROOT` | repository root | Corpus, derived data, and analysis DB |
+| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json` | Additional source catalog |
+| `CHATLOG_HOST` | `127.0.0.1` | Listen address |
+| `CHATLOG_PORT` | `4789` | Listen port |
+| `CHATLOG_ALLOW_REMOTE` | unset | Must equal `1` before a non-loopback bind |
+
+Remote access is deliberately opt-in. If access from another machine is needed,
+prefer a private overlay or authenticated reverse proxy rather than exposing
+the port directly.
+
+## Connect sources
+
+Claude Code, Codex, and Pi are discovered from their standard local session
+directories and ingested with `bun run ingest`. Additional sources can be
+declared without teaching the UI about provider-specific paths:
+
+```json
+{
+  "sources": [
+    {
+      "id": "claude-web-personal",
+      "kind": "anthropic-export",
+      "label": "Claude Web — personal",
+      "path": "/private/exports/anthropic-data.zip",
+      "domain": "personal",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Save this as `~/.config/chatlog/sources.json`, or point
+`CHATLOG_SOURCE_CONFIG` at another file. The source page reports availability
+and the exact import action. Merely configuring or discovering an export does
+not read its conversation content.
+
+### Anthropic data exports
+
+Import a ZIP archive or its extracted directory:
+
+```sh
+bun run import:anthropic -- /private/exports/anthropic-data.zip personal
+```
+
+The final argument is a provenance domain such as `personal`, `coding`,
+`research`, or `general`. Domain is metadata for filtering and policy; it does
+not weaken redaction.
+
+Import behavior:
+
+- reads `conversations.json` locally and never modifies the export;
+- normalizes conversations into the existing immutable canonical schema;
+- runs the normal secret-redaction and content-hashing boundary;
+- reconstructs visible tool calls and results where the export includes them;
+- retains attachment and file names, but not extracted attachment bodies;
+- excludes private model-thinking and token-budget blocks;
+- skips unchanged conversations on subsequent imports;
+- derives structure and refreshes refinery candidates unless `--no-derive` is
+  supplied.
+
+The current importer does not ingest Claude Projects, memories, or design
+artifacts. Those have different authority and retention semantics, so they
+should become distinct, reviewable source types.
+
+ChatGPT exports and arbitrary harness JSONL appear as `planned` in the source
+catalog. They require explicit schema adapters before the UI will call them
+connected.
+
+## Agent access
+
+Workbench's JSON endpoints expose the same bounded views used by the UI:
+
+| Endpoint | Result |
+| --- | --- |
+| `/api/overview` | Corpus counts, recent sessions, project concentration |
+| `/api/projects` | Project activity and harness mix |
+| `/api/sessions?project=…` | Session metadata for a project |
+| `/api/search?q=…&limit=…` | Ranked local FTS results and evidence pointers |
+| `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
+| `/api/insights` | Orchestration, role, experiment, and refinery artifacts |
+| `/api/sources` | Connector state and import actions |
+
+These endpoints are useful for local dashboards and small agent tools. The
+existing CLI remains the stronger agent contract because it is bounded,
+composable, and does not require a resident server. A future MCP server should
+wrap these same read models rather than create another analysis store.
+
+## Persistent user service
+
+After the branch is integrated into a stable Chatlog path, a user-level service
+can run:
+
+```ini
+[Unit]
+Description=Chatlog Workbench
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/absolute/path/to/chatlog
+ExecStart=/absolute/path/to/bun run workbench
+Environment=CHATLOG_DATA_ROOT=/absolute/path/to/chatlog
+Restart=on-failure
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+```
+
+For the homelab/workstation configuration, package the executable and translate
+this unit into Home Manager only after its source path and update lifecycle are
+stable. The service depends on Chatlog's data contract, while desktop launchers
+and reverse-proxy exposure are optional consumers; keeping those layers
+separate avoids coupling the corpus to a particular desktop rice or server.
+
+## Product boundary
+
+This first slice uses one store and two surfaces:
+
+```text
+harness logs / explicit exports
+              │
+              ▼
+     canonical redacted corpus
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+  CLI / agents    Workbench / human
+```
+
+That boundary is intentional. Importers handle unstable provider formats,
+Chatlog owns durable normalized evidence, and the CLI/UI are replaceable views.
+There is no second conversation database to synchronize and no need to bake
+each provider into a custom agent harness.

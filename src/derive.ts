@@ -15,9 +15,12 @@ export interface DerivedConversation {
   schemaVersion: 1;
   conversationHash: string;
   sessionId: string;
+  title?: string;
   provider: string;
   project: string;
   harness: string;
+  domain?: string;
+  sourceKind?: string;
   model: string;
   startedAt: string;
   endedAt: string;
@@ -168,8 +171,9 @@ export function deriveConversation(c: Conversation): DerivedConversation {
     if (outcomeEvidence.length === 6) break;
   }
   return {
-    schemaVersion: 1, conversationHash: c.contentHash, sessionId: c.id, provider: c.provider, project: c.project,
-    harness: c.harness, model: c.model, startedAt: c.startedAt, endedAt: c.endedAt,
+    schemaVersion: 1, conversationHash: c.contentHash, sessionId: c.id, ...(c.title ? { title: c.title } : {}),
+    provider: c.provider, project: c.project, harness: c.harness, ...(c.domain ? { domain: c.domain } : {}),
+    ...(c.sourceKind ? { sourceKind: c.sourceKind } : {}), model: c.model, startedAt: c.startedAt, endedAt: c.endedAt,
     metrics: { turns: c.turns.length, characters, roles, tokens: tokenTotals, toolCalls: [...tools].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count) },
     topics, problems, decisions, gates, attempts,
     outcome: { status, evidence: outcomeEvidence },

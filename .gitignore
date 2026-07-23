@@ -2,5 +2,6 @@ corpus/
 analysis/
 derived/
 bridge/
+data-*.zip
 *.tmp
 node_modules/

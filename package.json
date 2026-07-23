@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "ingest": "bun run src/cli.ts ingest",
+    "import:anthropic": "bun run src/cli.ts import anthropic",
     "derive": "bun run src/cli.ts derive",
     "refine": "bun run src/cli.ts refine",
     "query": "bun run src/cli.ts query",
+    "workbench": "bun run src/workbench/server.ts",
     "test": "bun test",
-    "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli"
+    "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js"
   }
 }

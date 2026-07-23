@@ -1,5 +1,6 @@
 export type Provider = "anthropic" | "openai" | string;
 export type Harness = "claude-code" | "codex" | "pi" | string;
+export type ConversationDomain = "coding" | "personal" | "ideas" | "research" | "general" | string;
 
 export interface TokenUsage {
   input?: number;
@@ -27,8 +28,11 @@ export interface Turn {
 
 export interface Conversation {
   id: string;
+  title?: string;
   provider: Provider;
   harness: Harness;
+  domain?: ConversationDomain;
+  sourceKind?: string;
   project: string;
   cwd: string;
   model: string;

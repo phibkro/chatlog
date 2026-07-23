@@ -10,6 +10,38 @@ The source directories are only opened for discovery, stat, and streaming reads.
 The tool never writes beneath `~/.claude`, `~/.codex`, or `~/.pi`. Corpus and
 analysis files are mode 0600 inside mode 0700 directories and are gitignored.
 
+## Workbench
+
+Chatlog Workbench turns the corpus into a local product for both the operator
+and coding agents. It provides a project and session browser, full-text recall
+with resolvable evidence, measured orchestration patterns, refinery candidates,
+and a source-connection screen.
+
+```sh
+bun run ingest
+bun run workbench
+# open http://127.0.0.1:4789
+```
+
+The server binds to loopback, reads the existing corpus without mutating it, and
+does not use hosted analytics. Set `CHATLOG_DATA_ROOT` when the data lives
+outside this checkout. See [docs/workbench.md](docs/workbench.md) for source
+configuration, the API, privacy boundaries, and a persistent user-service
+example.
+
+An Anthropic data export can be connected as an explicit, one-time import:
+
+```sh
+bun run import:anthropic -- /path/to/data-export.zip personal
+```
+
+The importer currently ingests `conversations.json`, including visible text and
+tool activity. It intentionally excludes model thinking, token-budget metadata,
+and extracted attachment bodies; attachment and file names are retained as
+context. The source archive is never modified. Claude Projects, memories, and
+design artifacts are left for separately reviewable adapters rather than folded
+into conversations implicitly.
+
 ```sh
 bun run ingest
 bun run derive
@@ -154,5 +186,6 @@ This is reconstruction, not native cross-harness resume. See
 New sources implement `SourceAdapter.discover()` and `SourceAdapter.adapt()` and
 return the canonical schema. Adapters explicitly enumerate accepted record and
 content-block kinds; an unknown shape aborts ingestion with its source path and
-line number. Deferred web providers can be added here without changing corpus or
-analysis code. No web adapter is implemented.
+line number. The Anthropic export importer uses the same canonical corpus and
+analysis boundary. A ChatGPT export adapter and a documented generic JSONL
+contract are the next source types; neither is claimed as connected yet.

@@ -19,10 +19,19 @@ export function openAnalysis(path: string): Database {
     source_size INTEGER NOT NULL, ingested_at TEXT NOT NULL, turn_count INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,
     reasoning_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
-    cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    domain TEXT NOT NULL DEFAULT 'coding',
+    source_kind TEXT NOT NULL DEFAULT 'session-log'
   )`);
   if (!hasColumn(db, "conversations", "cache_write_tokens"))
     db.run("ALTER TABLE conversations ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0");
+  if (!hasColumn(db, "conversations", "title"))
+    db.run("ALTER TABLE conversations ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  if (!hasColumn(db, "conversations", "domain"))
+    db.run("ALTER TABLE conversations ADD COLUMN domain TEXT NOT NULL DEFAULT 'coding'");
+  if (!hasColumn(db, "conversations", "source_kind"))
+    db.run("ALTER TABLE conversations ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'session-log'");
   db.run(`CREATE TABLE IF NOT EXISTS turns (
     content_hash TEXT NOT NULL, turn_index INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
     at TEXT, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,
@@ -39,7 +48,7 @@ export function openAnalysis(path: string): Database {
   db.run("DROP VIEW IF EXISTS current_turns");
   db.run("DROP VIEW IF EXISTS current_conversations");
   db.run(`CREATE VIEW current_conversations AS
-    SELECT content_hash, id, provider, harness, project, cwd, model, started_at, ended_at,
+    SELECT content_hash, id, provider, harness, title, domain, source_kind, project, cwd, model, started_at, ended_at,
       resume_id, source_path, source_mtime, source_size, ingested_at, turn_count,
       input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, total_tokens, cache_write_tokens FROM (
       SELECT *, row_number() OVER (PARTITION BY source_path ORDER BY source_mtime DESC, source_size DESC, ingested_at DESC) rn
@@ -72,14 +81,14 @@ export function indexConversation(db: Database, c: Conversation, sourceMtime: nu
   const insertConversation = db.prepare(`INSERT INTO conversations
     (content_hash,id,provider,harness,project,cwd,model,started_at,ended_at,resume_id,source_path,
      source_mtime,source_size,ingested_at,turn_count,input_tokens,output_tokens,cached_input_tokens,
-     reasoning_tokens,total_tokens,cache_write_tokens)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     reasoning_tokens,total_tokens,cache_write_tokens,title,domain,source_kind)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insertTurn = db.prepare("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const insertFts = db.prepare("INSERT INTO turns_fts(content, content_hash, turn_index, harness, project) VALUES (?, ?, ?, ?, ?)");
   const insertTool = db.prepare("INSERT INTO tool_calls VALUES (?, ?, ?, ?, ?, ?, ?)");
   db.transaction(() => {
     const cacheWrite = c.turns.reduce((sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0), 0);
-    insertConversation.run(c.contentHash, c.id, c.provider, c.harness, c.project, c.cwd, c.model, c.startedAt, c.endedAt, c.resumeId ?? null, c.sourcePath, sourceMtime, sourceSize, new Date().toISOString(), c.turns.length, totals.input, totals.output, totals.cached, totals.reasoning, totals.total, cacheWrite);
+    insertConversation.run(c.contentHash, c.id, c.provider, c.harness, c.project, c.cwd, c.model, c.startedAt, c.endedAt, c.resumeId ?? null, c.sourcePath, sourceMtime, sourceSize, new Date().toISOString(), c.turns.length, totals.input, totals.output, totals.cached, totals.reasoning, totals.total, cacheWrite, c.title ?? "", c.domain ?? "coding", c.sourceKind ?? "session-log");
     c.turns.forEach((t, i) => {
       insertTurn.run(c.contentHash, i, t.role, t.content, t.at ?? null, t.tokens?.input ?? 0, t.tokens?.output ?? 0, t.tokens?.cachedInput ?? 0, t.tokens?.reasoning ?? 0, t.tokens?.total ?? 0);
       if (t.content) insertFts.run(t.content, c.contentHash, i, c.harness, c.project);

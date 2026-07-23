@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#111613">
+  <title>Chatlog Workbench</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Chatlog Workbench">
+        <span class="brand-mark">C</span>
+        <span><strong>Chatlog</strong><small>Workbench</small></span>
+      </a>
+
+      <nav aria-label="Primary">
+        <button class="nav-item active" data-view="overview"><span>⌁</span> Today</button>
+        <button class="nav-item" data-view="projects"><span>◇</span> Projects</button>
+        <button class="nav-item" data-view="recall"><span>⌕</span> Recall</button>
+        <button class="nav-item" data-view="patterns"><span>✦</span> Patterns</button>
+        <button class="nav-item" data-view="sources"><span>◌</span> Sources</button>
+      </nav>
+
+      <div class="privacy-card">
+        <div class="privacy-head"><span class="status-dot"></span> Local and private</div>
+        <p>Raw conversations stay on this machine. Hosted semantic analysis remains opt-in.</p>
+      </div>
+
+      <div class="sidebar-foot">
+        <span id="corpus-range">Loading corpus…</span>
+        <span id="data-root"></span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
+        <form class="global-search" id="global-search">
+          <span>⌕</span>
+          <input id="global-search-input" type="search" autocomplete="off" placeholder="Ask your history or search exact terms…">
+          <kbd>↵</kbd>
+        </form>
+        <div class="top-actions">
+          <span class="sync-state"><span class="status-dot"></span><span id="sync-copy">Corpus ready</span></span>
+          <button class="icon-button" id="refresh" title="Refresh">↻</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-overview">
+        <div class="page-intro">
+          <div>
+            <p class="eyebrow">Your agent work, resolved into evidence</p>
+            <h1>Good <span id="day-part">day</span>, Philip.</h1>
+            <p id="overview-subtitle">Building a trustworthy picture of your projects and agents.</p>
+          </div>
+          <button class="primary-action" data-view-jump="recall">Ask your history <span>→</span></button>
+        </div>
+
+        <div class="stat-grid" id="stat-grid">
+          <article class="stat-card skeleton"></article>
+          <article class="stat-card skeleton"></article>
+          <article class="stat-card skeleton"></article>
+          <article class="stat-card skeleton"></article>
+        </div>
+
+        <div class="content-grid">
+          <article class="panel activity-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Latest evidence</p><h2>Recent sessions</h2></div>
+              <button class="text-button" data-view-jump="projects">View all</button>
+            </div>
+            <div id="recent-sessions" class="timeline"><div class="empty">Loading recent sessions…</div></div>
+          </article>
+
+          <div class="panel-stack">
+            <article class="panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">Concentration</p><h2>Active projects</h2></div>
+              </div>
+              <div id="project-focus" class="project-focus"><div class="empty">Loading projects…</div></div>
+            </article>
+            <article class="panel signal-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">Observed boundary</p><h2>How you orchestrate</h2></div>
+              </div>
+              <blockquote id="orchestration-claim">Loading derived operator profile…</blockquote>
+              <button class="text-button" data-view-jump="patterns">Inspect the evidence →</button>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-projects">
+        <div class="page-intro compact">
+          <div><p class="eyebrow">Across every harness</p><h1>Project cockpit</h1><p>One activity surface for sessions, models and decisions.</p></div>
+        </div>
+        <div class="panel toolbar-panel">
+          <input id="project-filter" type="search" placeholder="Filter projects…">
+          <span id="project-count"></span>
+        </div>
+        <div id="project-list" class="project-grid"></div>
+        <article class="panel project-drawer hidden" id="project-drawer">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Project history</p><h2 id="project-drawer-title"></h2></div>
+            <button class="icon-button" id="close-project">×</button>
+          </div>
+          <div id="project-sessions" class="session-table"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-recall">
+        <div class="page-intro compact">
+          <div><p class="eyebrow">Search → inspect → follow evidence</p><h1>Recall</h1><p>Recover prior attempts without loading your archive into an agent context.</p></div>
+        </div>
+        <article class="recall-hero panel">
+          <form id="recall-form">
+            <label for="recall-input">What are you trying to remember?</label>
+            <div class="recall-input">
+              <textarea id="recall-input" rows="2" placeholder="What did we learn about Nix flake source visibility?"></textarea>
+              <button type="submit">Search history <span>→</span></button>
+            </div>
+          </form>
+          <div class="query-suggestions">
+            <button>stale worktree state</button>
+            <button>Lean proof performance</button>
+            <button>sandbox permissions</button>
+            <button>release gates</button>
+          </div>
+        </article>
+        <div class="result-meta" id="result-meta"></div>
+        <div id="search-results" class="search-results">
+          <div class="empty spacious">Search results will appear here with stable evidence pointers.</div>
+        </div>
+      </section>
+
+      <section class="view" id="view-patterns">
+        <div class="page-intro compact">
+          <div><p class="eyebrow">Frequency nominates; evidence decides</p><h1>Patterns and knowledge</h1><p>Inspect your operating model, recurring friction and promotion candidates.</p></div>
+        </div>
+        <div class="pattern-grid">
+          <article class="panel roles-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Role boundaries</p><h2>Agent operating modes</h2></div></div>
+            <div id="role-profiles"></div>
+          </article>
+          <article class="panel experiment-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Measured, not assumed</p><h2>Latest effectiveness result</h2></div></div>
+            <div id="effectiveness-result" class="empty">No measured experiment loaded.</div>
+          </article>
+        </div>
+        <article class="panel candidates-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Curation inbox</p><h2>Knowledge candidates</h2></div>
+            <div class="segmented" id="candidate-filters">
+              <button class="active" data-filter="all">All</button>
+              <button data-filter="skill">Skills</button>
+              <button data-filter="gotcha-skill">Gotchas</button>
+              <button data-filter="memory-or-adr">Memory</button>
+              <button data-filter="claude-md">Context</button>
+            </div>
+          </div>
+          <div id="candidate-list" class="candidate-list"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-sources">
+        <div class="page-intro compact">
+          <div><p class="eyebrow">Local connectors</p><h1>Sources</h1><p>Keep coding execution, personal conversations and idea work distinct while making them jointly searchable.</p></div>
+        </div>
+        <div class="source-principle panel">
+          <span class="source-principle-icon">◉</span>
+          <div><strong>One corpus, explicit provenance.</strong><p>Every turn retains its provider, source kind and domain. Imports are read-only and redacted before indexing.</p></div>
+        </div>
+        <div id="source-list" class="source-grid"></div>
+        <article class="panel config-panel">
+          <div><p class="eyebrow">Configuration</p><h2>Add an export</h2></div>
+          <p>Register exports in <code>~/.config/chatlog/sources.json</code>. The Workbench discovers them without importing until you explicitly run the shown command.</p>
+          <pre><code>{
+  "sources": [{
+    "id": "claude-web-export",
+    "kind": "anthropic-export",
+    "label": "Claude Web",
+    "path": "/path/to/anthropic-export.zip",
+    "domain": "personal"
+  }]
+}</code></pre>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="evidence-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">Canonical evidence</p><h2 id="evidence-title">Conversation turn</h2></div>
+      <button class="icon-button" id="close-evidence">×</button>
+    </div>
+    <div id="evidence-meta" class="evidence-meta"></div>
+    <pre id="evidence-content" class="evidence-content"></pre>
+  </dialog>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

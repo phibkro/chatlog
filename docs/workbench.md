@@ -123,38 +123,66 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/sources` | Connector state and import actions |
 
 These endpoints are useful for local dashboards and small agent tools. The
-existing CLI remains the stronger agent contract because it is bounded,
-composable, and does not require a resident server. A future MCP server should
-wrap these same read models rather than create another analysis store.
+existing CLI remains the broad operator contract because it is composable and
+does not require a resident server. The implemented Wave 1 MCP server exposes a
+smaller policy-filtered subset over stdio: search, one-turn evidence, recent
+project work, and bounded project briefs. Both surfaces use the same analysis
+store.
 
-## Persistent user service
+## Package and deploy
 
-After the branch is integrated into a stable Chatlog path, a user-level service
-can run:
+`flake.nix` packages the Workbench static assets and the Bun runtime entry
+points, without embedding any corpus data — `nix build` only ever copies
+`src/`, `package.json`, and `tsconfig.json` into the store.
 
-```ini
-[Unit]
-Description=Chatlog Workbench
-After=default.target
+```sh
+nix build .#chatlog
+CHATLOG_DATA_ROOT=/absolute/path/to/data ./result/bin/chatlog-workbench
 
-[Service]
-Type=simple
-WorkingDirectory=/absolute/path/to/chatlog
-ExecStart=/absolute/path/to/bun run workbench
-Environment=CHATLOG_DATA_ROOT=/absolute/path/to/chatlog
-Restart=on-failure
-PrivateTmp=true
-NoNewPrivileges=true
-
-[Install]
-WantedBy=default.target
+# or run either app directly without a local checkout
+nix run .#workbench
+nix run .#mcp
 ```
 
-For the homelab/workstation configuration, package the executable and translate
-this unit into Home Manager only after its source path and update lifecycle are
-stable. The service depends on Chatlog's data contract, while desktop launchers
-and reverse-proxy exposure are optional consumers; keeping those layers
-separate avoids coupling the corpus to a particular desktop rice or server.
+`nix flake check` evaluates the package and the Home Manager module without
+network access once the flake's inputs are already fetched.
+
+### Home Manager user service (opt-in)
+
+A Home Manager module provides `services.chatlog-workbench`, disabled by
+default:
+
+```nix
+{
+  imports = [ chatlog.homeManagerModules.default ];
+
+  services.chatlog-workbench = {
+    enable = true;               # default: false
+    # package = chatlog.packages.${pkgs.system}.chatlog;  # default
+    # dataRoot = "${config.xdg.dataHome}/chatlog";         # default
+    # host = "127.0.0.1";                                  # default; loopback
+    # port = 4789;                                         # default
+  };
+}
+```
+
+Enabling it registers a `systemd --user` unit (`Restart=on-failure`,
+`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, and a
+`ReadWritePaths` carve-out scoped to `dataRoot` — everything else in `$HOME`
+stays read-only to the unit) and creates `dataRoot` on activation if it does
+not already exist. `host` defaults to loopback. The server itself refuses a
+non-loopback bind unless `CHATLOG_ALLOW_REMOTE=1` is set in its environment, so
+changing `host` alone does not expose the service.
+
+Remote access is deliberately not this module's job. Front Workbench with
+Tailscale Serve or another authenticated reverse proxy pointed at
+`127.0.0.1:<port>`. That remains an operator action at the network boundary;
+the module and package never configure Tailscale ACLs, certificates, Serve
+state, or DNS.
+
+Chatlog is not yet added to the homelab flake as an input; its package contract
+is still stabilizing. Until then, consume it as a standalone flake from its
+checkout.
 
 ## Product boundary
 

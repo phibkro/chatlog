@@ -26,8 +26,7 @@ bun run workbench
 The server binds to loopback, reads the existing corpus without mutating it, and
 does not use hosted analytics. Set `CHATLOG_DATA_ROOT` when the data lives
 outside this checkout. See [docs/workbench.md](docs/workbench.md) for source
-configuration, the API, privacy boundaries, and a persistent user-service
-example.
+configuration, the API, and privacy boundaries.
 
 ## Agent MCP
 
@@ -45,6 +44,20 @@ project work, and bounded project briefs. It opens no network listener and makes
 no hosted calls. The default domain policy is `coding`; `personal` and other
 domains require explicit enumeration. See [docs/mcp-tool-shape.md](docs/mcp-tool-shape.md)
 and [docs/access-policy.md](docs/access-policy.md).
+
+## Deploy
+
+```sh
+nix build .#chatlog
+nix run .#workbench   # or: nix run .#mcp
+```
+
+`nix flake check` evaluates the package and Home Manager module offline once
+inputs are fetched. An opt-in, loopback-default `services.chatlog-workbench`
+Home Manager module is available for running Workbench as a persistent user
+service. See [docs/workbench.md](docs/workbench.md#package-and-deploy) for the
+module options, systemd hardening, and the Tailscale Serve handoff for remote
+access.
 
 An Anthropic data export can be connected as an explicit, one-time import:
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { WorkbenchData } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
+import { writeImportReceipt } from "../src/import-receipts";
 import type { Conversation } from "../src/types";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
@@ -45,6 +46,41 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     join(root, "corpus", "objects", "bb", `${staleHash}.json`),
     JSON.stringify(superseded),
   );
+  const receiptInput = {
+    source: {
+      path: "/private/anthropic.zip",
+      contentHash: "c".repeat(64),
+      bytes: 100,
+      modifiedAt: "2026-01-01T10:00:00.000Z",
+    },
+    domain: "personal",
+    counts: {
+      discovered: 1,
+      imported: 1,
+      skipped: 0,
+      turns: 2,
+      attachments: 0,
+      files: 0,
+    },
+    manifest: {
+      beforeHash: "d".repeat(64),
+      afterHash: "e".repeat(64),
+      beforeSources: 0,
+      afterSources: 1,
+      added: 1,
+      replaced: 0,
+      unchanged: 0,
+    },
+    deriveEnabled: false,
+    operationId: "workbench-test",
+    completedAt: "2026-01-01T10:02:00.000Z",
+  } as const;
+  await writeImportReceipt(root, receiptInput);
+  await writeImportReceipt(root, {
+    ...receiptInput,
+    operationId: "workbench-test-2",
+    completedAt: "2026-01-01T10:03:00.000Z",
+  });
 
   const data = new WorkbenchData(root);
   expect(await data.overview()).toMatchObject({ ready: true, corpus: { sessions: 1, projects: 1, turns: 2 } });
@@ -63,6 +99,15 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
+  const receiptsResponse = await handler(new Request("http://localhost/api/receipts?limit=1"));
+  expect(receiptsResponse.status).toBe(200);
+  expect(await receiptsResponse.json()).toMatchObject([{
+    schema: "chatlog/import-receipt-v1",
+    connector: "anthropic-export",
+    policy: { domain: "personal" },
+    counts: { imported: 1 },
+  }]);
+  expect(await data.receipts(null)).toHaveLength(2);
   const readOnlyResponse = await handler(new Request("http://localhost/api/overview", { method: "POST" }));
   expect(readOnlyResponse.status).toBe(405);
   expect(await readOnlyResponse.json()).toEqual({ error: "read-only workbench" });

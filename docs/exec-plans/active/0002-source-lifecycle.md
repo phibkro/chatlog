@@ -221,7 +221,36 @@ continues to own its package, service module, corpus semantics, and product
 surfaces. CI now runs both `bun run check` and `nix flake check` on pushes and
 pull requests.
 
-Operationalization deliberately does not expand this plan's authority-changing
-scope. After the installed service and MCP surfaces are smoke-tested, work
-returns to Slice B: persistent bounded import receipts, followed by the active
-projection migration required before reclassification or revocation.
+Operationalization deliberately did not expand this plan's
+authority-changing scope. With the installed service and MCP surfaces
+smoke-tested, Slice B adds persistent bounded import receipts; the active
+projection migration remains required before reclassification or revocation.
+
+## Slice B results
+
+Completed on 2026-07-24.
+
+- Every successful explicit Anthropic import writes a private, hash-sealed
+  `chatlog/import-receipt-v1` record beneath `receipts/imports/`.
+- Receipts contain the source fingerprint, selected policy, aggregate counts,
+  before/after manifest hashes, mapping-transition counts, and bounded
+  derivation status. They contain no titles, messages, snippets, tool data,
+  attachment bodies, artifact paths, or error text.
+- A handled derivation failure still records the already-committed manifest
+  transition with `derivation.status: failed`, then returns an operator-visible
+  error. Crash recovery in the narrower manifest-to-receipt window remains
+  intentionally assigned to the durable-intent migration.
+- The operator can inspect a bounded newest-first trail through
+  `chatlog receipts imports [limit]`, `/api/receipts?limit=…`, and the
+  read-only Workbench Sources page. Receipt corruption fails the audit endpoint
+  closed without taking down unrelated Workbench views.
+- Fable 5's implementation and closure reviews produced seven actionable
+  findings covering availability, durability, input bounds, timestamp ordering,
+  and privacy coverage. All seven were corrected; the final narrow closure
+  reported no actionable findings.
+- `bun run check` passes 36 tests with 233 assertions and all runtime/browser
+  bundles. `nix flake check --offline` and a packaged `chatlog receipts` smoke
+  test both pass.
+- The next authority-changing prerequisite is the active SQLite projection and
+  manifest/projection drift detector described above. Reclassify, revoke, and
+  purge remain unexposed.

@@ -92,7 +92,7 @@ kbd { padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; color
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.38fr) minmax(310px, .82fr); gap: 18px; }
 .panel-stack { display: grid; gap: 18px; align-content: start; }
 .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); backdrop-filter: blur(16px); }
-.activity-panel, .panel-stack .panel, .roles-panel, .experiment-panel, .candidates-panel, .config-panel { padding: 21px; }
+.activity-panel, .panel-stack .panel, .roles-panel, .experiment-panel, .candidates-panel, .config-panel, .receipt-panel { padding: 21px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 18px; }
 .panel h2 { margin: 4px 0 0; font: 400 20px Georgia, serif; }
 .text-button { padding: 0; border: 0; color: var(--green); background: transparent; cursor: pointer; font-size: 11px; }
@@ -198,6 +198,15 @@ mark { padding: 1px 2px; border-radius: 3px; color: var(--green-strong); backgro
 .source-command-label { margin-top: 10px; color: var(--faint); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
 .source-meta .source-command { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: #bbc7bd; background: rgba(5,8,6,.45); white-space: normal; overflow-wrap: anywhere; }
 .source-privacy { margin: 9px 0 0; color: var(--faint); font-size: 8px; line-height: 1.45; }
+.receipt-panel { margin-top: 18px; }
+.receipt-panel > p { color: var(--muted); font-size: 10px; }
+.receipt-list { margin-top: 14px; }
+.receipt-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px 0; border-top: 1px solid var(--line); }
+.receipt-row .timeline-dot { margin-top: 5px; }
+.receipt-copy { display: grid; gap: 4px; min-width: 0; }
+.receipt-copy strong { font-size: 10px; }
+.receipt-copy span, .receipt-copy code { color: var(--faint); font-size: 8px; }
+.receipt-copy code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .config-panel { margin-top: 18px; }
 .config-panel > p { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .config-panel pre { overflow: auto; margin: 16px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(5,8,6,.55); color: #b9c6ba; font-size: 10px; line-height: 1.55; }

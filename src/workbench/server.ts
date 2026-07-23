@@ -43,6 +43,7 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
       if (url.pathname === "/api/search") return json(data.search(url));
       if (url.pathname === "/api/insights") return json(await data.insights());
       if (url.pathname === "/api/sources") return json(await data.sources());
+      if (url.pathname === "/api/receipts") return json(await data.receipts(url.searchParams.get("limit")));
       if (url.pathname === "/api/evidence") {
         const uri = url.searchParams.get("uri");
         if (!uri) return json({ error: "missing evidence URI" }, 400);

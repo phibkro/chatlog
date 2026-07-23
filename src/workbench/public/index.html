@@ -176,6 +176,11 @@
           <div><strong>One corpus, explicit provenance.</strong><p>Every turn retains its provider, source kind and domain. Imports are read-only and redacted before indexing.</p></div>
         </div>
         <div id="source-list" class="source-grid"></div>
+        <article class="panel receipt-panel">
+          <div><p class="eyebrow">Local audit trail</p><h2>Completed imports</h2></div>
+          <p>Bounded receipts record aggregate counts, policy and manifest transitions without retaining conversation content.</p>
+          <div id="receipt-list" class="receipt-list"></div>
+        </article>
         <article class="panel config-panel">
           <div><p class="eyebrow">Configuration</p><h2>Add an export</h2></div>
           <p>Register exports in <code>~/.config/chatlog/sources.json</code>. The Workbench discovers them without importing until you explicitly run the shown command.</p>

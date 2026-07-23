@@ -8,6 +8,7 @@ import {
   importAnthropicExport,
   previewAnthropicExport,
 } from "../src/importers/anthropic-export";
+import { listImportReceipts } from "../src/import-receipts";
 
 const fixture = {
   uuid: "conversation-1",
@@ -101,6 +102,31 @@ test("imports an extracted Anthropic export idempotently", async () => {
 
   const first = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(first).toMatchObject({ discovered: 1, imported: 1, skipped: 0, turns: 2, attachments: 1 });
+  expect(first.receipt).toMatchObject({
+    schema: "chatlog/import-receipt-v1",
+    operation: "import",
+    connector: "anthropic-export",
+    status: "completed",
+    policy: {
+      domain: "ideas",
+      redaction: "canonical",
+      exclusions: {
+        modelThinking: true,
+        attachmentBodies: true,
+        claudeProjects: true,
+        memories: true,
+      },
+    },
+    counts: { discovered: 1, imported: 1, skipped: 0, turns: 2, attachments: 1, files: 0 },
+    manifest: { beforeSources: 0, afterSources: 1, added: 1, replaced: 0, unchanged: 0 },
+    derivation: { enabled: false, status: "not-requested" },
+  });
+  expect(first.receipt.receiptId).toHaveLength(64);
+  expect(first.receipt.source.contentHash).toHaveLength(64);
+  const persistedFirst = await listImportReceipts(root);
+  expect(persistedFirst).toEqual([first.receipt]);
+  expect(JSON.stringify(persistedFirst)).not.toContain("Explore this idea");
+  expect(JSON.stringify(persistedFirst)).not.toContain("small experiment");
   expect(await previewAnthropicExport(source, root, { domain: "ideas" })).toMatchObject({
     new: 0,
     changed: 0,
@@ -121,6 +147,12 @@ test("imports an extracted Anthropic export idempotently", async () => {
     .not.toBe(preview.receiptId);
   const second = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(second).toMatchObject({ discovered: 1, imported: 0, skipped: 1 });
+  expect(second.receipt).toMatchObject({
+    counts: { imported: 0, skipped: 1 },
+    manifest: { beforeSources: 1, afterSources: 1, added: 0, replaced: 0, unchanged: 1 },
+  });
+  expect(second.receipt.receiptId).not.toBe(first.receipt.receiptId);
+  expect(await listImportReceipts(root)).toHaveLength(2);
 
   const manifest = JSON.parse(await readFile(join(root, "corpus", "manifest.json"), "utf8"));
   const hash = Object.values(manifest.sources)[0] as { contentHash: string };
@@ -134,4 +166,49 @@ test("imports an extracted Anthropic export idempotently", async () => {
     source_kind: "anthropic-data-export",
   });
   db.close();
+});
+
+test("records bounded derivation completion without artifact paths", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-derived-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
+
+  const result = await importAnthropicExport(source, root, { domain: "ideas" });
+  expect(result.receipt.derivation).toMatchObject({
+    enabled: true,
+    status: "completed",
+    derived: { discovered: 1, processed: 1, skipped: 0 },
+    refinery: { inputConversations: 1, candidates: 0, processed: true },
+  });
+  const receiptText = JSON.stringify(result.receipt);
+  expect(receiptText).not.toContain("manifestPath");
+  expect(receiptText).not.toContain("artifactPath");
+});
+
+test("records the committed manifest transition when derivation fails", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-derive-failure-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
+  const invalidHash = "0".repeat(64);
+  await mkdir(join(root, "corpus", "objects", "00"), { recursive: true });
+  await writeFile(
+    join(root, "corpus", "objects", "00", `${invalidHash}.json`),
+    "{not valid JSON",
+  );
+
+  await expect(importAnthropicExport(source, root, { domain: "ideas" }))
+    .rejects.toThrow("import committed as receipt");
+  const [receipt] = await listImportReceipts(root);
+  expect(receipt).toMatchObject({
+    status: "completed",
+    counts: { imported: 1, skipped: 0 },
+    manifest: { beforeSources: 0, afterSources: 1, added: 1 },
+    derivation: { enabled: true, status: "failed" },
+  });
+  const manifest = JSON.parse(await readFile(join(root, "corpus", "manifest.json"), "utf8"));
+  expect(Object.keys(manifest.sources)).toHaveLength(1);
 });

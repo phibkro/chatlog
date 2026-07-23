@@ -66,6 +66,7 @@ then connected as an explicit import:
 ```sh
 bun run preview:anthropic -- /path/to/data-export.zip personal
 bun run import:anthropic -- /path/to/data-export.zip personal
+bun run src/cli.ts receipts imports 20
 ```
 
 The importer currently ingests `conversations.json`, including visible text and
@@ -101,10 +102,10 @@ bun run src/cli.ts bridge emit-pi <conversation-hash> history
 ```
 
 The query surface is deliberately hybrid. SQLite FTS5 owns ranked full-text
-retrieval and bounded snippets. DuckDB, invoked ad hoc through
-`nix shell --offline nixpkgs#duckdb`, scans the content-addressed derived JSON
-objects directly for columnar token, time-series, model, project, and tool rollups. No
-DuckDB project dependency or duplicate analytics load table is required.
+retrieval and bounded snippets. The packaged DuckDB binary scans the
+content-addressed derived JSON objects directly for columnar token,
+time-series, model, project, and tool rollups. No duplicate analytics load
+table is required.
 
 `current_token_usage` keeps provider-reported totals intact while exposing
 `non_cached_tokens`, `cache_read_tokens`, and `cache_write_tokens` separately.

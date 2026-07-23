@@ -48,13 +48,16 @@ Anthropic and ChatGPT exports should normally enter `personal`, `ideas`, or
 `research`, not `coding`, unless the operator deliberately labels the source
 otherwise.
 
-Before a personal export is available to agents, the product should support:
+The product currently supports preview and bounded import receipts. Before
+source lifecycle mutation is exposed, it must additionally support:
 
-- import preview;
 - selective import and deletion by source;
 - domain reassignment with re-indexing;
-- an audit receipt describing what was indexed;
 - local-first topic clustering.
+
+Import receipts describe what was indexed using aggregate counts, policy and
+hashes only. They deliberately exclude conversation content and do not grant a
+domain access permission.
 
 Hosted agents should inspect real personal content only after an explicit
 per-task decision. Synthetic fixtures are sufficient for implementation and

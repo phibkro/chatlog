@@ -3,10 +3,12 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseEvidenceUri } from "../evidence-uri";
+import { listImportReceipts } from "../import-receipts";
 import { sourceCatalog } from "../source-catalog";
 import type { Conversation } from "../types";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
+  if (value == null || value.trim() === "") return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.trunc(parsed))) : fallback;
 }
@@ -228,5 +230,9 @@ export class WorkbenchData {
 
   sources(): Promise<unknown[]> {
     return sourceCatalog(this.root);
+  }
+
+  receipts(limitValue: string | null): Promise<unknown[]> {
+    return listImportReceipts(this.root, boundedInteger(limitValue, 20, 100));
   }
 }

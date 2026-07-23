@@ -3,6 +3,8 @@ const state = {
   projects: [],
   insights: null,
   sources: [],
+  receipts: [],
+  receiptError: null,
   candidateFilter: "all",
 };
 
@@ -213,6 +215,18 @@ function renderSources() {
         <p class="source-privacy">${escapeHtml(source.privacy)}</p>
       </div>
     </article>`).join("");
+  $("#receipt-list").innerHTML = state.receiptError
+    ? `<div class="empty">Receipt audit unavailable: ${escapeHtml(state.receiptError)}</div>`
+    : state.receipts.map((receipt) => `
+    <div class="receipt-row">
+      <span class="timeline-dot"></span>
+      <div class="receipt-copy">
+        <strong>${escapeHtml(receipt.connector)} · ${escapeHtml(receipt.policy?.domain)}</strong>
+        <span>${formatNumber(receipt.counts?.imported)} imported · ${formatNumber(receipt.counts?.skipped)} unchanged · ${formatNumber(receipt.counts?.turns)} turns</span>
+        <code title="${escapeHtml(receipt.source?.path)}">${escapeHtml(receipt.receiptId)}</code>
+      </div>
+      <span class="timeline-time">${relativeTime(receipt.completedAt)}</span>
+    </div>`).join("") || `<div class="empty">No completed imports have receipts yet.</div>`;
 }
 
 async function load() {
@@ -221,6 +235,13 @@ async function load() {
     [state.overview, state.projects, state.insights, state.sources] = await Promise.all([
       api("/api/overview"), api("/api/projects?limit=200"), api("/api/insights"), api("/api/sources"),
     ]);
+    try {
+      state.receipts = await api("/api/receipts?limit=20");
+      state.receiptError = null;
+    } catch (error) {
+      state.receipts = [];
+      state.receiptError = error.message;
+    }
     renderOverview();
     renderProjects();
     renderInsights();

@@ -111,7 +111,25 @@ Import behavior:
 - excludes private model-thinking and token-budget blocks;
 - skips unchanged conversations on subsequent imports;
 - derives structure and refreshes refinery candidates unless `--no-derive` is
-  supplied.
+  supplied;
+- writes a mode-0600 completion receipt after the manifest commit, recording
+  derivation as `completed`, `failed`, or `not-requested`.
+
+Receipts contain source and manifest hashes, selected policy, aggregate counts,
+and bounded derivation status. They never contain titles, messages, snippets,
+tool arguments, attachment bodies, or error text. Inspect the newest receipts
+with:
+
+```sh
+chatlog receipts imports 20
+```
+
+Workbench shows the same read-only audit trail on the Sources page. Receipt
+files live beneath `receipts/imports/` in the Chatlog data root.
+If post-import derivation fails, the command still returns an error, but the
+receipt remains as evidence of the already-committed manifest transition.
+Crash recovery between the manifest commit and receipt write remains part of
+the later durable-intent lifecycle migration.
 
 The current importer does not ingest Claude Projects, memories, or design
 artifacts. Those have different authority and retention semantics, so they
@@ -138,6 +156,7 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
 | `/api/insights` | Orchestration, role, experiment, and refinery artifacts |
 | `/api/sources` | Connector state and import actions |
+| `/api/receipts?limit=…` | Newest bounded completed-import receipts |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and

@@ -18,6 +18,7 @@ import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiv
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { normalizeConversationDomain } from "./domain";
 import { resolveDataRoot } from "./data-root";
+import { listImportReceipts } from "./import-receipts";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolveDataRoot();
@@ -48,6 +49,16 @@ if (command === "ingest") {
     domain,
     derive: !args.includes("--no-derive"),
   }), null, 2));
+} else if (command === "receipts") {
+  if (subcommand && subcommand !== "imports" && !/^\d+$/.test(subcommand))
+    throw new Error("usage: chatlog receipts [imports] [limit]");
+  const limitText = subcommand === "imports" ? args[0] : subcommand;
+  if (limitText && !/^[1-9]\d*$/.test(limitText))
+    throw new Error("receipt limit must be a positive integer");
+  const limit = Number(limitText ?? 20);
+  if (!Number.isSafeInteger(limit) || limit > 200)
+    throw new Error("receipt limit must be at most 200");
+  console.log(JSON.stringify(await listImportReceipts(root, limit), null, 2));
 } else if (command === "derive") {
   console.log(JSON.stringify({ derived: await deriveCorpus(root), refinery: await refineCorpus(root) }, null, 2));
 } else if (command === "refine") {
@@ -112,5 +123,5 @@ if (command === "ingest") {
   if (mode !== "history" && mode !== "summary") throw new Error("bridge mode must be history or summary");
   console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|derive|refine|query|bridge>");
+  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|receipts|derive|refine|query|bridge>");
 }

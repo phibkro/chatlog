@@ -4,6 +4,11 @@ import { indexConversation, openAnalysis } from "../analysis";
 import { deriveCorpus, type DeriveSummary } from "../derive";
 import { normalizeConversationDomain } from "../domain";
 import { canonicalizeConversation } from "../ingest";
+import {
+  manifestSourcesHash,
+  writeImportReceipt,
+  type ImportReceipt,
+} from "../import-receipts";
 import { withIngestLock } from "../lock";
 import { redact } from "../redact";
 import { refineCorpus, type RefinerySummary } from "../refinery";
@@ -62,6 +67,7 @@ export interface AnthropicImportSummary {
   files: number;
   derived?: DeriveSummary;
   refinery?: RefinerySummary;
+  receipt: ImportReceipt;
 }
 
 export interface AnthropicPreviewSummary {
@@ -377,14 +383,18 @@ export async function importAnthropicExport(
     const domain = normalizeConversationDomain(options.domain ?? "general");
     const resolved = resolve(sourcePath);
     const source = await stat(resolved);
-    const conversations = JSON.parse(await readExportJson(resolved, "conversations.json")) as ExportConversation[];
+    const exportText = await readExportJson(resolved, "conversations.json");
+    const sourceContentHash = sha256(exportText);
+    const conversations = JSON.parse(exportText) as ExportConversation[];
     if (!Array.isArray(conversations)) throw new Error("Anthropic conversations.json must contain an array");
 
     const corpusDir = join(root, "corpus");
     const manifestPath = join(corpusDir, "manifest.json");
     const manifest = await loadManifest(manifestPath);
+    const beforeHash = manifestSourcesHash(manifest.sources);
+    const beforeSources = Object.keys(manifest.sources).length;
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
-    const summary: AnthropicImportSummary = {
+    const summary: Omit<AnthropicImportSummary, "receipt"> = {
       source: resolved,
       domain,
       discovered: conversations.length,
@@ -394,6 +404,8 @@ export async function importAnthropicExport(
       attachments: 0,
       files: 0,
     };
+    let added = 0;
+    let replaced = 0;
 
     try {
       for (const item of conversations) {
@@ -408,6 +420,8 @@ export async function importAnthropicExport(
           summary.skipped++;
           continue;
         }
+        if (previous) replaced++;
+        else added++;
 
         const objectPath = join(corpusDir, "objects", conversation.contentHash.slice(0, 2), `${conversation.contentHash}.json`);
         if (!(await Bun.file(objectPath).exists())) await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
@@ -424,10 +438,57 @@ export async function importAnthropicExport(
       db.close();
     }
 
+    let derivationError: unknown;
     if (options.derive !== false) {
-      summary.derived = await deriveCorpus(root);
-      summary.refinery = await refineCorpus(root);
+      try {
+        summary.derived = await deriveCorpus(root);
+        summary.refinery = await refineCorpus(root);
+      } catch (error) {
+        derivationError = error;
+      }
     }
-    return summary;
+    const receipt = await writeImportReceipt(root, {
+      source: {
+        path: resolved,
+        contentHash: sourceContentHash,
+        bytes: source.size,
+        modifiedAt: source.mtime.toISOString(),
+      },
+      domain,
+      counts: {
+        discovered: summary.discovered,
+        imported: summary.imported,
+        skipped: summary.skipped,
+        turns: summary.turns,
+        attachments: summary.attachments,
+        files: summary.files,
+      },
+      manifest: {
+        beforeHash,
+        afterHash: manifestSourcesHash(manifest.sources),
+        beforeSources,
+        afterSources: Object.keys(manifest.sources).length,
+        added,
+        replaced,
+        unchanged: summary.skipped,
+      },
+      deriveEnabled: options.derive !== false,
+      derivationStatus: options.derive === false
+        ? "not-requested"
+        : derivationError
+          ? "failed"
+          : "completed",
+      derived: summary.derived,
+      refinery: summary.refinery,
+    });
+    if (derivationError) {
+      const message = derivationError instanceof Error
+        ? derivationError.message
+        : String(derivationError);
+      throw new Error(
+        `import committed as receipt ${receipt.receiptId}, but derivation failed: ${redact(message)}`,
+      );
+    }
+    return { ...summary, receipt };
   });
 }

@@ -1,0 +1,18 @@
+[
+  { "split": "calibration", "conversationHash": "a3628e85fbaa9fcb55d2b69900a596395a4a8e2e9703976ea5ec7a98ad9e6709", "turnIndex": 1956, "expectedPole": "autonomy-grant", "expectedSignal": "self-propel" },
+  { "split": "calibration", "conversationHash": "c0c1ef92c3d9564f4242cc9eb4b5b2c99c900d85eb6f6b6673235e2d660b6ef1", "turnIndex": 4, "expectedPole": "autonomy-grant", "expectedSignal": "tracer-and-continue" },
+  { "split": "calibration", "conversationHash": "a3628e85fbaa9fcb55d2b69900a596395a4a8e2e9703976ea5ec7a98ad9e6709", "turnIndex": 14313, "expectedPole": "autonomy-grant", "expectedSignal": "dont-wait-for-approval" },
+  { "split": "calibration", "conversationHash": "650316daf6bc64832cb7c6dcfb1fbac920c49cb2f52175025486f14cada5da21", "turnIndex": 6316, "expectedPole": "autonomy-grant", "expectedSignal": "self-propel" },
+  { "split": "calibration", "conversationHash": "d1f2667209707703b2a2688f1572ebfba17b26522546ed248d87f5f6616018a3", "turnIndex": 202, "expectedPole": "determinism-impose", "expectedSignal": "one-writer" },
+  { "split": "calibration", "conversationHash": "302b2a910d7acf13f05638d89c90cae70f7182f17ed09f24f4140d8944d1d45f", "turnIndex": 4, "expectedPole": "determinism-impose", "expectedSignal": "one-writer" },
+  { "split": "calibration", "conversationHash": "debff0478a9f869b79a4545fbc69b20dc7ff76d7adb90b15aebf79a39647c0bd", "turnIndex": 2173, "expectedPole": "determinism-impose", "expectedSignal": "stop-and-report" },
+  { "split": "calibration", "conversationHash": "a0f980b138f5dc0876b718c8ea3a5247159d2a2dad95b872968c96a377613aa0", "turnIndex": 4, "expectedPole": "determinism-impose", "expectedSignal": "stop-and-report" },
+  { "split": "held-out", "conversationHash": "11ee42b769e4468f7ffa2e330f45dc45e9ea627ae72c7dfe4b84e72d40ee9105", "turnIndex": 1945, "expectedPole": "autonomy-grant", "expectedSignal": "self-propel" },
+  { "split": "held-out", "conversationHash": "19186a504cada6aa2fb5f5f2567c74a4e2e2e2c0df49eeb0955605cb49c6aeb3", "turnIndex": 4, "expectedPole": "autonomy-grant", "expectedSignal": "self-propel" },
+  { "split": "held-out", "conversationHash": "5e31a57fa4ce358f3275a62d6229124096cb8548c6b2fba584c8f7a5c9e58dac", "turnIndex": 146, "expectedPole": "autonomy-grant", "expectedSignal": "dont-wait-for-approval" },
+  { "split": "held-out", "conversationHash": "1f6604135646bb4773d00d5fafd310c4c1b9a792e003fe77ecdd4dce687e49e1", "turnIndex": 38, "expectedPole": "autonomy-grant", "expectedSignal": "self-propel" },
+  { "split": "held-out", "conversationHash": "24b0d852af0ada5ae9a7e62c9511c72bec7bc18186085b086cf9a168a238616e", "turnIndex": 42, "expectedPole": "determinism-impose", "expectedSignal": "stop-and-report" },
+  { "split": "held-out", "conversationHash": "258e35fabaeaeb1d0786321f9a9e1906493f63d94ab60fa5214f721a8d3534e4", "turnIndex": 42, "expectedPole": "determinism-impose", "expectedSignal": "stop-and-report" },
+  { "split": "held-out", "conversationHash": "781269f1239cc0a98f2b0e6950594c8ad84a0faddd010467924be05382d4da19", "turnIndex": 419, "expectedPole": "determinism-impose", "expectedSignal": "one-writer" },
+  { "split": "held-out", "conversationHash": "7248bc9520affe582f78ca0cff8c80d79ce69aec71e88c57c0d7b28ce295b2b4", "turnIndex": 18051, "expectedPole": "determinism-impose", "expectedSignal": "one-writer" }
+]

@@ -13,6 +13,7 @@ import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
 import { emitPiBridge, type PiBridgeMode } from "./bridge";
+import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
@@ -54,6 +55,9 @@ if (command === "ingest") {
     } else if (subcommand === "project") {
       if (!args[0]) throw new Error("usage: bun run query project <exact-project-path>");
       console.log(JSON.stringify(await agentProject(db, root, args[0]), null, 2));
+    } else if (subcommand === "orchestration-profile") {
+      const derivation = await deriveOrchestrationProfile(root);
+      console.log(JSON.stringify({ derivation, report: await loadOrchestrationProfile(root) }, null, 2));
     } else if (subcommand === "refinery") {
       console.log(JSON.stringify(await agentRefinery(root, args[0], Number(args[1] ?? 30)), null, 2));
     } else if (subcommand === "candidate") {
@@ -74,7 +78,7 @@ if (command === "ingest") {
       console.log(JSON.stringify(await duckUsageOverTime(root, bucket, Number(args[1] ?? 60)), null, 2));
     } else if (subcommand === "tools") console.log(JSON.stringify(await duckToolFrequency(root, Number(args[0] ?? 30)), null, 2));
     else if (subcommand === "lengths") console.log(JSON.stringify(await duckSessionLengths(root), null, 2));
-    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
+    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
   } catch (error: any) {
     console.log(JSON.stringify({ error: { message: redact(String(error?.message ?? error)), command: subcommand ?? null } }, null, 2));
     process.exitCode = 1;

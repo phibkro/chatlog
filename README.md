@@ -21,6 +21,7 @@ bun run query grok 'topic' 10
 bun run query ask 'what did I try last time for X' 10
 bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
+bun run query orchestration-profile
 bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
 bun run query candidate <candidate-id>
 bun run query eval-plan <candidate-id>
@@ -74,6 +75,22 @@ unchanged hash. The derivation recipe itself is hashed, so implementation drift
 causes an intentional rebuild rather than stale mixed-version artifacts.
 Ingest likewise records a redaction-recipe version and re-adapts unchanged
 source files when that security boundary changes.
+
+## Orchestration lean
+
+`query orchestration-profile` mines operator-authored turns for autonomy grants
+and deterministic guardrails, then emits one content-addressed decision-boundary
+artifact beneath `derived/orchestration-lean/`. The report is not a scalar: it
+states when bounded autonomy is granted and when ownership, frozen intent,
+acceptance gates, or escalation conditions impose determinism. Every inventory
+claim carries resolvable `chatlog://` evidence.
+
+The default command is entirely local and declares `egress.surface: "none"`.
+It also reports calibration agreement against the checked-in hand labels and
+held-out accuracy versus base rate. The artifact contains no role segmentation
+or promoted configuration, and does not emit model-routing names. Re-running on
+an unchanged derived corpus projection and miner recipe returns the identical
+content hash.
 
 ## Knowledge refinery
 

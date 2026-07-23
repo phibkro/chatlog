@@ -8,8 +8,9 @@
     "derive": "bun run src/cli.ts derive",
     "refine": "bun run src/cli.ts refine",
     "query": "bun run src/cli.ts query",
+    "mcp": "bun run src/mcp/server.ts",
     "workbench": "bun run src/workbench/server.ts",
     "test": "bun test",
-    "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js"
+    "check": "bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/mcp/server.ts --target=bun --outfile=/tmp/chatlog-mcp && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js"
   }
 }

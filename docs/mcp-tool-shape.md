@@ -5,17 +5,42 @@ Wave 1 implementation is governed by
 and [`docs/access-policy.md`](access-policy.md). The MCP boundary defaults to
 the `coding` conversation domain and local lexical retrieval.
 
-The CLI is the implemented contract. A future MCP server should expose the same
-JSON shapes without adding provider or transport semantics. Web adapters remain
-out of scope.
+The Wave 1 MCP server is implemented over newline-delimited JSON-RPC 2.0 stdio.
+It opens no socket, performs no hosted calls, and writes only protocol messages
+to stdout. Run it with `bun run mcp`.
+
+## Implemented tools
 
 | Tool | Input | Default output |
 |---|---|---|
-| `chatlog_search` | `{query, limit?}` | Ranked turn snippets, session metadata, `chatlog://` turn pointers |
+| `chatlog_search` | `{query, limit?, domains?}` | Up to 8 ranked turn snippets, session metadata, policy receipt, `chatlog://` turn pointers |
+| `chatlog_get_evidence` | `{uri, domains?}` | One canonical redacted turn, policy receipt, bounded to 12,000 text characters |
+| `chatlog_recent_work` | `{project, limit?, domains?}` | Up to 8 recent policy-visible sessions for an exact project path |
+| `chatlog_project_brief` | `{project, domains?}` | Bounded project activity, outcomes, problems, and decision evidence |
+
+The process configuration is suitable for any MCP client that accepts a command,
+arguments, and environment:
+
+```json
+{
+  "command": "bun",
+  "args": ["run", "/absolute/path/to/chatlog/src/mcp/server.ts"],
+  "env": {
+    "CHATLOG_DATA_ROOT": "/absolute/path/to/chatlog",
+    "CHATLOG_MCP_DOMAINS": "coding"
+  }
+}
+```
+
+## Deferred CLI parity
+
+The local CLI already provides the following larger query surface. These tools
+remain deferred until their authorization and bounding behavior is specified
+as tightly as the Wave 1 tools.
+
+| Candidate tool | Input | Existing CLI behavior |
+|---|---|---|
 | `chatlog_semantic_search` | `{query, limit?, candidateLimit?}` | Local FTS candidates reranked by meaning, with scores, pointers and egress receipt |
-| `chatlog_get_evidence` | `{uri}` | One canonical redacted turn, bounded to 12,000 text characters |
-| `chatlog_recent_work` | `{project, limit?}` | Recent policy-visible session metadata for an exact project path |
-| `chatlog_project_brief` | `{project}` | Bounded project activity and derived findings |
 | `chatlog_grok` | `{topic, limit?}` | Problems, decisions, tool profile, attempts, gates and outcomes for matching sessions |
 | `chatlog_project` | `{path}` | Timespan, session/token/model effort, outcomes, recurring problems and decision pointers |
 | `chatlog_ask` | `{question, limit?}` | Hosted semantic rerank followed by chronological prior attempts and resolutions |
@@ -50,9 +75,11 @@ conversation objects. The manifest keys them by conversation hash and records
 the derivation recipe hash separately, so unchanged inputs skip cleanly while a
 recipe change intentionally rebuilds all affected artifacts.
 
-Search is backed by SQLite FTS5. Analytical fields in project and rollup tools
-are computed by DuckDB directly over `derived/objects/*/*.json`, invoked through
-the sanctioned Nix shell in offline mode rather than a project dependency.
+MCP search and session rollups are backed by SQLite FTS5 and policy-filtered
+SQL. The implemented MCP server invokes no external process. Larger CLI
+analytical fields are computed by DuckDB directly over
+`derived/objects/*/*.json`, invoked through the sanctioned Nix shell in offline
+mode rather than a project dependency.
 
 Refinery tools are read-only. They deliberately expose no acceptance or
 promotion operation: accepted knowledge must pass through the existing

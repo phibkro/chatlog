@@ -29,6 +29,23 @@ outside this checkout. See [docs/workbench.md](docs/workbench.md) for source
 configuration, the API, privacy boundaries, and a persistent user-service
 example.
 
+## Agent MCP
+
+The local stdio MCP server gives coding agents bounded recall without exposing
+the entire archive:
+
+```sh
+CHATLOG_DATA_ROOT=/path/to/chatlog \
+CHATLOG_MCP_DOMAINS=coding \
+bun run mcp
+```
+
+It implements local lexical search, one-turn evidence resolution, recent
+project work, and bounded project briefs. It opens no network listener and makes
+no hosted calls. The default domain policy is `coding`; `personal` and other
+domains require explicit enumeration. See [docs/mcp-tool-shape.md](docs/mcp-tool-shape.md)
+and [docs/access-policy.md](docs/access-policy.md).
+
 An Anthropic data export can be connected as an explicit, one-time import:
 
 ```sh
@@ -80,8 +97,9 @@ non-cached measure; Claude Code and pi report their cache fields separately.
 
 Agent-facing discovery commands return bounded snippets, derived structure, and
 `chatlog://conversation/<hash>/turn/<index>` pointers. `get` is the explicit
-on-demand boundary for a full conversation or a single turn. See
-`docs/mcp-tool-shape.md` for the matching future MCP contract.
+on-demand CLI boundary for a full conversation or a single turn. MCP applies a
+stricter one-turn, 12,000-character evidence boundary. See
+`docs/mcp-tool-shape.md` for its implemented contract.
 
 `semantic` and `ask` retrieve candidates locally with FTS5, then ask a hosted
 GPT or Claude model to rerank those snippets by meaning. `ask-lexical` preserves

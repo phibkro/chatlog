@@ -148,7 +148,7 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
   const labelledByRole = new Map(ROLE_ORDER.map((role) => [role, labels.filter((label) => label.expectedRole === role)]));
   const taxonomy = ROLE_ORDER.map((role) => {
     const data = roleData.get(role)!; const evidence = labelledByRole.get(role)!.slice(0, 3).map((label) => { const turn = conversations.get(label.conversationHash)!.turns[label.evidenceTurnIndex]; return { pointer: pointer(label.conversationHash, label.evidenceTurnIndex), snippet: short(turn.content) }; });
-    return { role, claim: `${role} is corpus-anchored as a session that ${ROLE_DEFINITIONS[role]}.`, inferredSessions: data.sessions, evidence };
+    return { role, claim: `${role} is corpus-anchored as a session that ${ROLE_DEFINITIONS[role]}.`, highConfidenceSessions: data.sessions, evidence };
   });
   const profiles = ROLE_ORDER.map((role) => {
     const data = roleData.get(role)!; const autonomyChoices = data.choices.filter((choice) => choice === "autonomy-grant").length; const totalChoices = data.choices.length;
@@ -167,7 +167,7 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
     const autonomyNames = topAutonomy.map(([signal]) => SIGNAL_LABEL[signal]).join(" and ") || "no recurring autonomy signal";
     const guardrailNames = topGuardrail.map(([signal]) => SIGNAL_LABEL[signal]).join(" and ") || "no recurring guardrail signal";
     return {
-      role, inferredSessions: data.sessions, classifiedChoices: totalChoices, autonomyChoices, determinismChoices: totalChoices - autonomyChoices,
+      role, highConfidenceSessions: data.sessions, classifiedChoices: totalChoices, autonomyChoices, determinismChoices: totalChoices - autonomyChoices,
       autonomyChoiceRate: autonomyRate, autonomyChoiceWilson95: interval,
       claim: `For inferred ${role} sessions, observed autonomy latitude appears through ${autonomyNames}; observed constraints appear through ${guardrailNames}. The measured autonomy-choice rate is ${autonomyChoices}/${totalChoices}; this is a boundary description, not a role quality score.`,
       signalCounts: [...data.signals].map(([signal, count]) => ({ signal, count })).sort((a, b) => b.count - a.count || a.signal.localeCompare(b.signal)),
@@ -185,7 +185,7 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
   const inferredCounts = Object.fromEntries([...ROLE_ORDER, "unclassified" as const].map((role) => [role, [...roles.values()].filter((item) => item.role === role).length]));
   return {
     schemaVersion: 1, outputKind: "orchestration-role-boundaries", inputProjectionHash: hash(projectionText),
-    taxonomy, inferenceMethod: { claim: "Roles are inferred from corpus-observed launch labels and mandates, then supported by delegation, mutation, or research interaction shape. Project and harness are retained as provenance but never mapped to a role by a hardcoded project or model name.", evidence: taxonomy.flatMap((entry) => entry.evidence.slice(0, 1)), signals: ["launch-prompt content", "embedded Herdr/skill label", "delegation/mutation/research tool shape", "project/harness provenance"] },
+    taxonomy, inferenceMethod: { claim: "Roles are inferred from corpus-observed launch labels and mandates, then supported by delegation, mutation, or research interaction shape. Per-role boundaries use high-confidence sessions only; medium-confidence and unclassified sessions remain counted but do not shape claims. Project and harness are retained as provenance but never mapped to a role by a hardcoded project or model name.", evidence: taxonomy.flatMap((entry) => entry.evidence.slice(0, 1)), signals: ["launch-prompt content", "embedded Herdr/skill label", "delegation/mutation/research tool shape", "project/harness provenance"] },
     inferredCounts, profiles,
     validation: { roleInference: roleValidity, distinguishability: { method: "absolute autonomy-choice-rate difference >= 0.10 with non-overlapping Wilson 95% intervals and >=15 classified choices per role", pairs, distinguishablePairs } },
     policy: { autoPromotion: false, modelRouting: "not emitted; no model name is fossilized", slice3EffectivenessRanking: "not started" },

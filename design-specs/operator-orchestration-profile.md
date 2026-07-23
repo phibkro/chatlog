@@ -1,8 +1,8 @@
 # Design-spec: operator orchestration profile
 
-Status: **FROZEN — slice 1 authorized** (operator 2026-07-23, lens confirmed).
-Slices 2–4 remain draft. Revise the spec explicitly if a build learning forces
-it; never drift silently.
+Status: **FROZEN — slices 1–3 authorized** (operator 2026-07-23; slice 1
+manager-gated, slices 2–3 authorized). Slice 4 remains draft. Revise the spec
+explicitly if a build learning forces it; never drift silently.
 
 Author lane: chatlog. Companion prior art: `docs/operator-preference-profile.md`
 (the hand-authored prototype this spec automates and extends).

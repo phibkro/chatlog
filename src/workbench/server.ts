@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { redact } from "../redact";
 import { WorkbenchData } from "./data";
+import { resolveDataRoot } from "../data-root";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -86,7 +87,7 @@ export function resolveBindConfig(
 }
 
 if (import.meta.main) {
-  const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, "../.."));
+  const root = resolveDataRoot();
   const { host, port } = resolveBindConfig();
   const data = new WorkbenchData(root);
   const server = Bun.serve({ hostname: host, port, fetch: workbenchHandler(data) });

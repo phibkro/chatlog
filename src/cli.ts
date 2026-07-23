@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
 import { PiAdapter } from "./adapters/pi";
@@ -18,9 +17,10 @@ import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentatio
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { normalizeConversationDomain } from "./domain";
+import { resolveDataRoot } from "./data-root";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
-const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, ".."));
+const root = resolveDataRoot();
 const localAdapters = () => {
   const home = homedir();
   return [

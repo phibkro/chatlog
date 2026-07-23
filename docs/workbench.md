@@ -40,7 +40,7 @@ Environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CHATLOG_DATA_ROOT` | repository root | Corpus, derived data, and analysis DB |
+| `CHATLOG_DATA_ROOT` | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB |
 | `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json` | Additional source catalog |
 | `CHATLOG_HOST` | `127.0.0.1` | Listen address |
 | `CHATLOG_PORT` | `4789` | Listen port |

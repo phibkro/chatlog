@@ -210,8 +210,18 @@ Completed on 2026-07-23.
 
 ## Deployment boundary
 
-Chatlog is still a local standalone Git repository with no upstream remote.
-Homelab consumes external products through pinned GitHub flake inputs. Do not
-vendor Chatlog into Homelab or add an absolute local-path input. Declarative
-workstation activation waits until Chatlog has a durable remote URL; the
-standalone package and service module remain independently buildable now.
+The publication prerequisite is complete. Chatlog is available from
+`https://github.com/phibkro/chatlog`, and Homelab consumes it through a pinned
+flake input rather than vendoring it or using an absolute local path.
+
+The workstation owns deployment policy only: it installs the package, enables
+the loopback-only Home Manager service, places mutable state under
+`~/.local/share/chatlog`, and fronts the service with Tailscale Serve. Chatlog
+continues to own its package, service module, corpus semantics, and product
+surfaces. CI now runs both `bun run check` and `nix flake check` on pushes and
+pull requests.
+
+Operationalization deliberately does not expand this plan's authority-changing
+scope. After the installed service and MCP surfaces are smoke-tested, work
+returns to Slice B: persistent bounded import receipts, followed by the active
+projection migration required before reclassification or revocation.

@@ -1,0 +1,10 @@
+{
+  "skillName": "bounded-worker-orchestration",
+  "brief": "Make `bash gate.sh` pass. Implement the requested projection in `result.json` from the local `request.json`. If a skill named `bounded-worker-orchestration` is available, invoke it before working; if it is unavailable, proceed directly and do not treat its absence as an error. Work autonomously inside this isolated evaluation repository, do not commit, and leave the gate passing.",
+  "gateCmd": ["bash", "gate.sh"],
+  "rederivationPatterns": [
+    "result.json is missing",
+    "result.json is invalid",
+    "projection mismatch"
+  ]
+}

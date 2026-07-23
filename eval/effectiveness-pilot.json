@@ -1,0 +1,19 @@
+{
+  "schema": "chatlog/orchestration-effectiveness-pilot-v1",
+  "role": "worker",
+  "candidatePattern": "bounded-autonomy-inside-ownership-scope-gate-and-stop-guardrails",
+  "alternative": "unaugmented-bounded-worker-brief",
+  "experimentPath": "analysis/effectiveness-pilot-worker/promotion-results.json",
+  "agentEvalRoot": "/srv/share/projects/agent-eval-chatlog-promotion",
+  "realTaskReferencePath": "/srv/share/projects/agent-eval/results/promotion-v1/gate-first-repair.json",
+  "minimumPairs": 3,
+  "pilotEgress": {
+    "performed": true,
+    "hostedCalls": 12,
+    "validMeasuredCalls": 6,
+    "discardedUnconsumedTreatmentCalls": 6,
+    "surface": "twelve synthetic task briefs and isolated fixture repositories across one discarded unconsumed-treatment preflight and one valid six-call pilot; treatment arms additionally exposed the evaluation-only bounded-worker skill; no corpus text, chatlog pointer, source project, credential, or operator log was sent",
+    "authorization": "operator-authorized bounded Slice 3 pilot",
+    "maxBudgetUsdPerCall": 1
+  }
+}

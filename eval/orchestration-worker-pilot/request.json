@@ -1,0 +1,8 @@
+{
+  "records": [
+    { "id": "alpha", "value": 7, "enabled": true },
+    { "id": "beta", "value": 11, "enabled": false },
+    { "id": "gamma", "value": 13, "enabled": true }
+  ],
+  "projection": "enabled records sorted by id with total"
+}

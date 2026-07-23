@@ -95,9 +95,21 @@ than hardcoded role mappings. The report publishes the labelled-sample confusion
 rows, per-role decision boundaries, and a distinguishability test using Wilson
 95% intervals.
 
-Neither artifact promotes configuration or emits model-routing names. Re-running
-on an unchanged derived corpus projection and miner recipe returns identical
-content hashes.
+Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
+runs the existing external scorer to rank a concrete role pattern against its
+control. The default query only replays local metrics and performs no hosted
+call. The checked-in synthetic worker fixture and evaluation-only treatment are
+under `eval/`; measured traces/results remain in ignored `analysis/`.
+
+The valid bounded pilot used exactly three control/treatment pairs (six
+sequential hosted calls), with no corpus text or source-project data in its
+egress. One earlier six-call preflight was discarded because treatment
+consumption was not observed, so Slice 3 declares twelve hosted calls in total.
+A larger replay is deliberately not wired to the query and remains
+operator-gated. No
+artifact promotes configuration or emits model-routing names. Re-running on an
+unchanged role projection, experiment, external scorer, and recipe returns
+identical content hashes.
 
 ## Knowledge refinery
 

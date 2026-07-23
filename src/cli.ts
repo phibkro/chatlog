@@ -15,6 +15,7 @@ import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./
 import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
+import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(import.meta.dir, "..");
@@ -59,7 +60,8 @@ if (command === "ingest") {
     } else if (subcommand === "orchestration-profile") {
       const derivation = await deriveOrchestrationProfile(root);
       const roleDerivation = await deriveRoleSegmentation(root);
-      console.log(JSON.stringify({ derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) } }, null, 2));
+      const effectivenessDerivation = await deriveEffectivenessRanking(root);
+      console.log(JSON.stringify({ derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) }, effectiveness: { derivation: effectivenessDerivation, report: await loadEffectivenessRanking(root) } }, null, 2));
     } else if (subcommand === "refinery") {
       console.log(JSON.stringify(await agentRefinery(root, args[0], Number(args[1] ?? 30)), null, 2));
     } else if (subcommand === "candidate") {

@@ -1,5 +1,10 @@
 # MCP tool shape: agent-facing chatlog memory
 
+Wave 1 implementation is governed by
+[`docs/exec-plans/active/0001-product-foundation.md`](exec-plans/active/0001-product-foundation.md)
+and [`docs/access-policy.md`](access-policy.md). The MCP boundary defaults to
+the `coding` conversation domain and local lexical retrieval.
+
 The CLI is the implemented contract. A future MCP server should expose the same
 JSON shapes without adding provider or transport semantics. Web adapters remain
 out of scope.
@@ -8,7 +13,9 @@ out of scope.
 |---|---|---|
 | `chatlog_search` | `{query, limit?}` | Ranked turn snippets, session metadata, `chatlog://` turn pointers |
 | `chatlog_semantic_search` | `{query, limit?, candidateLimit?}` | Local FTS candidates reranked by meaning, with scores, pointers and egress receipt |
-| `chatlog_get` | `{sessionIdOrHash, turnIndex?}` | Full canonical conversation, or one requested turn |
+| `chatlog_get_evidence` | `{uri}` | One canonical redacted turn, bounded to 12,000 text characters |
+| `chatlog_recent_work` | `{project, limit?}` | Recent policy-visible session metadata for an exact project path |
+| `chatlog_project_brief` | `{project}` | Bounded project activity and derived findings |
 | `chatlog_grok` | `{topic, limit?}` | Problems, decisions, tool profile, attempts, gates and outcomes for matching sessions |
 | `chatlog_project` | `{path}` | Timespan, session/token/model effort, outcomes, recurring problems and decision pointers |
 | `chatlog_ask` | `{question, limit?}` | Hosted semantic rerank followed by chronological prior attempts and resolutions |
@@ -25,10 +32,10 @@ and secret-redacted, and every evidence item carries a stable URI:
 chatlog://conversation/<contentHash>/turn/<zero-based-index>
 ```
 
-Only `chatlog_get` crosses the full-text boundary. Agents should search or grok
-first, follow pointers second, and pull a whole conversation only when its
-structure proves relevant. This treats the context window as RAM rather than
-archive storage.
+Only `chatlog_get_evidence` crosses the snippet boundary in Wave 1, and it
+resolves one turn rather than a complete conversation. Agents should search
+first and follow pointers second. This treats the context window as RAM rather
+than archive storage.
 
 Semantic tools have a narrow hosted egress boundary: the redacted query and up
 to 50 opaque-ID candidate snippets, each redacted and capped at 600 characters.

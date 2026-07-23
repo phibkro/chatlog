@@ -6,6 +6,7 @@ import { indexConversation, openAnalysis } from "../src/analysis";
 import { WorkbenchData } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
+import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
@@ -38,7 +39,17 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   indexConversation(db, superseded, 0, 1);
   indexConversation(db, conversation, 1, 1);
+  reconcileActiveSources(db, {
+    "/source": { contentHash: conversation.contentHash },
+  });
   db.close();
+  await mkdir(join(root, "corpus"), { recursive: true });
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
+    version: 1,
+    sources: {
+      "/source": { contentHash: conversation.contentHash },
+    },
+  }));
   await mkdir(join(root, "corpus", "objects", "aa"), { recursive: true });
   await writeFile(join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`), JSON.stringify(conversation));
   await mkdir(join(root, "corpus", "objects", "bb"), { recursive: true });
@@ -115,6 +126,18 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(staticResponse.status).toBe(200);
   expect(staticResponse.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(await staticResponse.text()).toContain("Chatlog Workbench");
+
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
+    version: 1,
+    sources: {},
+  }));
+  await expect(data.overview()).rejects.toThrow("active source projection");
+  const driftResponse = await handler(new Request("http://localhost/api/overview"));
+  expect(driftResponse.status).toBe(503);
+  expect(await driftResponse.json()).toEqual({
+    error: "active source projection is unavailable or stale; run `chatlog source reconcile`",
+  });
+  expect((await handler(new Request("http://localhost/api/sources"))).status).toBe(200);
   data.close();
 });
 

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DeriveSummary } from "./derive";
 import type { RefinerySummary } from "./refinery";
+export { manifestSourcesHash } from "./source-authority";
 
 export const IMPORT_RECEIPT_SCHEMA = "chatlog/import-receipt-v1" as const;
 
@@ -92,15 +93,6 @@ function validateTimestamp(value: string, label: string): string {
   if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString() !== value)
     throw new Error(`${label} is not a canonical ISO-8601 timestamp`);
   return value;
-}
-
-export function manifestSourcesHash(
-  sources: Record<string, { contentHash: string }>,
-): string {
-  const canonical = Object.entries(sources)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([sourcePath, entry]) => [sourcePath, entry.contentHash]);
-  return sha256(JSON.stringify(canonical));
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {

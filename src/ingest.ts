@@ -6,6 +6,7 @@ import { withIngestLock } from "./lock";
 import { deriveCorpus, type DeriveSummary } from "./derive";
 import { redact, REDACTION_RECIPE } from "./redact";
 import { refineCorpus, type RefinerySummary } from "./refinery";
+import { reconcileSourceAuthority } from "./source-authority";
 
 interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
 interface Manifest { version: 1; redactionRecipe?: string; sources: Record<string, ManifestEntry> }
@@ -64,6 +65,7 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
   const db = openAnalysis(dbPath);
   const summary: IngestSummary = { discovered: {}, ingested: {}, skipped: {}, partialTails: 0, changedDuringRead: 0, corpusBytes: 0 };
   try {
+    await reconcileSourceAuthority(root, db, manifest.sources);
     const backfilled = await backfillCacheWrite(db, corpusDir);
     if (backfilled) console.error(`analysis: backfilled cache-write totals for ${backfilled} corpus objects`);
     for (const adapter of adapters) {
@@ -92,6 +94,7 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
     }
     manifest.redactionRecipe = REDACTION_RECIPE;
     await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    await reconcileSourceAuthority(root, db, manifest.sources);
   } finally { db.close(); }
   async function size(dir: string): Promise<number> {
     let total = 0;

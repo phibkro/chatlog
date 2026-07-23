@@ -131,6 +131,29 @@ receipt remains as evidence of the already-committed manifest transition.
 Crash recovery between the manifest commit and receipt write remains part of
 the later durable-intent lifecycle migration.
 
+### Active source projection
+
+The corpus manifest is the durable reachability authority. SQLite mirrors its
+source-path-to-content-hash map in `active_sources` and records the canonical
+manifest-sources hash in `active_projection_meta`. Current views join both the
+source path and content hash instead of inferring authority from whichever
+historical row was indexed most recently.
+
+Normal local ingestion and Anthropic imports reconcile this projection under
+the ingest lock. Upgrade an existing pre-projection database explicitly:
+
+```sh
+chatlog source reconcile
+```
+
+The command rebuilds missing active index/turn/tool/FTS rows from immutable
+canonical objects, validates every manifest mapping, then replaces the
+projection and its receipt in one SQLite transaction. Workbench, MCP, operator
+queries, and Pi bridge emission compare the manifest, projection receipt, and
+active rows before serving current data. Missing or unequal state fails closed;
+Workbench reports drift as HTTP 503 while the Sources and receipt audit views
+remain available for diagnosis.
+
 The current importer does not ingest Claude Projects, memories, or design
 artifacts. Those have different authority and retention semantics, so they
 should become distinct, reviewable source types.

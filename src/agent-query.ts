@@ -57,7 +57,7 @@ async function canonical(root: string, hash: string): Promise<Conversation> {
 function resolveHash(db: Database, identifier: string): string {
   const isHash = /^[a-f0-9]{8,64}$/i.test(identifier);
   const rows = (isHash
-    ? db.query("SELECT content_hash FROM conversations WHERE content_hash LIKE ? ORDER BY ingested_at DESC LIMIT 2").all(`${identifier}%`)
+    ? db.query("SELECT content_hash FROM current_conversations WHERE content_hash LIKE ? ORDER BY ingested_at DESC LIMIT 2").all(`${identifier}%`)
     : db.query("SELECT content_hash FROM current_conversations WHERE id=? OR resume_id=? ORDER BY ended_at DESC LIMIT 2").all(identifier, identifier)) as Array<{ content_hash: string }>;
   if (!rows.length) throw new Error(`conversation not found: ${identifier}`);
   if (isHash && rows.length > 1) throw new Error(`ambiguous conversation hash prefix: ${identifier}`);

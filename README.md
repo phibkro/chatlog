@@ -67,6 +67,7 @@ then connected as an explicit import:
 bun run preview:anthropic -- /path/to/data-export.zip personal
 bun run import:anthropic -- /path/to/data-export.zip personal
 bun run src/cli.ts receipts imports 20
+bun run src/cli.ts source reconcile
 ```
 
 The importer currently ingests `conversations.json`, including visible text and
@@ -75,6 +76,13 @@ and extracted attachment bodies; attachment and file names are retained as
 context. The source archive is never modified. Claude Projects, memories, and
 design artifacts are left for separately reviewable adapters rather than folded
 into conversations implicitly.
+
+`corpus/manifest.json` is the durable authority for which immutable objects are
+active. SQLite keeps a rebuildable `active_sources` projection; ingestion
+reconciles it under the ingest lock. After upgrading a pre-projection database,
+run `chatlog source reconcile` once; it can reconstruct missing active analysis
+rows from canonical objects. Workbench, MCP, operator queries, and Pi bridge
+emission fail closed when the manifest and projection receipts disagree.
 
 ```sh
 bun run ingest

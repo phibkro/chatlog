@@ -44,16 +44,29 @@ export function openAnalysis(path: string): Database {
     PRIMARY KEY(content_hash, turn_index, call_index)
   )`);
   db.run("CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(content, content_hash UNINDEXED, turn_index UNINDEXED, harness UNINDEXED, project UNINDEXED, tokenize='unicode61')");
+  db.run(`CREATE TABLE IF NOT EXISTS active_sources (
+    source_path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+  db.run("CREATE INDEX IF NOT EXISTS active_sources_content_hash ON active_sources(content_hash)");
+  db.run(`CREATE TABLE IF NOT EXISTS active_projection_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    manifest_sources_hash TEXT NOT NULL,
+    reconciled_at TEXT NOT NULL
+  )`);
   db.run("DROP VIEW IF EXISTS current_token_usage");
   db.run("DROP VIEW IF EXISTS current_turns");
   db.run("DROP VIEW IF EXISTS current_conversations");
   db.run(`CREATE VIEW current_conversations AS
-    SELECT content_hash, id, provider, harness, title, domain, source_kind, project, cwd, model, started_at, ended_at,
-      resume_id, source_path, source_mtime, source_size, ingested_at, turn_count,
-      input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, total_tokens, cache_write_tokens FROM (
-      SELECT *, row_number() OVER (PARTITION BY source_path ORDER BY source_mtime DESC, source_size DESC, ingested_at DESC) rn
-    FROM conversations
-    ) WHERE rn = 1`);
+    SELECT c.content_hash, c.id, c.provider, c.harness, c.title, c.domain,
+      c.source_kind, c.project, c.cwd, c.model, c.started_at, c.ended_at,
+      c.resume_id, c.source_path, c.source_mtime, c.source_size, c.ingested_at,
+      c.turn_count, c.input_tokens, c.output_tokens, c.cached_input_tokens,
+      c.reasoning_tokens, c.total_tokens, c.cache_write_tokens
+    FROM conversations c
+    JOIN active_sources a
+      ON a.source_path = c.source_path AND a.content_hash = c.content_hash`);
   db.run(`CREATE VIEW current_turns AS
     SELECT t.* FROM turns t JOIN current_conversations c USING(content_hash)`);
   db.run(`CREATE VIEW current_token_usage AS

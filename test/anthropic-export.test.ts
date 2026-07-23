@@ -212,3 +212,39 @@ test("records the committed manifest transition when derivation fails", async ()
   const manifest = JSON.parse(await readFile(join(root, "corpus", "manifest.json"), "utf8"));
   expect(Object.keys(manifest.sources)).toHaveLength(1);
 });
+
+test("does not advance projection or write a receipt when manifest commit fails", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-commit-failure-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
+  await importAnthropicExport(source, root, { domain: "ideas", derive: false });
+  const manifestPath = join(root, "corpus", "manifest.json");
+  const manifestBefore = await readFile(manifestPath, "utf8");
+  const receiptsBefore = await listImportReceipts(root);
+  const dbPath = join(root, "analysis", "chatlog.sqlite");
+  const beforeDb = new Database(dbPath, { readonly: true });
+  const activeBefore = beforeDb.query(
+    "SELECT content_hash contentHash FROM current_conversations",
+  ).get();
+  beforeDb.close();
+
+  await writeFile(
+    join(source, "conversations.json"),
+    JSON.stringify([{ ...fixture, name: "A changed idea" }]),
+  );
+  await mkdir(`${manifestPath}.${process.pid}.tmp`);
+  await expect(importAnthropicExport(source, root, { domain: "ideas", derive: false }))
+    .rejects.toThrow();
+
+  expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
+  expect(await listImportReceipts(root)).toEqual(receiptsBefore);
+  const afterDb = new Database(dbPath, { readonly: true });
+  expect(afterDb.query(
+    "SELECT content_hash contentHash FROM current_conversations",
+  ).get()).toEqual(activeBefore);
+  expect(afterDb.query("SELECT count(*) count FROM conversations").get())
+    .toEqual({ count: 2 });
+  afterDb.close();
+});

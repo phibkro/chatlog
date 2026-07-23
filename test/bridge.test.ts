@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildHandoffSummary, serializePiBridge } from "../src/bridge";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { indexConversation, openAnalysis } from "../src/analysis";
+import { buildHandoffSummary, emitPiBridge, serializePiBridge } from "../src/bridge";
+import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 import type { DerivedConversation } from "../src/derive";
 
@@ -51,5 +56,45 @@ describe("Pi bridge", () => {
     const built = serializePiBridge(conversation, "summary", derived);
     expect(built.receipt.target.messages).toBe(1);
     expect(built.text).not.toContain("SECRET SOURCE POLICY");
+  });
+
+  test("refuses to emit an indexed but inactive historical version", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatlog-bridge-active-"));
+    const currentHash = "b".repeat(64);
+    const current = { ...conversation, contentHash: currentHash };
+    for (const item of [conversation, current]) {
+      const directory = join(root, "corpus", "objects", item.contentHash.slice(0, 2));
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, `${item.contentHash}.json`),
+        JSON.stringify(item),
+      );
+    }
+    await writeFile(
+      join(root, "corpus", "manifest.json"),
+      JSON.stringify({
+        version: 1,
+        sources: { [current.sourcePath]: { contentHash: currentHash } },
+      }),
+    );
+    const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+    indexConversation(db, conversation, 1, 1);
+    indexConversation(db, current, 2, 2);
+    reconcileActiveSources(db, {
+      [current.sourcePath]: { contentHash: currentHash },
+    });
+    db.close();
+
+    const staleOutput = join(root, "bridge", "stale.jsonl");
+    await expect(emitPiBridge(root, hash, "history", staleOutput))
+      .rejects.toThrow("bridge conversation is not active");
+    expect(await Bun.file(staleOutput).exists()).toBe(false);
+    const receipt = await emitPiBridge(
+      root,
+      currentHash,
+      "history",
+      join(root, "bridge", "current.jsonl"),
+    );
+    expect(receipt.source.conversationHash).toBe(currentHash);
   });
 });

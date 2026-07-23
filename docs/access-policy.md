@@ -38,6 +38,8 @@ domain cannot silently become visible after an import.
 - Never treat project, provider, harness, or model as authorization.
 - Never infer permission from the query text.
 - Do not let a source configuration file widen a running MCP server's policy.
+- Refuse current-data and evidence queries when the corpus manifest and active
+  SQLite projection do not carry the same canonical source-map hash.
 
 An MCP caller can ask for a narrower subset of its configured domains but
 cannot request a wider one.

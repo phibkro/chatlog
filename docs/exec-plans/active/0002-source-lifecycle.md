@@ -37,8 +37,10 @@ operation.
 4. Workbench and MCP evidence resolution require the hash to be active before
    reading the object.
 5. All authority-changing operations serialize through `withIngestLock`.
-6. A hash shared by multiple active source paths remains reachable until the
-   last mapping is revoked.
+6. The canonical hash currently includes `sourcePath`, so distinct source
+   paths cannot share a canonical hash. Purge still computes reachability as
+   the value set of active mappings, preserving the correct contract if that
+   representation is generalized later.
 7. Workbench remains read-only. Preview, reclassify, revoke, and purge are
    trusted-operator CLI operations until the product has explicit mutation
    authentication and CSRF protection.
@@ -168,7 +170,8 @@ converges to the same state.
 - removing a manifest key cannot resurrect an older historical row;
 - Workbench and MCP reject inactive hashes even while their object files exist;
 - reclassification is idempotent and changes the canonical hash/domain;
-- shared-hash reachability survives revocation of only one source;
+- reachability is computed from active mapping values rather than historical
+  index rows;
 - whole-export and selected-conversation revocation leave siblings intact;
 - purge is resumable, idempotent, and removes SQLite FTS plus derived excerpts;
 - a failed manifest commit produces neither active-projection change nor
@@ -254,3 +257,47 @@ Completed on 2026-07-24.
 - The next authority-changing prerequisite is the active SQLite projection and
   manifest/projection drift detector described above. Reclassify, revoke, and
   purge remain unexposed.
+
+## Active projection migration results
+
+Implemented on 2026-07-24.
+
+- SQLite now stores the manifest's active source mappings in `active_sources`
+  and a canonical source-map hash in `active_projection_meta`.
+- `current_conversations` joins `conversations` and `active_sources` on both
+  source path and content hash. It no longer orders historical rows to infer
+  authority, so removing a mapping cannot resurrect an older row.
+- Reconciliation replaces mappings and the projection receipt in one
+  transaction, validates that every active mapping is indexed, and rolls back
+  to the prior projection if validation fails.
+- If the analysis database is absent or incomplete, reconciliation rebuilds
+  only missing active conversations, turns, tools, and FTS rows from immutable
+  canonical objects after recomputing their content hashes, then mints a new
+  projection receipt before returning the repaired state.
+- Local and Anthropic writers reconcile under `withIngestLock` before work and
+  after the manifest authority commit. The explicit `chatlog source reconcile`
+  command migrates existing databases under the same lock.
+- Workbench, MCP, operator query entry points, and Pi bridge emission fail
+  closed when the manifest hash, projection receipt, or active rows disagree.
+  Drift is exposed as HTTP 503 while source and receipt diagnostics remain
+  available. Long-running servers cache the expensive manifest and row hashes
+  behind immutable-file identity and SQLite `data_version`, leaving only a stat
+  and small metadata queries on the steady-state request path.
+- Read paths validate authority before and after assembling a response. Pi
+  bridge emission additionally holds the ingest lock across validation,
+  canonical reads, and the output commit.
+- Aggregate derived manifests and `derived/current-hashes.jsonl` are still a
+  separate consistency boundary: current readers reject SQLite authority
+  drift, but lifecycle mutation must explicitly invalidate or regenerate
+  aggregate derived state before it can be considered projection-receipted.
+- `bun run check` passes 48 tests with 293 assertions and all runtime/browser
+  bundles. `nix flake check --offline` passes, and the packaged CLI reconciled a
+  consistent 3,322-source production copy with zero reindexing while preserving
+  the existing reconciliation timestamp.
+- Fable 5's first closure pass found one moderate repair-receipt gap and three
+  lower-severity hardening/availability issues. The implementation closed the
+  guard, receipt rotation, CLI locking, and canonical-integrity findings; its
+  final narrow review reported no actionable findings and declared the slice
+  ready to merge. Multi-statement non-authority metric snapshots and derived
+  aggregate receipts remain explicitly deferred.
+- Reclassify, revoke, purge, and mutating Workbench endpoints remain unexposed.

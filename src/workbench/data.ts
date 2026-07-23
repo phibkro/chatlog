@@ -5,6 +5,11 @@ import { join, resolve } from "node:path";
 import { parseEvidenceUri } from "../evidence-uri";
 import { listImportReceipts } from "../import-receipts";
 import { sourceCatalog } from "../source-catalog";
+import {
+  ActiveProjectionDriftError,
+  ActiveProjectionGuard,
+  type ProjectionReceipt,
+} from "../source-authority";
 import type { Conversation } from "../types";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
@@ -34,9 +39,11 @@ export class WorkbenchData {
   readonly root: string;
   private readonly db: Database | null;
   private readonly currentColumns: Set<string>;
+  private readonly projectionGuard: ActiveProjectionGuard;
 
   constructor(root: string) {
     this.root = resolve(root);
+    this.projectionGuard = new ActiveProjectionGuard(this.root);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
     if (!existsSync(databasePath)) {
       this.db = null;
@@ -62,6 +69,23 @@ export class WorkbenchData {
     return this.currentColumns.has(name) ? `c.${name}` : fallback;
   }
 
+  private assertProjection(expected?: ProjectionReceipt): ProjectionReceipt {
+    const current = this.projectionGuard.assert(this.requireDb());
+    if (
+      expected
+      && (
+        current.manifestSourcesHash !== expected.manifestSourcesHash
+        || current.reconciledAt !== expected.reconciledAt
+        || current.activeSources !== expected.activeSources
+      )
+    ) {
+      throw new ActiveProjectionDriftError(
+        "active source projection changed while serving the request; retry",
+      );
+    }
+    return current;
+  }
+
   async overview(): Promise<unknown> {
     if (!this.db) return {
       ready: false,
@@ -73,6 +97,7 @@ export class WorkbenchData {
       recent: [],
       tools: [],
     };
+    const projection = this.assertProjection();
     const db = this.db;
     const corpus = db.query(`SELECT count(*) sessions, count(DISTINCT project) projects,
       sum(turn_count) turns, min(started_at) firstSession, max(ended_at) lastSession
@@ -93,18 +118,24 @@ export class WorkbenchData {
     const tools = db.query(`SELECT tc.name, count(*) calls, count(DISTINCT tc.content_hash) sessions
       FROM tool_calls tc JOIN current_conversations c USING(content_hash)
       GROUP BY tc.name ORDER BY calls DESC LIMIT 10`).all();
-    return { ready: true, root: this.root, corpus, harnesses, domains, projects, recent, tools };
+    const result = { ready: true, root: this.root, corpus, harnesses, domains, projects, recent, tools };
+    this.assertProjection(projection);
+    return result;
   }
 
   projects(limitValue: string | null): unknown[] {
+    const projection = this.assertProjection();
     const limit = boundedInteger(limitValue, 50, 200);
-    return this.requireDb().query(`SELECT project, count(*) sessions, sum(turn_count) turns,
+    const result = this.requireDb().query(`SELECT project, count(*) sessions, sum(turn_count) turns,
       min(started_at) firstSeen, max(ended_at) lastSeen
       FROM current_conversations GROUP BY project
       ORDER BY sessions DESC, turns DESC LIMIT ?`).all(limit) as unknown[];
+    this.assertProjection(projection);
+    return result;
   }
 
   sessions(url: URL): unknown[] {
+    const projection = this.assertProjection();
     const db = this.requireDb();
     const limit = boundedInteger(url.searchParams.get("limit"), 40, 100);
     const project = url.searchParams.get("project");
@@ -122,14 +153,17 @@ export class WorkbenchData {
     const title = this.optionalColumn("title", "''");
     const domain = this.optionalColumn("domain", "'coding'");
     const sourceKind = this.optionalColumn("source_kind", "'session-log'");
-    return db.query(`SELECT c.content_hash contentHash, c.id, ${title} title, ${domain} domain,
+    const result = db.query(`SELECT c.content_hash contentHash, c.id, ${title} title, ${domain} domain,
       ${sourceKind} sourceKind, c.project, c.harness, c.model, c.started_at startedAt,
       c.ended_at endedAt, c.turn_count turns
       FROM current_conversations c ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY c.ended_at DESC LIMIT ?`).all(...params) as unknown[];
+    this.assertProjection(projection);
+    return result;
   }
 
   search(url: URL): unknown {
+    const projection = this.assertProjection();
     const db = this.requireDb();
     const query = url.searchParams.get("q")?.trim() ?? "";
     const limit = boundedInteger(url.searchParams.get("limit"), 24, 100);
@@ -142,7 +176,7 @@ export class WorkbenchData {
       -bm25(turns_fts) score
       FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
       WHERE turns_fts MATCH ? ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, limit) as any[];
-    return {
+    const result = {
       query,
       expression,
       hits: hits.map((hit) => ({
@@ -150,9 +184,12 @@ export class WorkbenchData {
         evidenceUri: `chatlog://conversation/${hit.contentHash}/turn/${hit.turnIndex}`,
       })),
     };
+    this.assertProjection(projection);
+    return result;
   }
 
   async evidence(uri: string): Promise<unknown> {
+    const projection = this.assertProjection();
     const pointer = parseEvidenceUri(uri);
     const current = this.requireDb().query(
       "SELECT 1 FROM current_conversations WHERE content_hash = ?",
@@ -164,7 +201,7 @@ export class WorkbenchData {
     )) as Conversation;
     const turn = conversation.turns[pointer.turnIndex];
     if (!turn) throw new Error("Evidence turn not found");
-    return {
+    const result = {
       conversationHash: pointer.contentHash,
       sessionId: conversation.id,
       title: conversation.title ?? "",
@@ -174,16 +211,19 @@ export class WorkbenchData {
       turnIndex: pointer.turnIndex,
       turn,
     };
+    this.assertProjection(projection);
+    return result;
   }
 
   async insights(): Promise<unknown> {
+    const projection = this.assertProjection();
     const [lean, roles, effectiveness, refinery] = await Promise.all([
       currentArtifact(this.root, "orchestration-lean-manifest.json"),
       currentArtifact(this.root, "orchestration-roles-manifest.json"),
       currentArtifact(this.root, "orchestration-effectiveness-manifest.json"),
       currentArtifact(this.root, "refinery-manifest.json"),
     ]);
-    return {
+    const result = {
       orchestration: lean?.finding ? {
         claim: lean.finding.claim,
         decisionBoundary: lean.finding.decisionBoundary,
@@ -226,6 +266,8 @@ export class WorkbenchData {
         })),
       } : null,
     };
+    this.assertProjection(projection);
+    return result;
   }
 
   sources(): Promise<unknown[]> {

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,9 +7,15 @@ import { indexConversation, openAnalysis } from "../src/analysis";
 import { deriveCorpus } from "../src/derive";
 import { McpData, parseDomainPolicy } from "../src/mcp/data";
 import { createMcpState, handleMcpMessage, processMcpLine } from "../src/mcp/server";
+import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 
-async function fixture(): Promise<{ root: string; coding: Conversation; personal: Conversation }> {
+async function fixture(): Promise<{
+  root: string;
+  coding: Conversation;
+  staleCoding: Conversation;
+  personal: Conversation;
+}> {
   const root = await mkdtemp(join(tmpdir(), "chatlog-mcp-"));
   const coding: Conversation = {
     id: "coding-session",
@@ -46,11 +53,17 @@ async function fixture(): Promise<{ root: string; coding: Conversation; personal
     contentHash: "b".repeat(64),
     turns: [{ role: "user", content: "Remember an extremely private family memory." }],
   };
+  const staleCoding: Conversation = {
+    ...coding,
+    id: "stale-coding-session",
+    contentHash: "c".repeat(64),
+    turns: [{ role: "user", content: "This indexed object is no longer active." }],
+  };
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+  indexConversation(db, staleCoding, 0, 1);
   indexConversation(db, coding, 1, 1);
   indexConversation(db, personal, 1, 1);
-  db.close();
-  for (const conversation of [coding, personal]) {
+  for (const conversation of [staleCoding, coding, personal]) {
     const directory = join(root, "corpus", "objects", conversation.contentHash.slice(0, 2));
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, `${conversation.contentHash}.json`), JSON.stringify(conversation));
@@ -62,8 +75,13 @@ async function fixture(): Promise<{ root: string; coding: Conversation; personal
       "/personal": { contentHash: personal.contentHash },
     },
   }));
+  reconcileActiveSources(db, {
+    "/coding": { contentHash: coding.contentHash },
+    "/personal": { contentHash: personal.contentHash },
+  });
+  db.close();
   await deriveCorpus(root);
-  return { root, coding, personal };
+  return { root, coding, staleCoding, personal };
 }
 
 test("MCP data applies domain policy before limits and rechecks canonical evidence", async () => {
@@ -71,7 +89,7 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
   expect(parseDomainPolicy("research,coding,research")).toEqual(["coding", "research"]);
   expect(() => parseDomainPolicy("*")).toThrow("wildcard");
 
-  const { root, coding, personal } = await fixture();
+  const { root, coding, staleCoding, personal } = await fixture();
   const data = new McpData(root);
   try {
     const search = data.search({ query: "remember", limit: 1 }) as any;
@@ -106,8 +124,28 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
     expect(codingEvidence.fullLength).toBeGreaterThan(12_000);
     expect(codingEvidence.turn.toolCalls).toBeUndefined();
 
+    const inFlightEvidence = data.evidence({
+      uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
+    });
+    const projectionWriter = new Database(join(root, "analysis", "chatlog.sqlite"));
+    projectionWriter.run(
+      "UPDATE active_projection_meta SET reconciled_at = ? WHERE singleton = 1",
+      ["2099-01-01T00:00:00.000Z"],
+    );
+    await expect(inFlightEvidence).rejects.toThrow(
+      "active source projection changed while serving the request",
+    );
+    reconcileActiveSources(projectionWriter, {
+      "/coding": { contentHash: coding.contentHash },
+      "/personal": { contentHash: personal.contentHash },
+    });
+    projectionWriter.close();
+
     await expect(data.evidence({
       uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
+    })).rejects.toThrow("evidence not found or not permitted");
+    await expect(data.evidence({
+      uri: `chatlog://conversation/${staleCoding.contentHash}/turn/0`,
     })).rejects.toThrow("evidence not found or not permitted");
     await expect(data.evidence({
       uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
@@ -125,6 +163,15 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
       uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
     })).rejects.toThrow("evidence not found or not permitted");
     expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow("domain access denied");
+
+    await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
+      version: 1,
+      sources: {
+        "/personal": { contentHash: personal.contentHash },
+      },
+    }));
+    expect(() => data.search({ query: "remember" }))
+      .toThrow("active source projection is unavailable or stale");
   } finally {
     data.close();
   }

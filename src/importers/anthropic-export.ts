@@ -12,6 +12,7 @@ import {
 import { withIngestLock } from "../lock";
 import { redact } from "../redact";
 import { refineCorpus, type RefinerySummary } from "../refinery";
+import { reconcileSourceAuthority } from "../source-authority";
 import type { Conversation, ConversationDomain, ToolCall, Turn } from "../types";
 
 interface ExportContentBlock {
@@ -408,6 +409,7 @@ export async function importAnthropicExport(
     let replaced = 0;
 
     try {
+      await reconcileSourceAuthority(root, db, manifest.sources);
       for (const item of conversations) {
         for (const message of item.chat_messages ?? []) {
           summary.attachments += message.attachments?.length ?? 0;
@@ -434,6 +436,7 @@ export async function importAnthropicExport(
         summary.imported++;
       }
       await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      await reconcileSourceAuthority(root, db, manifest.sources);
     } finally {
       db.close();
     }

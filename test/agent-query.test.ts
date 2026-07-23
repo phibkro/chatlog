@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { agentAsk, agentGet, agentGrok, agentSearch, agentSemanticSearch } from "../src/agent-query";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { deriveCorpus } from "../src/derive";
+import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 
 test("agent queries return bounded structure and dereference pointers on demand", async () => {
@@ -26,13 +27,22 @@ test("agent queries return bounded structure and dereference pointers on demand"
   await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources: { "/source": { contentHash: hash } } }));
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   try {
+    const staleHash = "d".repeat(64);
+    indexConversation(db, {
+      ...conversation,
+      contentHash: staleHash,
+      endedAt: "2026-06-30T00:01:00Z",
+      turns: [{ role: "user", content: "Superseded historical content." }],
+    }, 0, 1);
     indexConversation(db, conversation, 1, 1);
+    reconcileActiveSources(db, { "/source": { contentHash: hash } });
     await deriveCorpus(root);
     const search = agentSearch(db, "DuckDB", 5);
     expect(search.hits).toHaveLength(1);
     expect(search.hits[0].snippet).toContain("[DuckDB]");
     expect(search.hits[0].pointer.uri).toBe(`chatlog://conversation/${hash}/turn/0`);
     expect((await agentGet(db, root, hash.slice(0, 12), 0) as any).turn.content).toContain("DuckDB");
+    await expect(agentGet(db, root, staleHash, 0)).rejects.toThrow("conversation not found");
     const grok = await agentGrok(db, root, "DuckDB", 1) as any;
     expect(grok.sessions[0].shape.turns).toBe(3);
     expect(grok.sessions[0].turns).toBeUndefined();

@@ -9,6 +9,11 @@ import {
   normalizeConversationDomains,
 } from "../domain";
 import { parseEvidenceUri } from "../evidence-uri";
+import {
+  ActiveProjectionDriftError,
+  ActiveProjectionGuard,
+  type ProjectionReceipt,
+} from "../source-authority";
 import type { Conversation } from "../types";
 
 const EVIDENCE_CHARACTER_LIMIT = 12_000;
@@ -58,9 +63,11 @@ export class McpData {
   readonly configuredDomains: string[];
   private readonly db: Database;
   private readonly currentColumns: Set<string>;
+  private readonly projectionGuard: ActiveProjectionGuard;
 
   constructor(root: string, configuredDomains = parseDomainPolicy()) {
     this.root = resolve(root);
+    this.projectionGuard = new ActiveProjectionGuard(this.root);
     this.configuredDomains = normalizeConversationDomains(configuredDomains);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
     if (!existsSync(databasePath)) throw new Error(`No Chatlog analysis database at ${databasePath}`);
@@ -103,7 +110,25 @@ export class McpData {
     return this.currentColumns.has("title") ? `${alias}.title` : "''";
   }
 
+  private assertProjection(expected?: ProjectionReceipt): ProjectionReceipt {
+    const current = this.projectionGuard.assert(this.db);
+    if (
+      expected
+      && (
+        current.manifestSourcesHash !== expected.manifestSourcesHash
+        || current.reconciledAt !== expected.reconciledAt
+        || current.activeSources !== expected.activeSources
+      )
+    ) {
+      throw new ActiveProjectionDriftError(
+        "active source projection changed while serving the request; retry",
+      );
+    }
+    return current;
+  }
+
   search(args: Record<string, unknown>): unknown {
+    const projection = this.assertProjection();
     const { query, expression } = searchExpression(args.query);
     const limit = boundedLimit(args.limit, 8, 20);
     const policy = this.policy(args.domains);
@@ -119,7 +144,7 @@ export class McpData {
       WHERE turns_fts MATCH ? AND t.role IN ('user', 'assistant')
       AND ${domain} IN (${placeholders})
       ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, ...policy.effectiveDomains, limit) as any[];
-    return {
+    const result = {
       query,
       policy,
       hits: hits.map((hit) => ({
@@ -127,9 +152,12 @@ export class McpData {
         evidenceUri: `chatlog://conversation/${hit.contentHash}/turn/${hit.turnIndex}`,
       })),
     };
+    this.assertProjection(projection);
+    return result;
   }
 
   async evidence(args: Record<string, unknown>): Promise<unknown> {
+    const projection = this.assertProjection();
     const pointer = parseEvidenceUri(args.uri);
     const policy = this.policy(args.domains);
     const indexed = this.db.query(`SELECT ${this.domainSql()} domain
@@ -167,7 +195,7 @@ export class McpData {
       throw new Error(EVIDENCE_UNAVAILABLE);
     const fullLength = turn.content.length;
     const content = turn.content.slice(0, EVIDENCE_CHARACTER_LIMIT);
-    return {
+    const result = {
       policy,
       evidenceUri: pointer.uri,
       conversationHash: pointer.contentHash,
@@ -185,9 +213,12 @@ export class McpData {
       truncated: fullLength > content.length,
       fullLength,
     };
+    this.assertProjection(projection);
+    return result;
   }
 
   recentWork(args: Record<string, unknown>): unknown {
+    const projection = this.assertProjection();
     const project = exactProject(args.project);
     const limit = boundedLimit(args.limit, 8, 20);
     const policy = this.policy(args.domains);
@@ -200,10 +231,13 @@ export class McpData {
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
       ORDER BY c.ended_at DESC LIMIT ?`).all(project, ...policy.effectiveDomains, limit);
-    return { project, policy, sessions };
+    const result = { project, policy, sessions };
+    this.assertProjection(projection);
+    return result;
   }
 
   async projectBrief(args: Record<string, unknown>): Promise<unknown> {
+    const projection = this.assertProjection();
     const project = exactProject(args.project);
     const policy = this.policy(args.domains);
     const placeholders = policy.effectiveDomains.map(() => "?").join(",");
@@ -247,7 +281,7 @@ export class McpData {
         decisions.push({ snippet: clampSnippet(item.snippet), pointer: item.pointer });
       }
     }
-    return {
+    const result = {
       project,
       policy,
       overview: {
@@ -263,5 +297,7 @@ export class McpData {
       recurringProblemEvidence: problems,
       recentDecisionEvidence: decisions,
     };
+    this.assertProjection(projection);
+    return result;
   }
 }

@@ -21,6 +21,7 @@ export interface SourceCatalogItem {
   path?: string;
   domain: string;
   status: SourceStatus;
+  previewCommand?: string;
   importCommand?: string;
   privacy: string;
 }
@@ -105,7 +106,10 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
       domain: configured.domain ?? "general",
       status: available ? "available" : "not-found",
       ...(configured.kind === "anthropic-export" && available
-        ? { importCommand: `bun run import:anthropic -- ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}` }
+        ? {
+            previewCommand: `bun run preview:anthropic -- ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
+            importCommand: `bun run import:anthropic -- ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
+          }
         : {}),
       privacy: "Imported on demand into the local redacted corpus; source remains read-only.",
     });
@@ -125,6 +129,7 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
         path,
         domain: "general",
         status: "available",
+        previewCommand: `bun run preview:anthropic -- ${shellQuote(path)} general`,
         importCommand: `bun run import:anthropic -- ${shellQuote(path)} general`,
         privacy: "Discovery does not read conversation content. Import remains explicit and local.",
       });

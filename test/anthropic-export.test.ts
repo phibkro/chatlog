@@ -3,7 +3,11 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
-import { adaptAnthropicConversation, importAnthropicExport } from "../src/importers/anthropic-export";
+import {
+  adaptAnthropicConversation,
+  importAnthropicExport,
+  previewAnthropicExport,
+} from "../src/importers/anthropic-export";
 
 const fixture = {
   uuid: "conversation-1",
@@ -63,8 +67,58 @@ test("imports an extracted Anthropic export idempotently", async () => {
   await mkdir(source);
   await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
 
+  const preview = await previewAnthropicExport(source, root, { domain: " Ideas " });
+  expect(preview).toMatchObject({
+    schema: "chatlog/anthropic-import-preview-v1",
+    advisory: true,
+    domain: "ideas",
+    ready: true,
+    discovered: 1,
+    importable: 1,
+    invalid: 0,
+    new: 1,
+    changed: 0,
+    reclassified: 0,
+    unchanged: 0,
+    wouldImport: 1,
+    turns: 2,
+    attachments: 1,
+    files: 0,
+    exclusions: {
+      modelThinking: true,
+      attachmentBodies: true,
+      claudeProjects: true,
+      memories: true,
+    },
+  });
+  expect(preview.receiptId).toHaveLength(64);
+  expect(preview.proposalId).toHaveLength(64);
+  expect(preview.sourceContentHash).toHaveLength(64);
+  expect(await Bun.file(join(root, "corpus", "manifest.json")).exists()).toBe(false);
+  expect(await Bun.file(join(root, "analysis", "chatlog.sqlite")).exists()).toBe(false);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
+    .toBe(preview.receiptId);
+
   const first = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(first).toMatchObject({ discovered: 1, imported: 1, skipped: 0, turns: 2, attachments: 1 });
+  expect(await previewAnthropicExport(source, root, { domain: "ideas" })).toMatchObject({
+    new: 0,
+    changed: 0,
+    reclassified: 0,
+    unchanged: 1,
+    wouldImport: 0,
+  });
+  const reclassificationPreview = await previewAnthropicExport(source, root, { domain: "personal" });
+  expect(reclassificationPreview).toMatchObject({
+    new: 0,
+    changed: 0,
+    reclassified: 1,
+    unchanged: 0,
+    wouldImport: 1,
+  });
+  expect(reclassificationPreview.proposalId).not.toBe(preview.proposalId);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
+    .not.toBe(preview.receiptId);
   const second = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(second).toMatchObject({ discovered: 1, imported: 0, skipped: 1 });
 

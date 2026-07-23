@@ -34,6 +34,10 @@ stdenvNoCC.mkDerivation {
 
     mkdir -p "$out/bin"
 
+    makeWrapper ${lib.getExe bun} "$out/bin/chatlog" \
+      --chdir "$out/share/chatlog" \
+      --add-flags "run $out/share/chatlog/src/cli.ts"
+
     makeWrapper ${lib.getExe bun} "$out/bin/chatlog-workbench" \
       --chdir "$out/share/chatlog" \
       --add-flags "run $out/share/chatlog/src/workbench/server.ts"
@@ -46,7 +50,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "Chatlog Workbench and MCP server: local, redacted coding-session recall";
+    description = "Chatlog CLI, Workbench, and MCP server: local, redacted conversation recall";
     mainProgram = "chatlog-workbench";
     platforms = lib.platforms.unix;
   };

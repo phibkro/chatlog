@@ -28,11 +28,23 @@ test("serves overview, local search, and canonical evidence from one corpus", as
       { role: "assistant", content: "Track the file before evaluating the flake." },
     ],
   };
+  const staleHash = "b".repeat(64);
+  const superseded = {
+    ...conversation,
+    contentHash: staleHash,
+    turns: [{ role: "user", content: "An older version of this source." }],
+  };
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+  indexConversation(db, superseded, 0, 1);
   indexConversation(db, conversation, 1, 1);
   db.close();
   await mkdir(join(root, "corpus", "objects", "aa"), { recursive: true });
   await writeFile(join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`), JSON.stringify(conversation));
+  await mkdir(join(root, "corpus", "objects", "bb"), { recursive: true });
+  await writeFile(
+    join(root, "corpus", "objects", "bb", `${staleHash}.json`),
+    JSON.stringify(superseded),
+  );
 
   const data = new WorkbenchData(root);
   expect(await data.overview()).toMatchObject({ ready: true, corpus: { sessions: 1, projects: 1, turns: 2 } });
@@ -44,6 +56,8 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     turnIndex: 0,
     turn: { role: "user" },
   });
+  await expect(data.evidence(`chatlog://conversation/${staleHash}/turn/0`))
+    .rejects.toThrow("Evidence not found");
 
   const handler = workbenchHandler(data);
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));

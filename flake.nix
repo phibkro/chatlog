@@ -34,6 +34,11 @@
 
       apps = forAllSystems (
         system: pkgs: {
+          cli = {
+            type = "app";
+            program = "${self.packages.${system}.chatlog}/bin/chatlog";
+            meta.description = "Run the local Chatlog operator CLI";
+          };
           workbench = {
             type = "app";
             program = "${self.packages.${system}.chatlog}/bin/chatlog-workbench";

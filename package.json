@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "ingest": "bun run src/cli.ts ingest",
+    "preview:anthropic": "bun run src/cli.ts preview anthropic",
     "import:anthropic": "bun run src/cli.ts import anthropic",
     "derive": "bun run src/cli.ts derive",
     "refine": "bun run src/cli.ts refine",

@@ -208,7 +208,8 @@ function renderSources() {
       <div class="source-meta">
         ${source.path ? `<code title="${escapeHtml(source.path)}">${escapeHtml(source.path)}</code>` : ""}
         <div class="source-domain">Domain · ${escapeHtml(source.domain)}</div>
-        ${source.importCommand ? `<code class="source-command" title="Run from the Chatlog checkout">${escapeHtml(source.importCommand)}</code>` : ""}
+        ${source.previewCommand ? `<div class="source-command-label">Preview without writing</div><code class="source-command" title="Run from the Chatlog checkout">${escapeHtml(source.previewCommand)}</code>` : ""}
+        ${source.importCommand ? `<div class="source-command-label">Import after review</div><code class="source-command" title="Run from the Chatlog checkout">${escapeHtml(source.importCommand)}</code>` : ""}
         <p class="source-privacy">${escapeHtml(source.privacy)}</p>
       </div>
     </article>`).join("");

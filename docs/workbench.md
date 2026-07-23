@@ -78,7 +78,20 @@ not read its conversation content.
 
 ### Anthropic data exports
 
-Import a ZIP archive or its extracted directory:
+Preview a ZIP archive or its extracted directory without writing corpus,
+database, derived, or receipt state:
+
+```sh
+bun run preview:anthropic -- /private/exports/anthropic-data.zip personal
+```
+
+The aggregate preview reports the selected domain, source fingerprint,
+new/changed/reclassified/unchanged conversation counts, projected turn and
+attachment counts, date range, exclusions, a stable proposal ID, and a
+deterministic advisory receipt ID for the manifest state it observed. It does
+not return conversation titles, snippets, messages, or attachment bodies.
+
+After reviewing the preview, import explicitly:
 
 ```sh
 bun run import:anthropic -- /private/exports/anthropic-data.zip personal
@@ -103,6 +116,10 @@ Import behavior:
 The current importer does not ingest Claude Projects, memories, or design
 artifacts. Those have different authority and retention semantics, so they
 should become distinct, reviewable source types.
+
+Domain reclassification, revocation, and physical purge remain CLI-only
+follow-up work. Their frozen safety contract is documented in
+`docs/exec-plans/active/0002-source-lifecycle.md`; Workbench remains read-only.
 
 ChatGPT exports and arbitrary harness JSONL appear as `planned` in the source
 catalog. They require explicit schema adapters before the UI will call them
@@ -138,8 +155,10 @@ points, without embedding any corpus data — `nix build` only ever copies
 ```sh
 nix build .#chatlog
 CHATLOG_DATA_ROOT=/absolute/path/to/data ./result/bin/chatlog-workbench
+CHATLOG_DATA_ROOT=/absolute/path/to/data ./result/bin/chatlog preview anthropic /path/to/export.zip personal
 
-# or run either app directly without a local checkout
+# or run the apps directly without a local checkout
+nix run .#cli -- preview anthropic /path/to/export.zip personal
 nix run .#workbench
 nix run .#mcp
 ```

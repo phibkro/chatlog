@@ -195,6 +195,7 @@ mark { padding: 1px 2px; border-radius: 3px; color: var(--green-strong); backgro
 .source-meta { margin-top: auto; padding-top: 15px; }
 .source-meta code { display: block; overflow: hidden; color: var(--faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .source-domain { margin-top: 7px; color: var(--green); font-size: 9px; }
+.source-command-label { margin-top: 10px; color: var(--faint); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
 .source-meta .source-command { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: #bbc7bd; background: rgba(5,8,6,.45); white-space: normal; overflow-wrap: anywhere; }
 .source-privacy { margin: 9px 0 0; color: var(--faint); font-size: 8px; line-height: 1.45; }
 .config-panel { margin-top: 18px; }

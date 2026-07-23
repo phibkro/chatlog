@@ -17,8 +17,8 @@ in
       default = pkgs.callPackage ./package.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage <chatlog>/nix/package.nix { }";
       description = ''
-        Chatlog package providing the `chatlog-workbench` and `chatlog-mcp`
-        entry points.
+        Chatlog package providing the `chatlog`, `chatlog-workbench`, and
+        `chatlog-mcp` entry points.
       '';
     };
 

@@ -64,6 +64,44 @@ export interface AnthropicImportSummary {
   refinery?: RefinerySummary;
 }
 
+export interface AnthropicPreviewSummary {
+  schema: "chatlog/anthropic-import-preview-v1";
+  receiptId: string;
+  proposalId: string;
+  advisory: true;
+  source: string;
+  sourceBytes: number;
+  sourceModifiedAt: string;
+  sourceContentHash: string;
+  domain: string;
+  ready: boolean;
+  discovered: number;
+  importable: number;
+  invalid: number;
+  new: number;
+  changed: number;
+  reclassified: number;
+  unchanged: number;
+  wouldImport: number;
+  turns: number;
+  attachments: number;
+  files: number;
+  dateRange: {
+    first: string | null;
+    last: string | null;
+  };
+  exclusions: {
+    modelThinking: true;
+    attachmentBodies: true;
+    claudeProjects: true;
+    memories: true;
+  };
+}
+
+function sha256(value: string): string {
+  return new Bun.CryptoHasher("sha256").update(value).digest("hex");
+}
+
 async function readExportJson(path: string, member: string): Promise<string> {
   const source = resolve(path);
   const info = await stat(source);
@@ -189,6 +227,145 @@ async function loadManifest(path: string): Promise<CorpusManifest> {
     if (error?.code === "ENOENT") return { version: 1, sources: {} };
     throw error;
   }
+}
+
+export async function previewAnthropicExport(
+  sourcePath: string,
+  root: string,
+  options: Pick<AnthropicImportOptions, "domain"> = {},
+): Promise<AnthropicPreviewSummary> {
+  const domain = normalizeConversationDomain(options.domain ?? "general");
+  const resolved = resolve(sourcePath);
+  const sourceInfo = await stat(resolved);
+  const exportText = await readExportJson(resolved, "conversations.json");
+  const conversations = JSON.parse(exportText) as ExportConversation[];
+  if (!Array.isArray(conversations)) throw new Error("Anthropic conversations.json must contain an array");
+
+  const manifest = await loadManifest(join(root, "corpus", "manifest.json"));
+  const proposed: Array<{ sourcePath: string; contentHash: string }> = [];
+  const observed: Array<{
+    sourcePath: string;
+    previousHash: string | null;
+    classification: "new" | "changed" | "reclassified" | "unchanged";
+  }> = [];
+  const timestamps: string[] = [];
+  let importable = 0;
+  let invalid = 0;
+  let created = 0;
+  let changed = 0;
+  let reclassified = 0;
+  let unchanged = 0;
+  let turns = 0;
+  let attachments = 0;
+  let files = 0;
+
+  for (const item of conversations) {
+    let conversation: Conversation;
+    try {
+      conversation = canonicalizeConversation(adaptAnthropicConversation(resolved, item, domain));
+    } catch {
+      invalid++;
+      continue;
+    }
+    importable++;
+    for (const message of item.chat_messages ?? []) {
+      attachments += message.attachments?.length ?? 0;
+      files += message.files?.length ?? 0;
+    }
+    turns += conversation.turns.length;
+    timestamps.push(conversation.startedAt, conversation.endedAt);
+    proposed.push({
+      sourcePath: conversation.sourcePath,
+      contentHash: conversation.contentHash,
+    });
+    const previous = manifest.sources[conversation.sourcePath];
+    let classification: "new" | "changed" | "reclassified" | "unchanged";
+    if (!previous) {
+      created++;
+      classification = "new";
+    } else if (previous.contentHash === conversation.contentHash) {
+      unchanged++;
+      classification = "unchanged";
+    } else {
+      let domainOnly = false;
+      try {
+        const previousConversation = JSON.parse(await readFile(
+          join(root, "corpus", "objects", previous.contentHash.slice(0, 2), `${previous.contentHash}.json`),
+          "utf8",
+        )) as Conversation;
+        const previousDomain = normalizeConversationDomain(previousConversation.domain ?? "general");
+        domainOnly = previousDomain !== domain
+          && JSON.stringify({
+            ...previousConversation,
+            domain,
+            contentHash: conversation.contentHash,
+          }) === JSON.stringify(conversation);
+      } catch {
+        // A missing prior object means preview cannot prove this is a
+        // domain-only change, so it remains conservatively "changed".
+      }
+      if (domainOnly) {
+        reclassified++;
+        classification = "reclassified";
+      } else {
+        changed++;
+        classification = "changed";
+      }
+    }
+    observed.push({
+      sourcePath: conversation.sourcePath,
+      previousHash: previous?.contentHash ?? null,
+      classification,
+    });
+  }
+
+  proposed.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  observed.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  timestamps.sort();
+  const sourceContentHash = sha256(exportText);
+  const proposalId = sha256(JSON.stringify({
+    schema: "chatlog/anthropic-import-preview-v1",
+    source: resolved,
+    sourceContentHash,
+    domain,
+    proposed,
+    invalid,
+  }));
+  const receiptId = sha256(JSON.stringify({ proposalId, observed }));
+
+  return {
+    schema: "chatlog/anthropic-import-preview-v1",
+    receiptId,
+    proposalId,
+    advisory: true,
+    source: resolved,
+    sourceBytes: sourceInfo.size,
+    sourceModifiedAt: sourceInfo.mtime.toISOString(),
+    sourceContentHash,
+    domain,
+    ready: invalid === 0,
+    discovered: conversations.length,
+    importable,
+    invalid,
+    new: created,
+    changed,
+    reclassified,
+    unchanged,
+    wouldImport: created + changed + reclassified,
+    turns,
+    attachments,
+    files,
+    dateRange: {
+      first: timestamps[0] ?? null,
+      last: timestamps.at(-1) ?? null,
+    },
+    exclusions: {
+      modelThinking: true,
+      attachmentBodies: true,
+      claudeProjects: true,
+      memories: true,
+    },
+  };
 }
 
 export async function importAnthropicExport(

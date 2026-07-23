@@ -16,7 +16,7 @@ import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
-import { importAnthropicExport } from "./importers/anthropic-export";
+import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { normalizeConversationDomain } from "./domain";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
@@ -31,6 +31,13 @@ const localAdapters = () => {
 };
 if (command === "ingest") {
   console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
+} else if (command === "preview") {
+  if (subcommand !== "anthropic" || !args[0])
+    throw new Error("usage: chatlog preview anthropic <export.zip|directory> [domain]");
+  const domain = normalizeConversationDomain(
+    args[1] && !args[1].startsWith("--") ? args[1] : "general",
+  );
+  console.log(JSON.stringify(await previewAnthropicExport(args[0], root, { domain }), null, 2));
 } else if (command === "import") {
   if (subcommand !== "anthropic" || !args[0])
     throw new Error("usage: chatlog import anthropic <export.zip|directory> [domain] [--no-derive]");
@@ -105,5 +112,5 @@ if (command === "ingest") {
   if (mode !== "history" && mode !== "summary") throw new Error("bridge mode must be history or summary");
   console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|import|derive|refine|query|bridge>");
+  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|derive|refine|query|bridge>");
 }

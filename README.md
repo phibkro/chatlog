@@ -49,6 +49,7 @@ and [docs/access-policy.md](docs/access-policy.md).
 
 ```sh
 nix build .#chatlog
+nix run .#cli -- preview anthropic /path/to/data-export.zip personal
 nix run .#workbench   # or: nix run .#mcp
 ```
 
@@ -59,9 +60,11 @@ service. See [docs/workbench.md](docs/workbench.md#package-and-deploy) for the
 module options, systemd hardening, and the Tailscale Serve handoff for remote
 access.
 
-An Anthropic data export can be connected as an explicit, one-time import:
+An Anthropic data export can be previewed without writing any Chatlog state,
+then connected as an explicit import:
 
 ```sh
+bun run preview:anthropic -- /path/to/data-export.zip personal
 bun run import:anthropic -- /path/to/data-export.zip personal
 ```
 

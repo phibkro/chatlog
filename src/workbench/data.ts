@@ -152,6 +152,10 @@ export class WorkbenchData {
 
   async evidence(uri: string): Promise<unknown> {
     const pointer = parseEvidenceUri(uri);
+    const current = this.requireDb().query(
+      "SELECT 1 FROM current_conversations WHERE content_hash = ?",
+    ).get(pointer.contentHash);
+    if (!current) throw new Error("Evidence not found");
     const conversation = JSON.parse(await readFile(
       join(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`),
       "utf8",

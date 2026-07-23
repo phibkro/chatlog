@@ -3,28 +3,26 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadDerived, type DerivedConversation } from "../derive";
+import {
+  DEFAULT_CONVERSATION_DOMAIN,
+  normalizeConversationDomain,
+  normalizeConversationDomains,
+} from "../domain";
+import { parseEvidenceUri } from "../evidence-uri";
 import type { Conversation } from "../types";
 
-const DEFAULT_DOMAIN = "coding";
 const EVIDENCE_CHARACTER_LIMIT = 12_000;
+const EVIDENCE_UNAVAILABLE = "evidence not found or not permitted";
 
 export interface DomainPolicyView {
   configuredDomains: string[];
   effectiveDomains: string[];
 }
 
-function normalizedDomains(values: string[]): string[] {
-  const domains = [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))].sort();
-  if (!domains.length) return [DEFAULT_DOMAIN];
-  if (domains.includes("*")) throw new Error("wildcard domain access is not allowed");
-  for (const domain of domains) {
-    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(domain)) throw new Error(`invalid conversation domain: ${domain}`);
-  }
-  return domains;
-}
-
 export function parseDomainPolicy(value = process.env.CHATLOG_MCP_DOMAINS ?? ""): string[] {
-  return normalizedDomains(value.split(","));
+  if (value.split(",").some((domain) => domain.trim() === "*"))
+    throw new Error("wildcard domain access is not allowed");
+  return normalizeConversationDomains(value.split(","));
 }
 
 function boundedLimit(value: unknown, fallback: number, maximum: number): number {
@@ -63,7 +61,7 @@ export class McpData {
 
   constructor(root: string, configuredDomains = parseDomainPolicy()) {
     this.root = resolve(root);
-    this.configuredDomains = normalizedDomains(configuredDomains);
+    this.configuredDomains = normalizeConversationDomains(configuredDomains);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
     if (!existsSync(databasePath)) throw new Error(`No Chatlog analysis database at ${databasePath}`);
     this.db = new Database(databasePath, { readonly: true, create: false });
@@ -80,7 +78,9 @@ export class McpData {
     if (requested == null) return [...this.configuredDomains];
     if (!Array.isArray(requested) || requested.some((item) => typeof item !== "string"))
       throw new Error("domains must be an array of strings");
-    const domains = normalizedDomains(requested as string[]);
+    if ((requested as string[]).some((domain) => domain.trim() === "*"))
+      throw new Error("wildcard domain access is not allowed");
+    const domains = normalizeConversationDomains(requested as string[]);
     const denied = domains.filter((domain) => !this.configuredDomains.includes(domain));
     if (denied.length) throw new Error(`domain access denied: ${denied.join(", ")}`);
     return domains;
@@ -95,8 +95,8 @@ export class McpData {
 
   private domainSql(alias = "c"): string {
     return this.currentColumns.has("domain")
-      ? `COALESCE(NULLIF(${alias}.domain, ''), '${DEFAULT_DOMAIN}')`
-      : `'${DEFAULT_DOMAIN}'`;
+      ? `LOWER(COALESCE(NULLIF(TRIM(${alias}.domain), ''), '${DEFAULT_CONVERSATION_DOMAIN}'))`
+      : `'${DEFAULT_CONVERSATION_DOMAIN}'`;
   }
 
   private titleSql(alias = "c"): string {
@@ -115,7 +115,9 @@ export class McpData {
       f.turn_index turnIndex, snippet(turns_fts, 0, '[', ']', ' … ', 28) snippet,
       -bm25(turns_fts) score
       FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
-      WHERE turns_fts MATCH ? AND ${domain} IN (${placeholders})
+      JOIN turns t ON t.content_hash=f.content_hash AND t.turn_index=f.turn_index
+      WHERE turns_fts MATCH ? AND t.role IN ('user', 'assistant')
+      AND ${domain} IN (${placeholders})
       ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, ...policy.effectiveDomains, limit) as any[];
     return {
       query,
@@ -128,32 +130,53 @@ export class McpData {
   }
 
   async evidence(args: Record<string, unknown>): Promise<unknown> {
-    if (typeof args.uri !== "string") throw new Error("uri must be a chatlog evidence URI");
-    const match = /^chatlog:\/\/conversation\/([a-f0-9]{64})\/turn\/(\d+)$/i.exec(args.uri);
-    if (!match) throw new Error("invalid chatlog evidence URI");
+    const pointer = parseEvidenceUri(args.uri);
     const policy = this.policy(args.domains);
-    const [, hash, indexText] = match;
-    const conversation = JSON.parse(await readFile(
-      join(this.root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`),
-      "utf8",
-    )) as Conversation;
-    const domain = (conversation.domain || DEFAULT_DOMAIN).toLowerCase();
-    if (!policy.effectiveDomains.includes(domain)) throw new Error(`domain access denied: ${domain}`);
-    const turnIndex = Number(indexText);
-    const turn = conversation.turns[turnIndex];
-    if (!turn) throw new Error("evidence turn not found");
+    const indexed = this.db.query(`SELECT ${this.domainSql()} domain
+      FROM current_conversations c WHERE c.content_hash = ?`).get(pointer.contentHash) as
+      { domain: string } | null;
+    if (!indexed) throw new Error(EVIDENCE_UNAVAILABLE);
+
+    let conversation: Conversation;
+    try {
+      conversation = JSON.parse(await readFile(
+        join(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`),
+        "utf8",
+      )) as Conversation;
+    } catch {
+      throw new Error(EVIDENCE_UNAVAILABLE);
+    }
+
+    let objectDomain: string;
+    try {
+      objectDomain = normalizeConversationDomain(
+        conversation.domain || DEFAULT_CONVERSATION_DOMAIN,
+      );
+    } catch {
+      throw new Error(EVIDENCE_UNAVAILABLE);
+    }
+    if (
+      typeof conversation.contentHash !== "string"
+      || conversation.contentHash.toLowerCase() !== pointer.contentHash
+      || indexed.domain !== objectDomain
+      || !policy.effectiveDomains.includes(objectDomain)
+    ) throw new Error(EVIDENCE_UNAVAILABLE);
+
+    const turn = conversation.turns[pointer.turnIndex];
+    if (!turn || !["user", "assistant"].includes(turn.role))
+      throw new Error(EVIDENCE_UNAVAILABLE);
     const fullLength = turn.content.length;
     const content = turn.content.slice(0, EVIDENCE_CHARACTER_LIMIT);
     return {
       policy,
-      evidenceUri: args.uri,
-      conversationHash: hash,
+      evidenceUri: pointer.uri,
+      conversationHash: pointer.contentHash,
       sessionId: conversation.id,
       title: conversation.title ?? "",
-      domain,
+      domain: objectDomain,
       project: conversation.project,
       harness: conversation.harness,
-      turnIndex,
+      turnIndex: pointer.turnIndex,
       turn: {
         role: turn.role,
         content,
@@ -206,10 +229,14 @@ export class McpData {
     const outcomes: Record<string, number> = { success: 0, failure: 0, mixed: 0, unknown: 0 };
     const problems: unknown[] = [];
     const decisions: unknown[] = [];
+    let derivedMissing = 0;
     for (const { contentHash } of hashes) {
       let artifact: DerivedConversation;
       try { artifact = await loadDerived(this.root, contentHash); }
-      catch { continue; }
+      catch {
+        derivedMissing++;
+        continue;
+      }
       outcomes[artifact.outcome.status] = (outcomes[artifact.outcome.status] ?? 0) + 1;
       for (const item of artifact.problems.slice(-2)) {
         if (problems.length >= 8) break;
@@ -232,6 +259,7 @@ export class McpData {
       harnesses,
       models,
       recentOutcomes: outcomes,
+      derivedMissing,
       recurringProblemEvidence: problems,
       recentDecisionEvidence: decisions,
     };

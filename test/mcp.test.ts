@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
@@ -15,7 +15,7 @@ async function fixture(): Promise<{ root: string; coding: Conversation; personal
     title: "Projection repair",
     provider: "openai",
     harness: "codex",
-    domain: "coding",
+    domain: "Coding",
     sourceKind: "session-log",
     project: "/project",
     cwd: "/project",
@@ -27,6 +27,7 @@ async function fixture(): Promise<{ root: string; coding: Conversation; personal
     turns: [
       { role: "user", content: `Remember the projection repair. ${"x".repeat(13_000)}` },
       { role: "assistant", content: "I decided to rebuild the index and the tests passed." },
+      { role: "tool", content: "toolsecret should never appear in agent discovery or evidence" },
     ],
   };
   const personal: Conversation = {
@@ -78,18 +79,28 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
     expect(search.hits).toHaveLength(1);
     expect(search.hits[0].sessionId).toBe(coding.id);
     expect(JSON.stringify(search)).not.toContain("private family");
+    expect((data.search({ query: "toolsecret" }) as any).hits).toHaveLength(0);
 
     const recent = data.recentWork({ project: "/project", limit: 20 }) as any;
     expect(recent.sessions).toHaveLength(1);
     expect(recent.sessions[0].sessionId).toBe(coding.id);
 
+    await unlink(join(
+      root,
+      "derived",
+      "objects",
+      coding.contentHash.slice(0, 2),
+      `${coding.contentHash}.json`,
+    ));
     const brief = await data.projectBrief({ project: "/project" }) as any;
     expect(brief.overview.sessions).toBe(1);
+    expect(brief.derivedMissing).toBe(1);
     expect(JSON.stringify(brief)).not.toContain(personal.id);
 
     const codingEvidence = await data.evidence({
-      uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
+      uri: `chatlog://conversation/${coding.contentHash.toUpperCase()}/turn/0`,
     }) as any;
+    expect(codingEvidence.evidenceUri).toBe(`chatlog://conversation/${coding.contentHash}/turn/0`);
     expect(codingEvidence.truncated).toBe(true);
     expect(codingEvidence.turn.content).toHaveLength(12_000);
     expect(codingEvidence.fullLength).toBeGreaterThan(12_000);
@@ -97,7 +108,22 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
 
     await expect(data.evidence({
       uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
-    })).rejects.toThrow("domain access denied");
+    })).rejects.toThrow("evidence not found or not permitted");
+    await expect(data.evidence({
+      uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
+    })).rejects.toThrow("evidence not found or not permitted");
+
+    await writeFile(
+      join(root, "corpus", "objects", coding.contentHash.slice(0, 2), `${coding.contentHash}.json`),
+      JSON.stringify({ ...coding, domain: "personal" }),
+    );
+    await expect(data.evidence({
+      uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
+    })).rejects.toThrow("evidence not found or not permitted");
+
+    await expect(data.evidence({
+      uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
+    })).rejects.toThrow("evidence not found or not permitted");
     expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow("domain access denied");
   } finally {
     data.close();
@@ -109,6 +135,16 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
   const data = new McpData(root);
   const state = createMcpState();
   try {
+    const beforeInitialization = await handleMcpMessage(data, {
+      jsonrpc: "2.0",
+      id: 0,
+      method: "tools/list",
+    }, state) as any;
+    expect(beforeInitialization.error).toEqual({
+      code: -32002,
+      message: "server not initialized",
+    });
+
     const initialized = await handleMcpMessage(data, {
       jsonrpc: "2.0",
       id: 1,
@@ -157,7 +193,7 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
       },
     }, state) as any;
     expect(denied.result.isError).toBe(true);
-    expect(denied.result.content[0].text).toContain("domain access denied");
+    expect(denied.result.content[0].text).toBe("evidence not found or not permitted");
 
     const unknownMethod = await handleMcpMessage(data, {
       jsonrpc: "2.0",

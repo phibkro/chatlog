@@ -67,13 +67,27 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
   };
 }
 
-if (import.meta.main) {
-  const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, "../.."));
-  const host = process.env.CHATLOG_HOST ?? "127.0.0.1";
-  if (!["127.0.0.1", "::1", "localhost"].includes(host) && process.env.CHATLOG_ALLOW_REMOTE !== "1") {
+export interface WorkbenchBindConfig {
+  host: string;
+  port: number;
+}
+
+export function resolveBindConfig(
+  env: Record<string, string | undefined> = process.env,
+): WorkbenchBindConfig {
+  const host = env.CHATLOG_HOST ?? "127.0.0.1";
+  if (!["127.0.0.1", "::1", "localhost"].includes(host) && env.CHATLOG_ALLOW_REMOTE !== "1") {
     throw new Error("Refusing non-loopback bind without CHATLOG_ALLOW_REMOTE=1");
   }
-  const port = Number(process.env.CHATLOG_PORT ?? 4789);
+  const port = Number(env.CHATLOG_PORT ?? 4789);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535)
+    throw new Error("CHATLOG_PORT must be an integer between 1 and 65535");
+  return { host, port };
+}
+
+if (import.meta.main) {
+  const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, "../.."));
+  const { host, port } = resolveBindConfig();
   const data = new WorkbenchData(root);
   const server = Bun.serve({ hostname: host, port, fetch: workbenchHandler(data) });
   console.log(`Chatlog Workbench: ${server.url}`);

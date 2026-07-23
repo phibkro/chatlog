@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { parseEvidenceUri } from "../evidence-uri";
 import { sourceCatalog } from "../source-catalog";
 import type { Conversation } from "../types";
 
@@ -150,24 +151,21 @@ export class WorkbenchData {
   }
 
   async evidence(uri: string): Promise<unknown> {
-    const match = /^chatlog:\/\/conversation\/([a-f0-9]{64})\/turn\/(\d+)$/i.exec(uri);
-    if (!match) throw new Error("Invalid chatlog evidence URI");
-    const [, hash, indexText] = match;
+    const pointer = parseEvidenceUri(uri);
     const conversation = JSON.parse(await readFile(
-      join(this.root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`),
+      join(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`),
       "utf8",
     )) as Conversation;
-    const turnIndex = Number(indexText);
-    const turn = conversation.turns[turnIndex];
+    const turn = conversation.turns[pointer.turnIndex];
     if (!turn) throw new Error("Evidence turn not found");
     return {
-      conversationHash: hash,
+      conversationHash: pointer.contentHash,
       sessionId: conversation.id,
       title: conversation.title ?? "",
       domain: conversation.domain ?? "coding",
       project: conversation.project,
       harness: conversation.harness,
-      turnIndex,
+      turnIndex: pointer.turnIndex,
       turn,
     };
   }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { WorkbenchData } from "../src/workbench/data";
-import { workbenchHandler } from "../src/workbench/server";
+import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import type { Conversation } from "../src/types";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
@@ -57,4 +57,16 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(staticResponse.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(await staticResponse.text()).toContain("Chatlog Workbench");
   data.close();
+});
+
+test("Workbench bind policy defaults to loopback and requires an explicit remote override", () => {
+  expect(resolveBindConfig({})).toEqual({ host: "127.0.0.1", port: 4789 });
+  expect(resolveBindConfig({ CHATLOG_HOST: "::1", CHATLOG_PORT: "4790" }))
+    .toEqual({ host: "::1", port: 4790 });
+  expect(() => resolveBindConfig({ CHATLOG_HOST: "100.64.0.7" }))
+    .toThrow("Refusing non-loopback bind");
+  expect(resolveBindConfig({
+    CHATLOG_HOST: "100.64.0.7",
+    CHATLOG_ALLOW_REMOTE: "1",
+  })).toEqual({ host: "100.64.0.7", port: 4789 });
 });

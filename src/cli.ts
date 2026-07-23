@@ -17,6 +17,7 @@ import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestr
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
 import { importAnthropicExport } from "./importers/anthropic-export";
+import { normalizeConversationDomain } from "./domain";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, ".."));
@@ -33,7 +34,9 @@ if (command === "ingest") {
 } else if (command === "import") {
   if (subcommand !== "anthropic" || !args[0])
     throw new Error("usage: chatlog import anthropic <export.zip|directory> [domain] [--no-derive]");
-  const domain = args[1] && !args[1].startsWith("--") ? args[1] : "general";
+  const domain = normalizeConversationDomain(
+    args[1] && !args[1].startsWith("--") ? args[1] : "general",
+  );
   console.log(JSON.stringify(await importAnthropicExport(args[0], root, {
     domain,
     derive: !args.includes("--no-derive"),

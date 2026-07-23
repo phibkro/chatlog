@@ -53,6 +53,21 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = builtins.elem cfg.host [
+          "127.0.0.1"
+          "::1"
+          "localhost"
+        ];
+        message = ''
+          services.chatlog-workbench.host must remain loopback-only. Keep
+          127.0.0.1 and use Tailscale Serve or another authenticated reverse
+          proxy for remote access.
+        '';
+      }
+    ];
+
     home.activation.chatlogWorkbenchDataRoot = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       run mkdir -p ${lib.escapeShellArg cfg.dataRoot}
     '';

@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import { dirname, extname, join, resolve } from "node:path";
 import { indexConversation, openAnalysis } from "../analysis";
 import { deriveCorpus, type DeriveSummary } from "../derive";
+import { normalizeConversationDomain } from "../domain";
 import { canonicalizeConversation } from "../ingest";
 import { withIngestLock } from "../lock";
 import { redact } from "../redact";
@@ -158,7 +159,7 @@ export function adaptAnthropicConversation(
     title: redact(item.name || item.summary || "Untitled Claude conversation"),
     provider: "anthropic",
     harness: "claude-web",
-    domain,
+    domain: normalizeConversationDomain(domain),
     sourceKind: "anthropic-data-export",
     project: "Claude Web",
     cwd: "",
@@ -196,7 +197,7 @@ export async function importAnthropicExport(
   options: AnthropicImportOptions = {},
 ): Promise<AnthropicImportSummary> {
   return withIngestLock(root, async () => {
-    const domain = options.domain ?? "general";
+    const domain = normalizeConversationDomain(options.domain ?? "general");
     const resolved = resolve(sourcePath);
     const source = await stat(resolved);
     const conversations = JSON.parse(await readExportJson(resolved, "conversations.json")) as ExportConversation[];

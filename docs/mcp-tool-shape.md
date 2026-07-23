@@ -51,16 +51,19 @@ as tightly as the Wave 1 tools.
 | `chatlog_eval_plan` | `{id}` | Ineligible-until-curated paired evaluation shape for `agent-eval` |
 
 Discovery tools never return complete turn bodies. Their snippets are bounded
-and secret-redacted, and every evidence item carries a stable URI:
+and secret-redacted, and search considers only user and assistant turns. Tool
+role output and tool-call arguments/results are excluded. Every evidence item
+carries a stable URI:
 
 ```text
 chatlog://conversation/<contentHash>/turn/<zero-based-index>
 ```
 
 Only `chatlog_get_evidence` crosses the snippet boundary in Wave 1, and it
-resolves one turn rather than a complete conversation. Agents should search
-first and follow pointers second. This treats the context window as RAM rather
-than archive storage.
+resolves one current, policy-visible user or assistant turn rather than a
+complete conversation. Superseded objects, domain mismatches, and tool-turn
+pointers are denied uniformly. Agents should search first and follow pointers
+second. This treats the context window as RAM rather than archive storage.
 
 Semantic tools have a narrow hosted egress boundary: the redacted query and up
 to 50 opaque-ID candidate snippets, each redacted and capped at 600 characters.

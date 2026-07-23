@@ -178,7 +178,11 @@ Remote access is deliberately not this module's job. Front Workbench with
 Tailscale Serve or another authenticated reverse proxy pointed at
 `127.0.0.1:<port>`. That remains an operator action at the network boundary;
 the module and package never configure Tailscale ACLs, certificates, Serve
-state, or DNS.
+state, or DNS. Workbench has no application login and exposes every local
+conversation domain, so tailnet ACLs are the authorization boundary: only
+devices and users trusted with the complete corpus should be able to reach the
+Serve endpoint. The Home Manager module rejects non-loopback hosts rather than
+creating a crash-looping service.
 
 Chatlog is not yet added to the homelab flake as an input; its package contract
 is still stabilizing. Until then, consume it as a standalone flake from its

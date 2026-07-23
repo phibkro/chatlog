@@ -38,7 +38,7 @@ const fixture = {
 };
 
 test("adapts Claude Web exports without indexing thinking or attachment bodies", () => {
-  const conversation = adaptAnthropicConversation("/export.zip", fixture as any, "personal");
+  const conversation = adaptAnthropicConversation("/export.zip", fixture as any, " Personal ");
   expect(conversation).toMatchObject({
     id: "conversation-1",
     title: "A broader idea",
@@ -52,6 +52,8 @@ test("adapts Claude Web exports without indexing thinking or attachment bodies",
   expect(JSON.stringify(conversation)).not.toContain("not indexed by default");
   expect(JSON.stringify(conversation)).not.toContain("private model scratchpad");
   expect(conversation.turns[1].toolCalls?.[0]).toMatchObject({ name: "search", output: "result" });
+  expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*"))
+    .toThrow("invalid conversation domain");
 });
 
 test("imports an extracted Anthropic export idempotently", async () => {

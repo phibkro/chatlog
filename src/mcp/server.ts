@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
+import { EVIDENCE_URI_PATTERN } from "../evidence-uri";
 import { redact } from "../redact";
 import { McpData } from "./data";
 
@@ -23,12 +24,17 @@ interface JsonRpcMessage {
 }
 
 export interface McpState {
+  initializeReceived: boolean;
   initialized: boolean;
   protocolVersion: string;
 }
 
 export function createMcpState(): McpState {
-  return { initialized: false, protocolVersion: LATEST_STABLE_PROTOCOL };
+  return {
+    initializeReceived: false,
+    initialized: false,
+    protocolVersion: LATEST_STABLE_PROTOCOL,
+  };
 }
 
 const DOMAIN_PROPERTY = {
@@ -58,7 +64,7 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        uri: { type: "string", pattern: "^chatlog://conversation/[a-fA-F0-9]{64}/turn/[0-9]+$" },
+        uri: { type: "string", pattern: EVIDENCE_URI_PATTERN },
         domains: DOMAIN_PROPERTY,
       },
       required: ["uri"],
@@ -136,12 +142,13 @@ export async function handleMcpMessage(
     return hasId ? errorResponse(id, -32600, "invalid JSON-RPC request") : null;
 
   if (message.method === "notifications/initialized") {
-    state.initialized = true;
+    if (state.initializeReceived) state.initialized = true;
     return null;
   }
   if (!hasId) return null;
 
   if (message.method === "initialize") {
+    state.initializeReceived = true;
     const requested = message.params?.protocolVersion;
     state.protocolVersion = typeof requested === "string" && SUPPORTED_PROTOCOLS.has(requested)
       ? requested
@@ -154,6 +161,7 @@ export async function handleMcpMessage(
     });
   }
   if (message.method === "ping") return response(id, {});
+  if (!state.initialized) return errorResponse(id, -32002, "server not initialized");
   if (message.method === "tools/list") return response(id, { tools: MCP_TOOLS });
   if (message.method === "tools/call") {
     const name = message.params?.name;

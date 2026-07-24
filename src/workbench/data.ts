@@ -17,6 +17,7 @@ import {
   loadCurrentDerivedArtifact,
   loadProjectionBoundArtifact,
 } from "../derived-authority";
+import { loadWorkflowOutcomes } from "../workflow-outcomes";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || value.trim() === "") return fallback;
@@ -28,6 +29,31 @@ function searchExpression(query: string): string {
   const terms = query.toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
   if (!terms.length) throw new Error("Search needs at least one concrete word");
   return [...new Set(terms)].slice(0, 10).map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
+}
+
+export function boundedOutcomeComparison(comparison: any): unknown {
+  if (!comparison) return null;
+  const scope = comparison.scope ?? {};
+  return {
+    kind: comparison.kind,
+    occurredAt: comparison.occurredAt,
+    status: comparison.status,
+    reasons: comparison.reasons,
+    scope: {
+      projectCount: Array.isArray(scope.projects)
+        ? scope.projects.length
+        : scope.projectCount,
+      maximumWindowDays: scope.maximumWindowDays,
+      observedWindowHours: scope.observedWindowHours,
+      preStart: scope.preStart,
+      postEnd: scope.postEnd,
+    },
+    coverage: comparison.coverage,
+    pre: comparison.pre,
+    post: comparison.post,
+    deltas: comparison.deltas,
+    interpretation: comparison.interpretation,
+  };
 }
 
 export class WorkbenchData {
@@ -239,6 +265,12 @@ export class WorkbenchData {
         { optional: true },
       )
       : null;
+    const workflowOutcomes = workflowCurrent
+      ? await loadWorkflowOutcomes(this.root, {
+        optional: true,
+        projection: derivedProjection,
+      })
+      : null;
     if (
       effectivenessCurrent
       && effectivenessCurrent.artifact?.roleProfileContentHash !== rolesCurrent?.contentHash
@@ -264,6 +296,21 @@ export class WorkbenchData {
       evidence: (event.evidence ?? []).slice(0, 3),
     }) : null;
     const result = {
+      workflowOutcomes: workflowOutcomes ? {
+        summary: workflowOutcomes.summary,
+        methodology: {
+          window: workflowOutcomes.methodology?.window,
+          scope: workflowOutcomes.methodology?.scope,
+          causality: workflowOutcomes.methodology?.causality,
+        },
+        approvalGateTracer: boundedOutcomeComparison(
+          workflowOutcomes.approvalGateTracer,
+        ),
+        comparisons: (workflowOutcomes.comparisons ?? [])
+          .slice(-30)
+          .reverse()
+          .map(boundedOutcomeComparison),
+      } : null,
       workflowEvolution: workflow ? {
         summary: workflow.summary,
         methodology: {

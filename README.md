@@ -104,6 +104,7 @@ bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
 bun run query orchestration-profile
 bun run query workflow-evolution
+bun run query workflow-outcomes
 bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
 bun run query candidate <candidate-id>
 bun run query eval-plan <candidate-id>
@@ -194,6 +195,15 @@ retaining required checks. Generic autonomous-integration instructions remain
 autonomy events rather than receiving that stronger policy claim. The ledger
 is descriptive, performs no egress, changes no harness authority, and makes no
 causal outcome claim.
+
+`query workflow-outcomes` adds symmetric project-scoped context around those
+events. It deduplicates active session snapshots, excludes the policy episode
+and sessions spanning the anchor, requires episodes to be fully contained on
+either side, and reports completion, friction, rework, session-shape, and
+same-provider/harness token proxies only above declared
+sample floors. Sparse windows remain visible without deltas. Every comparison
+is explicitly descriptive: temporal association does not establish that a
+workflow change caused the observed result.
 
 Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
 runs the existing external scorer to rank a concrete role pattern against its

@@ -134,6 +134,19 @@ function hash(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
 }
 
+export function workflowEpisodeId(conversation: Pick<
+  Conversation,
+  "provider" | "harness" | "resumeId" | "id"
+>): string {
+  return hash(JSON.stringify({
+    schema: "workflow-episode-v1",
+    provider: conversation.provider,
+    harness: conversation.harness,
+    identifierKind: conversation.resumeId ? "resume" : "conversation",
+    identifier: conversation.resumeId ?? conversation.id,
+  }));
+}
+
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -298,13 +311,7 @@ export async function buildWorkflowEvolution(
 
   for (const conversationHash of currentProjection.conversationHashes) {
     const conversation = await loadConversation(root, conversationHash);
-    const episodeId = hash(JSON.stringify({
-      schema: "workflow-episode-v1",
-      provider: conversation.provider,
-      harness: conversation.harness,
-      identifierKind: conversation.resumeId ? "resume" : "conversation",
-      identifier: conversation.resumeId ?? conversation.id,
-    }));
+    const episodeId = workflowEpisodeId(conversation);
     episodes.add(episodeId);
     const role = inferAgentRole(conversation).role;
     conversation.turns.forEach((turn, turnIndex) => {

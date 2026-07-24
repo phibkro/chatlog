@@ -16,6 +16,8 @@ const escapeHtml = (value = "") => String(value).replace(/[&<>"']/g, (character)
 }[character]));
 const formatNumber = (value) => new Intl.NumberFormat("en", { notation: value > 99999 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value || 0);
 const formatDate = (value) => value ? new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value)) : "Unknown";
+const formatRate = (value) => value == null ? "—" : `${Math.round(Number(value) * 100)}%`;
+const formatRateDelta = (value) => value == null ? "—" : `${value > 0 ? "+" : ""}${Math.round(Number(value) * 100)} pp`;
 const relativeTime = (value) => {
   if (!value) return "unknown";
   const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
@@ -169,6 +171,9 @@ function renderInsights() {
     $("#workflow-evolution-count").textContent = "Unavailable";
     $("#workflow-evolution-summary").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#workflow-event-list").innerHTML = "";
+    $("#workflow-outcomes-count").textContent = "Unavailable";
+    $("#workflow-outcomes-summary").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    $("#workflow-outcome-list").innerHTML = "";
     $("#role-profiles").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#effectiveness-result").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
@@ -217,6 +222,49 @@ function renderInsights() {
     $$(".workflow-evidence").forEach((button) =>
       button.addEventListener("click", () => openEvidence(button.dataset.uri))
     );
+  }
+  const outcomes = insights.workflowOutcomes;
+  if (!outcomes) {
+    $("#workflow-outcomes-count").textContent = "Not derived";
+    $("#workflow-outcomes-summary").innerHTML = `<div class="empty">Run <code>chatlog query workflow-outcomes</code> to add descriptive pre/post context.</div>`;
+    $("#workflow-outcome-list").innerHTML = "";
+  } else {
+    const comparison = outcomes.approvalGateTracer;
+    $("#workflow-outcomes-count").textContent = `${formatNumber(outcomes.summary?.observed)} observed · ${formatNumber(outcomes.summary?.events)} total`;
+    if (!comparison) {
+      $("#workflow-outcomes-summary").innerHTML = `<div class="empty">No approval-gate comparison is available.</div>`;
+    } else if (comparison.status !== "observed") {
+      $("#workflow-outcomes-summary").innerHTML = `
+        <div class="outcome-caveat">
+          <strong>Approval tracer is still collecting evidence.</strong>
+          <p>${escapeHtml(comparison.reasons?.join(" · ") || "Coverage is below the declared floor.")}</p>
+          <span>${formatNumber(comparison.coverage?.preEpisodes)} pre episodes · ${formatNumber(comparison.coverage?.postEpisodes)} post episodes · ${formatNumber(comparison.scope?.observedWindowHours)} hour symmetric window</span>
+        </div>`;
+    } else {
+      const metrics = [
+        ["Completion", comparison.pre?.outcomes?.completionRate, comparison.post?.outcomes?.completionRate, comparison.deltas?.completionRate],
+        ["Friction", comparison.pre?.friction?.rate, comparison.post?.friction?.rate, comparison.deltas?.frictionRate],
+        ["Rework proxy", comparison.pre?.rework?.rate, comparison.post?.rework?.rate, comparison.deltas?.reworkRate],
+      ];
+      $("#workflow-outcomes-summary").innerHTML = `
+        <div class="outcome-caveat">
+          <strong>Descriptive project-window comparison</strong>
+          <p>${escapeHtml(comparison.interpretation?.claim || "")} This does not establish causation.</p>
+          <span>${formatNumber(comparison.coverage?.preEpisodes)} pre episodes · ${formatNumber(comparison.coverage?.postEpisodes)} post episodes · ${formatNumber(comparison.scope?.observedWindowHours)} hour symmetric window</span>
+        </div>
+        <div class="outcome-metrics">${metrics.map(([label, pre, post, delta]) => `
+          <div class="outcome-metric">
+            <span>${escapeHtml(label)}</span>
+            <strong>${formatRate(pre)} → ${formatRate(post)}</strong>
+            <small>${formatRateDelta(delta)} post − pre</small>
+          </div>`).join("")}</div>`;
+    }
+    $("#workflow-outcome-list").innerHTML = (outcomes.comparisons || []).slice(0, 12).map((item) => `
+      <div class="outcome-row">
+        <div><strong>${escapeHtml(item.kind.replaceAll("-", " "))}</strong><span>${escapeHtml(formatDate(item.occurredAt))}</span></div>
+        <span class="badge">${escapeHtml(item.status)}</span>
+        <span>${formatNumber(item.coverage?.preEpisodes)} / ${formatNumber(item.coverage?.postEpisodes)} episodes</span>
+      </div>`).join("") || `<div class="empty">No workflow comparisons found.</div>`;
   }
   const profiles = insights.roles?.profiles || [];
   $("#role-profiles").innerHTML = profiles.map((profile) => `

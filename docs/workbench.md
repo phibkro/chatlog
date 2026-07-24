@@ -31,6 +31,7 @@ bun run ingest
 bun run derive
 bun run refine
 bun run query workflow-evolution
+bun run query workflow-outcomes
 bun run workbench
 ```
 
@@ -223,6 +224,15 @@ conversation copies, keeps cross-session identity conservative, and presents
 the July 22 approval-policy decision as an evidence-backed tracer. The surface
 describes operator policy; it neither changes agent authority nor attributes
 causal outcomes.
+
+`chatlog query workflow-outcomes` derives the optional outcome context beneath
+the event ledger. Workbench shows the approval tracer and at most 30 newest
+comparisons. Windows are symmetric in corpus time, project-scoped, and require
+full episode containment plus five deduplicated episodes per side. Completion,
+friction, and failed-attempt rates are proxies with visible denominators;
+provider-reported tokens are compared only within the same provider/harness
+with three samples per side.
+The panel never labels a delta as an effect or recommendation.
 
 ## Package and deploy
 

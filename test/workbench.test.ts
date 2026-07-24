@@ -3,13 +3,17 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
-import { WorkbenchData } from "../src/workbench/data";
+import {
+  boundedOutcomeComparison,
+  WorkbenchData,
+} from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 import { deriveCorpus } from "../src/derive";
 import { deriveWorkflowEvolution } from "../src/workflow-evolution";
+import { deriveWorkflowOutcomes } from "../src/workflow-outcomes";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-"));
@@ -61,6 +65,7 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   );
   await deriveCorpus(root);
   await deriveWorkflowEvolution(root);
+  await deriveWorkflowOutcomes(root);
   const receiptInput = {
     source: {
       path: "/private/anthropic.zip",
@@ -118,6 +123,10 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
   expect(await data.insights()).toMatchObject({
+    workflowOutcomes: {
+      summary: { events: 0, observed: 0, insufficientCoverage: 0 },
+      comparisons: [],
+    },
     workflowEvolution: {
       summary: { conversationsScanned: 1, uniqueEvents: 0 },
       events: [],
@@ -170,4 +179,36 @@ test("Workbench bind policy defaults to loopback and requires an explicit remote
     CHATLOG_HOST: "100.64.0.7",
     CHATLOG_ALLOW_REMOTE: "1",
   })).toEqual({ host: "100.64.0.7", port: 4789 });
+});
+
+test("Workflow Outcomes projection removes internal identifiers and project paths", () => {
+  const projected = boundedOutcomeComparison({
+    eventId: "internal-event-id",
+    kind: "approval-gate-changed",
+    occurredAt: "2026-07-22T02:09:09.139Z",
+    status: "insufficient-coverage",
+    reasons: ["pre-episodes-below-5"],
+    scope: {
+      projects: ["/private/project-one", "/private/project-two"],
+      maximumWindowDays: 14,
+      observedWindowHours: 9,
+      preStart: "2026-07-21T17:09:09.139Z",
+      postEnd: "2026-07-22T11:09:09.139Z",
+    },
+    coverage: { preEpisodes: 0, postEpisodes: 0 },
+    pre: { episodes: 0 },
+    post: { episodes: 0 },
+    deltas: { completionRate: null },
+    interpretation: { causal: false },
+  });
+  expect(projected).toMatchObject({
+    kind: "approval-gate-changed",
+    scope: {
+      projectCount: 2,
+      observedWindowHours: 9,
+    },
+  });
+  const encoded = JSON.stringify(projected);
+  expect(encoded).not.toContain("internal-event-id");
+  expect(encoded).not.toContain("/private/project");
 });

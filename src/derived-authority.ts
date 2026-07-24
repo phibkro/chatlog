@@ -9,6 +9,7 @@ import { loadCorpusManifest, manifestSourcesHash } from "./source-authority";
 export interface DerivedProjectionReceipt {
   contentHash: string;
   structureProjectionHash: string;
+  structureContentHashes: Record<string, string>;
   conversations: number;
   conversationHashes: string[];
 }
@@ -99,6 +100,7 @@ export async function assertDerivedProjection(
         recipeHash: manifest.recipeHash,
         structures,
       })),
+      structureContentHashes: Object.fromEntries(structures),
       conversations: conversationHashes.length,
       conversationHashes,
     };

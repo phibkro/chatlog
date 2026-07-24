@@ -23,9 +23,13 @@ that deployment understandable and repeatable for other technical users.
   reusable findings for both humans and agents.
 - Ship a straightforward self-host path with reproducible packaging, setup
   guidance, backups, upgrades, privacy documentation, and a safe demo corpus.
-- Keep Workbench read-only over HTTP. Authority-changing source lifecycle
-  operations remain explicit local commands until their durable intent,
-  invalidation, receipt, and recovery contracts are complete.
+- Keep canonical evidence, derived claims, harness policy, and
+  authority-changing source lifecycle operations read-only over Workbench
+  HTTP. A private deployment may explicitly enable a narrowly scoped,
+  same-origin mutation surface for append-only operator annotations; it never
+  edits evidence or agent configuration. Source lifecycle operations remain
+  explicit local commands until their durable intent, invalidation, receipt,
+  and recovery contracts are complete.
 - Treat private-network ingress as deployment policy. The canonical operator
   deployment is `https://chatlog.home.phibkro.org`, restricted to the
   LAN/tailnet; Chatlog itself remains loopback-only.

@@ -8,7 +8,11 @@ import {
   boundedWorkflowPattern,
   WorkbenchData,
 } from "../src/workbench/data";
-import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
+import {
+  resolveAnnotationConfig,
+  resolveBindConfig,
+  workbenchHandler,
+} from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
@@ -16,6 +20,7 @@ import { deriveCorpus } from "../src/derive";
 import { deriveWorkflowEvolution } from "../src/workflow-evolution";
 import { deriveWorkflowOutcomes } from "../src/workflow-outcomes";
 import { deriveWorkflowPatterns } from "../src/workflow-patterns";
+import { PatternAnnotationConflictError } from "../src/pattern-annotations";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-"));
@@ -128,6 +133,14 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(await data.insights()).toMatchObject({
     workflowPatterns: {
       summary: { repeatedPatterns: 0, candidateSignatures: 0 },
+      annotations: {
+        enabled: false,
+        snapshot: expect.stringMatching(/^[a-f0-9]{24}$/),
+        summary: {
+          activeAnnotated: 0,
+          inactivePatternAnnotations: 0,
+        },
+      },
       methodology: {
         boundaryEffect: expect.stringContaining("silence never implies reversal"),
       },
@@ -162,7 +175,10 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   const staticResponse = await handler(new Request("http://localhost/"));
   expect(staticResponse.status).toBe(200);
   expect(staticResponse.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
-  expect(await staticResponse.text()).toContain("Chatlog Workbench");
+  const staticHtml = await staticResponse.text();
+  expect(staticHtml).toContain("Chatlog Workbench");
+  expect(staticHtml).toContain("pattern-explorer-toolbar");
+  expect(staticHtml).toContain("pattern-annotation-form");
 
   await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
     version: 1,
@@ -189,6 +205,196 @@ test("Workbench bind policy defaults to loopback and requires an explicit remote
     CHATLOG_HOST: "100.64.0.7",
     CHATLOG_ALLOW_REMOTE: "1",
   })).toEqual({ host: "100.64.0.7", port: 4789 });
+  expect(resolveAnnotationConfig(
+    { host: "127.0.0.1", port: 4789 },
+    {},
+  )).toEqual({
+    enabled: false,
+    allowedOrigins: new Set([
+      "http://127.0.0.1:4789",
+      "http://localhost:4789",
+      "http://[::1]:4789",
+    ]),
+  });
+  expect(resolveAnnotationConfig(
+    { host: "127.0.0.1", port: 4789 },
+    {
+      CHATLOG_ALLOW_ANNOTATIONS: "1",
+      CHATLOG_ANNOTATION_ORIGINS: "https://chatlog.example.net",
+    },
+  )).toMatchObject({
+    enabled: true,
+    allowedOrigins: expect.any(Set),
+  });
+  expect(resolveAnnotationConfig(
+    { host: "127.0.0.1", port: 80 },
+    {
+      CHATLOG_ALLOW_ANNOTATIONS: "1",
+      CHATLOG_ANNOTATION_ORIGINS:
+        "https://Chatlog.Example.net:443",
+    },
+  ).allowedOrigins).toEqual(new Set([
+    "http://127.0.0.1",
+    "http://localhost",
+    "http://[::1]",
+    "https://chatlog.example.net",
+  ]));
+  expect(() => resolveAnnotationConfig(
+    { host: "127.0.0.1", port: 4789 },
+    {
+      CHATLOG_ALLOW_ANNOTATIONS: "1",
+      CHATLOG_ANNOTATION_ORIGINS:
+        "https://chatlog.example.net/path",
+    },
+  )).toThrow("bare HTTP(S) origin");
+  expect(() => resolveAnnotationConfig(
+    { host: "100.64.0.7", port: 4789 },
+    { CHATLOG_ALLOW_ANNOTATIONS: "1" },
+  )).toThrow("Refusing annotations on a non-loopback bind");
+  expect(resolveAnnotationConfig(
+    { host: "100.64.0.7", port: 4789 },
+    {
+      CHATLOG_ALLOW_ANNOTATIONS: "1",
+      CHATLOG_ACK_REMOTE_ANNOTATIONS: "1",
+    },
+  ).enabled).toBe(true);
+});
+
+test("annotation HTTP mutation is opt-in, same-origin, bounded, and conflict aware", async () => {
+  const origin = "https://chatlog.example.net";
+  const input = {
+    handle: "a".repeat(24),
+    expectedRevision: 0,
+    observedSnapshot: "b".repeat(24),
+    disposition: "confirmed",
+    label: null,
+    note: null,
+  };
+  const fakeData = {
+    annotatePattern: async (value: any) => ({
+      disposition: value.disposition,
+      label: value.label,
+      note: value.note,
+      revision: 1,
+      updatedAt: "2026-07-24T10:00:00.000Z",
+    }),
+  } as WorkbenchData;
+  const request = (
+    body: unknown = input,
+    headers: Record<string, string> = {},
+  ) => new Request(`${origin}/api/pattern-annotations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+      "Sec-Fetch-Site": "same-origin",
+      ...headers,
+    },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  const disabled = workbenchHandler(fakeData);
+  expect((await disabled(request())).status).toBe(405);
+
+  const enabled = workbenchHandler(fakeData, undefined, {
+    enabled: true,
+    allowedOrigins: new Set([origin]),
+  });
+  const success = await enabled(request());
+  expect(success.status).toBe(200);
+  expect(await success.json()).toMatchObject({
+    annotation: { disposition: "confirmed", revision: 1 },
+  });
+  expect((await enabled(request(input, { Origin: "https://evil.example" }))).status)
+    .toBe(403);
+  expect((await enabled(request(input, {
+    Origin: "https://evil.example",
+    "X-Forwarded-Host": "chatlog.example.net",
+    "X-Forwarded-Proto": "https",
+  }))).status).toBe(403);
+  expect((await enabled(request(input, { "Sec-Fetch-Site": "cross-site" }))).status)
+    .toBe(403);
+  expect((await enabled(request(input, { "Sec-Fetch-Site": "" }))).status)
+    .toBe(403);
+  expect((await enabled(request(input, { "Content-Type": "text/plain" }))).status)
+    .toBe(415);
+  expect((await enabled(request("x".repeat(8 * 1024 + 1)))).status)
+    .toBe(413);
+  expect((await enabled(new Request(`${origin}/api/pattern-annotations`, {
+    method: "PUT",
+  }))).status).toBe(405);
+
+  const limited = workbenchHandler(fakeData, undefined, {
+    enabled: true,
+    allowedOrigins: new Set([origin]),
+    maximumWritesPerMinute: 1,
+  });
+  expect((await limited(request())).status).toBe(200);
+  expect((await limited(request())).status).toBe(429);
+
+  let failedAttempts = 0;
+  const failingData = {
+    annotatePattern: async () => {
+      failedAttempts++;
+      throw new Error("invalid annotation");
+    },
+  } as WorkbenchData;
+  const failedAttemptLimit = workbenchHandler(failingData, undefined, {
+    enabled: true,
+    allowedOrigins: new Set([origin]),
+    maximumWritesPerMinute: 1,
+  });
+  expect((await failedAttemptLimit(request())).status).toBe(400);
+  expect((await failedAttemptLimit(request())).status).toBe(429);
+  expect(failedAttempts).toBe(1);
+
+  let releaseWrite: (() => void) | undefined;
+  const heldWrite = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  const concurrentData = {
+    annotatePattern: async () => {
+      await heldWrite;
+      return {
+        disposition: "confirmed",
+        label: null,
+        note: null,
+        revision: 1,
+        updatedAt: "2026-07-24T10:00:00.000Z",
+      };
+    },
+  } as WorkbenchData;
+  const concurrentLimit = workbenchHandler(concurrentData, undefined, {
+    enabled: true,
+    allowedOrigins: new Set([origin]),
+    maximumWritesPerMinute: 1,
+  });
+  const firstConcurrent = concurrentLimit(request());
+  const secondConcurrent = await concurrentLimit(request());
+  expect(secondConcurrent.status).toBe(429);
+  releaseWrite?.();
+  expect((await firstConcurrent).status).toBe(200);
+
+  const conflictData = {
+    annotatePattern: async () => {
+      throw new PatternAnnotationConflictError({
+        disposition: "contextual",
+        label: null,
+        note: "Current note",
+        revision: 2,
+        updatedAt: "2026-07-24T10:00:00.000Z",
+      }, "c".repeat(24));
+    },
+  } as WorkbenchData;
+  const conflictHandler = workbenchHandler(conflictData, undefined, {
+    enabled: true,
+    allowedOrigins: new Set([origin]),
+  });
+  const conflict = await conflictHandler(request());
+  expect(conflict.status).toBe(409);
+  expect(await conflict.json()).toMatchObject({
+    current: { disposition: "contextual", revision: 2 },
+    snapshot: "c".repeat(24),
+  });
 });
 
 test("Workflow Outcomes projection removes internal identifiers and project paths", () => {
@@ -294,9 +500,23 @@ test("Workflow Pattern projection keeps evidence drilldown but removes internal 
         snippet: "Use /private/project-one.",
       }],
     }],
-  });
+  }, {
+    disposition: "contextual",
+    label: "One writer",
+    note: "Operator note",
+    revision: 2,
+    updatedAt: "2026-07-24T10:00:00.000Z",
+    contentHash: "internal-annotation-hash",
+    storagePath: "/private/annotations/object.json",
+  } as any);
   expect(projected).toMatchObject({
+    handle: expect.stringMatching(/^[a-f0-9]{24}$/),
     signal: "one-writer",
+    annotation: {
+      disposition: "contextual",
+      label: "One writer",
+      revision: 2,
+    },
     coverage: {
       projectCount: 2,
       distinctEpisodes: 3,
@@ -316,4 +536,5 @@ test("Workflow Pattern projection keeps evidence drilldown but removes internal 
   const encoded = JSON.stringify(projected);
   expect(encoded).not.toContain("internal-");
   expect(encoded).not.toContain("/private/project");
+  expect(encoded).not.toContain("/private/annotations");
 });

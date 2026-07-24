@@ -148,6 +148,57 @@
             <span id="workflow-patterns-count" class="badge">Loading…</span>
           </div>
           <div id="workflow-patterns-summary"><div class="empty">Loading repeated workflow patterns…</div></div>
+          <div class="pattern-explorer-toolbar" id="pattern-explorer-toolbar">
+            <input id="pattern-filter-query" type="search" placeholder="Filter claims, labels, notes…">
+            <select id="pattern-filter-kind" aria-label="Filter by event kind">
+              <option value="all">All boundaries</option>
+              <option value="autonomy-boundary">Autonomy</option>
+              <option value="ownership-boundary">Ownership</option>
+              <option value="approval-gate-changed">Approval gates</option>
+            </select>
+            <select id="pattern-filter-signal" aria-label="Filter by signal">
+              <option value="all">All signals</option>
+              <option value="self-propel">Self-propel</option>
+              <option value="tracer-and-continue">Tracer and continue</option>
+              <option value="recommend-and-proceed">Recommend and proceed</option>
+              <option value="dont-wait-for-approval">Don't wait for approval</option>
+              <option value="one-writer">One writer</option>
+              <option value="spec-freeze">Spec freeze</option>
+              <option value="gate-before-act">Gate before act</option>
+              <option value="stop-and-report">Stop and report</option>
+              <option value="ab-with-recommendation">A/B with recommendation</option>
+              <option value="approval-policy">Approval policy</option>
+              <option value="autonomy-general">General autonomy</option>
+              <option value="ownership-general">General ownership</option>
+            </select>
+            <select id="pattern-filter-role" aria-label="Filter by agent role">
+              <option value="all">All roles</option>
+              <option value="manager">Manager</option>
+              <option value="worker">Worker</option>
+              <option value="reviewer">Reviewer</option>
+              <option value="advisor">Advisor</option>
+              <option value="unclassified">Unclassified</option>
+            </select>
+            <select id="pattern-filter-harness" aria-label="Filter by harness">
+              <option value="all">All harnesses</option>
+            </select>
+            <select id="pattern-filter-outcome" aria-label="Filter by outcome coverage">
+              <option value="all">All outcome coverage</option>
+              <option value="observed">Outcome observed</option>
+              <option value="insufficient-coverage">Outcome sparse</option>
+            </select>
+            <select id="pattern-filter-review" aria-label="Filter by review disposition">
+              <option value="all">All reviews</option>
+              <option value="unreviewed">Unreviewed</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="contextual">Contextual</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+            <label>From <input id="pattern-filter-from" type="date"></label>
+            <label>To <input id="pattern-filter-to" type="date"></label>
+            <button class="text-button" id="pattern-filter-reset" type="button">Reset filters</button>
+          </div>
+          <div id="pattern-filter-meta" class="pattern-filter-meta"></div>
           <div id="workflow-pattern-list" class="workflow-pattern-list"></div>
         </article>
         <article class="panel evolution-panel">
@@ -229,6 +280,46 @@
     </div>
     <div id="evidence-meta" class="evidence-meta"></div>
     <pre id="evidence-content" class="evidence-content"></pre>
+  </dialog>
+
+  <dialog id="pattern-dialog" class="pattern-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Evidence-backed operator pattern</p>
+        <h2 id="pattern-detail-title">Workflow pattern</h2>
+        <p id="pattern-detail-subtitle" class="pattern-detail-subtitle"></p>
+      </div>
+      <button class="icon-button" id="close-pattern" aria-label="Close pattern">×</button>
+    </div>
+    <div id="pattern-detail-content"></div>
+    <form id="pattern-annotation-form" class="pattern-annotation-form">
+      <div>
+        <p class="eyebrow">Operator review</p>
+        <h3>How should Chatlog understand this?</h3>
+        <p id="pattern-annotation-revision"></p>
+      </div>
+      <label>
+        Disposition
+        <select id="pattern-annotation-disposition">
+          <option value="unreviewed">Unreviewed</option>
+          <option value="confirmed">Confirmed preference</option>
+          <option value="contextual">Context dependent</option>
+          <option value="dismissed">Dismissed as noise</option>
+        </select>
+      </label>
+      <label>
+        Display label
+        <input id="pattern-annotation-label" maxlength="120" placeholder="Optional presentation-only name">
+      </label>
+      <label>
+        Context note
+        <textarea id="pattern-annotation-note" maxlength="1000" rows="4" placeholder="When does this apply—or not apply?"></textarea>
+      </label>
+      <div class="pattern-annotation-actions">
+        <span id="pattern-annotation-state"></span>
+        <button id="save-pattern-annotation" type="submit">Save locally</button>
+      </div>
+    </form>
   </dialog>
 
   <script src="app.js" type="module"></script>

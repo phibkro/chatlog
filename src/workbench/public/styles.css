@@ -154,16 +154,29 @@ mark { padding: 1px 2px; border-radius: 3px; color: var(--green-strong); backgro
 .empty.spacious { padding: 70px 20px; border: 1px dashed var(--line); border-radius: 14px; text-align: center; }
 
 .workflow-patterns-panel, .evolution-panel { margin-bottom: 18px; }
-.workflow-pattern-summary { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+.workflow-pattern-summary { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; }
 .workflow-pattern-summary > div { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02); }
 .workflow-pattern-summary strong, .workflow-pattern-summary span { display: block; }
 .workflow-pattern-summary strong { font: 400 22px Georgia, serif; color: var(--green-strong); }
 .workflow-pattern-summary span { margin-top: 5px; color: var(--faint); font-size: 9px; }
 .pattern-causality { margin: 12px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.pattern-explorer-toolbar { display: grid; grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(120px, .7fr)); gap: 8px; margin-top: 15px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(5,8,6,.28); }
+.pattern-explorer-toolbar input, .pattern-explorer-toolbar select, .pattern-annotation-form input, .pattern-annotation-form select, .pattern-annotation-form textarea { min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; outline: 0; color: var(--text); background: rgba(255,255,255,.025); font: inherit; font-size: 9px; }
+.pattern-explorer-toolbar input:focus, .pattern-explorer-toolbar select:focus, .pattern-annotation-form input:focus, .pattern-annotation-form select:focus, .pattern-annotation-form textarea:focus { border-color: rgba(158,215,166,.35); }
+.pattern-explorer-toolbar label { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9px; }
+.pattern-explorer-toolbar label input { flex: 1; }
+.pattern-explorer-toolbar .text-button { align-self: center; justify-self: start; }
+.pattern-filter-meta { margin-top: 9px; color: var(--faint); font-size: 8px; }
 .workflow-pattern-list { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 11px; margin-top: 15px; }
 .workflow-pattern-card { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.018); }
+.workflow-pattern-card:has(.pattern-review.dismissed) { opacity: .7; }
 .workflow-pattern-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .workflow-pattern-card h3 { margin: 0; font: 400 14px/1.4 Georgia, serif; }
+.workflow-pattern-derived-title { margin-top: 4px; color: var(--faint); font-size: 8px; }
+.pattern-review { display: inline-flex; margin-bottom: 6px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--faint); font-size: 7px; letter-spacing: .08em; text-transform: uppercase; }
+.pattern-review.confirmed { color: var(--green); border-color: rgba(158,215,166,.25); }
+.pattern-review.contextual { color: var(--amber); border-color: rgba(221,184,113,.25); }
+.pattern-review.dismissed { color: var(--red); border-color: rgba(217,140,128,.22); }
 .workflow-pattern-card p { margin: 9px 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .workflow-pattern-meta { color: var(--faint); font-size: 9px; line-height: 1.5; }
 .workflow-pattern-relations { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
@@ -171,6 +184,7 @@ mark { padding: 1px 2px; border-radius: 3px; color: var(--green-strong); backgro
 .workflow-pattern-outcome { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
 .workflow-pattern-outcome strong { color: var(--amber); }
 .workflow-pattern-card .text-button { margin-top: 9px; }
+.pattern-annotation-note { margin-top: 10px; padding: 9px; border-left: 2px solid rgba(158,215,166,.24); color: var(--muted); background: rgba(158,215,166,.035); font-size: 9px; line-height: 1.5; white-space: pre-wrap; }
 .evolution-summary { display: grid; gap: 14px; }
 .evolution-metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
 .evolution-metrics > div { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02); }
@@ -268,11 +282,40 @@ dialog::backdrop { background: rgba(4,7,5,.72); backdrop-filter: blur(5px); }
 .dialog-head h2 { margin: 4px 0 0; font: 400 22px Georgia, serif; }
 .evidence-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 12px; }
 .evidence-content { overflow: auto; max-height: 52vh; margin: 0; padding: 17px; border: 1px solid var(--line); border-radius: 12px; color: #cbd3cc; background: rgba(5,8,6,.6); white-space: pre-wrap; font: 11px/1.65 "SFMono-Regular", Consolas, monospace; }
+.pattern-dialog { width: min(920px, calc(100vw - 32px)); }
+.pattern-detail-subtitle { margin: 6px 0 0; color: var(--faint); font-size: 9px; text-transform: capitalize; }
+.pattern-detail-claim { margin: 20px 0 14px; color: #d7ded8; font: 400 16px/1.55 Georgia, serif; }
+.pattern-detail-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pattern-detail-facts span, .pattern-detail-relations span { padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 8px; }
+.pattern-detail-methodology { margin: 10px 0 0; color: var(--faint); font-size: 8px; line-height: 1.5; }
+.pattern-detail-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.pattern-detail-section h3, .pattern-annotation-form h3 { margin: 0 0 10px; font: 400 15px Georgia, serif; }
+.pattern-detail-section > p { color: var(--muted); font-size: 9px; line-height: 1.55; }
+.pattern-detail-relations { display: flex; flex-wrap: wrap; gap: 6px; }
+.pattern-detail-timeline { display: grid; margin-top: 10px; }
+.pattern-detail-timeline > div { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.pattern-detail-timeline strong { font-size: 9px; font-weight: 520; text-transform: capitalize; }
+.pattern-detail-timeline time { color: var(--faint); font-size: 8px; }
+.pattern-detail-metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+.pattern-detail-metrics > div { padding: 11px; border: 1px solid var(--line); border-radius: 10px; }
+.pattern-detail-metrics span, .pattern-detail-metrics small { display: block; color: var(--faint); font-size: 8px; }
+.pattern-detail-metrics strong { display: block; margin: 6px 0 5px; font: 400 17px Georgia, serif; }
+.pattern-example-list { display: grid; }
+.pattern-example-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 8px; }
+.pattern-annotation-form { display: grid; gap: 12px; margin-top: 22px; padding: 17px; border: 1px solid rgba(158,215,166,.18); border-radius: 13px; background: rgba(158,215,166,.035); }
+.pattern-annotation-form > div:first-child p:last-child { margin: 5px 0 0; color: var(--faint); font-size: 8px; }
+.pattern-annotation-form label { display: grid; gap: 6px; color: var(--muted); font-size: 9px; }
+.pattern-annotation-form textarea { resize: vertical; line-height: 1.5; }
+.pattern-annotation-form :disabled { opacity: .55; cursor: not-allowed; }
+.pattern-annotation-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.pattern-annotation-actions span { color: var(--faint); font-size: 8px; line-height: 1.4; }
+.pattern-annotation-actions button { flex: 0 0 auto; padding: 8px 12px; border: 0; border-radius: 8px; color: #0c160e; background: var(--green); font-weight: 650; cursor: pointer; }
 
 @media (max-width: 1100px) {
   :root { --sidebar: 210px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .content-grid, .pattern-grid, .workflow-pattern-list { grid-template-columns: 1fr; }
+  .pattern-explorer-toolbar { grid-template-columns: repeat(3, minmax(0,1fr)); }
   .project-grid, .source-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
 @media (max-width: 760px) {
@@ -286,7 +329,7 @@ dialog::backdrop { background: rgba(4,7,5,.72); backdrop-filter: blur(5px); }
   .global-search kbd { display: none; }
   .view { padding: 31px 16px 55px; }
   .page-intro { align-items: flex-start; flex-direction: column; }
-  .stat-grid, .project-grid, .source-grid, .workflow-pattern-summary { grid-template-columns: 1fr; }
+  .stat-grid, .project-grid, .source-grid, .workflow-pattern-summary, .pattern-explorer-toolbar, .pattern-detail-metrics { grid-template-columns: 1fr; }
   .session-row { grid-template-columns: minmax(0,1fr) 70px; }
   .session-row > :nth-child(2), .session-row > :nth-child(4) { display: none; }
   .candidate-row { grid-template-columns: minmax(0,1fr) 90px; }

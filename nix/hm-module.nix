@@ -7,6 +7,14 @@
 
 let
   cfg = config.services.chatlog-workbench;
+  isExactHttpOrigin =
+    origin:
+    let
+      match = builtins.match "https?://(([A-Za-z0-9.-]+)|([[][0-9A-Fa-f:.]+[]]))(:([0-9]+))?" origin;
+      portText = if match == null then null else builtins.elemAt match 4;
+      port = if portText == null then null else lib.toInt portText;
+    in
+    match != null && (port == null || (port >= 1 && port <= 65535));
 in
 {
   options.services.chatlog-workbench = {
@@ -50,6 +58,28 @@ in
       default = 4789;
       description = "Listen port.";
     };
+
+    allowAnnotations = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable the narrowly scoped browser endpoint for append-only workflow
+        pattern annotations. This does not enable source, evidence, derived
+        claim, or harness mutation. Keep the service loopback-only and declare
+        any reverse-proxy origin with annotationOrigins.
+      '';
+    };
+
+    annotationOrigins = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "https://chatlog.example.net" ];
+      description = ''
+        Exact external browser origins allowed to write annotations. Loopback
+        origins for the configured port are built into the server. Forwarded
+        headers are never used as annotation authority.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -64,6 +94,14 @@ in
           services.chatlog-workbench.host must remain loopback-only. Keep
           127.0.0.1 and use Tailscale Serve or another authenticated reverse
           proxy for remote access.
+        '';
+      }
+      {
+        assertion = builtins.all isExactHttpOrigin cfg.annotationOrigins;
+        message = ''
+          Every services.chatlog-workbench.annotationOrigins entry must be an
+          HTTP(S) origin with a valid host/port and no credentials, path,
+          query, or fragment.
         '';
       }
     ];
@@ -85,12 +123,15 @@ in
           "CHATLOG_DATA_ROOT=${cfg.dataRoot}"
           "CHATLOG_HOST=${cfg.host}"
           "CHATLOG_PORT=${toString cfg.port}"
+          "CHATLOG_ALLOW_ANNOTATIONS=${if cfg.allowAnnotations then "1" else "0"}"
+          "CHATLOG_ANNOTATION_ORIGINS=${lib.concatStringsSep "," cfg.annotationOrigins}"
         ];
         Restart = "on-failure";
         RestartSec = 5;
 
-        # Conservative hardening for a loopback-bound, read-only local
-        # service. MemoryDenyWriteExecute is deliberately omitted: Bun JITs.
+        # Conservative hardening for a loopback-bound local service. The data
+        # root is writable for an explicitly enabled append-only annotation
+        # layer. MemoryDenyWriteExecute is deliberately omitted: Bun JITs.
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";

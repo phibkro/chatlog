@@ -214,7 +214,10 @@ lineages are not presented as statistical independence. Chatlog distinguishes
 exact recurrence, reformulation, and return to a prior formulation while
 keeping the underlying boundary effect separate. Outcome directions appear
 only with three covered event windows and remain descriptive rather than
-causal.
+causal. Workbench turns this artifact into a filterable detail Explorer.
+Private deployments may separately opt into append-only local reviews with a
+presentation label and context note; annotations never rewrite the artifact,
+canonical evidence, or an agent harness.
 
 Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
 runs the existing external scorer to rank a concrete role pattern against its

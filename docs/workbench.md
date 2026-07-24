@@ -14,9 +14,11 @@ hosted telemetry product.
 - **Recall** — local SQLite FTS5 search. Results carry
   `chatlog://conversation/<hash>/turn/<index>` pointers, and the evidence viewer
   resolves the canonical redacted turn on demand.
-- **Patterns** — a session-aware workflow-change history, inferred role
-  boundaries, measured agent experiments, and knowledge-refinery candidates.
-  A candidate is a prompt for review, never an automatic configuration change.
+- **Patterns** — a filterable repeated-pattern explorer, session-aware
+  workflow-change history, inferred role boundaries, measured agent
+  experiments, and knowledge-refinery candidates. A private deployment may
+  opt into append-only operator reviews; neither a pattern nor an annotation
+  automatically changes agent configuration.
 - **Sources** — connected harnesses, discovered exports, planned connectors,
   provenance domains, and their privacy behavior.
 
@@ -36,8 +38,8 @@ bun run query workflow-patterns
 bun run workbench
 ```
 
-Open `http://127.0.0.1:4789`. The server is read-only and binds to loopback by
-default.
+Open `http://127.0.0.1:4789`. The server binds to loopback and keeps every HTTP
+mutation disabled by default.
 
 Environment variables:
 
@@ -48,6 +50,9 @@ Environment variables:
 | `CHATLOG_HOST` | `127.0.0.1` | Listen address |
 | `CHATLOG_PORT` | `4789` | Listen port |
 | `CHATLOG_ALLOW_REMOTE` | unset | Must equal `1` before a non-loopback bind |
+| `CHATLOG_ALLOW_ANNOTATIONS` | unset | Must equal `1` to enable the one append-only annotation route |
+| `CHATLOG_ANNOTATION_ORIGINS` | unset | Comma-separated exact external browser origins allowed to annotate |
+| `CHATLOG_ACK_REMOTE_ANNOTATIONS` | unset | Additional acknowledgement required if annotations and a non-loopback bind are both enabled |
 
 Remote access is deliberately opt-in. If access from another machine is needed,
 prefer a private overlay or authenticated reverse proxy rather than exposing
@@ -239,9 +244,11 @@ The panel never labels a delta as an effect or recommendation.
 after Workflow Evolution and Workflow Outcomes. One newest event per opaque
 episode contributes to a workflow-kind, explicit-signal, and inferred-role
 signature; three distinct episodes across two UTC days are required. Workbench
-exposes at most 30 patterns and renders the 12 most supported cards with exact
-recurrence,
-reformulation, return-to-prior, coverage, and canonical-example drilldown.
+exposes at most 30 patterns and renders a filterable Explorer with exact
+recurrence, reformulation, return-to-prior, coverage, bounded occurrence
+timelines, outcome context, and canonical-example drilldown. Filters cover
+kind, signal, role, harness, outcome coverage, review state, bounded text, and
+the projected occurrence date range.
 Outcome directions require three covered episode windows and are disclosed as
 descriptive associations across potentially overlapping windows.
 Opaque episode lineages are a deduplication boundary, not statistical
@@ -250,6 +257,38 @@ independence.
 The Workbench projection replaces structured project paths with counts and
 omits internal pattern, event, episode, and statement identifiers. The
 canonical evidence endpoint remains the explicit one-turn drilldown boundary.
+
+### Local pattern annotations
+
+Annotations are presentation and review state, not edits to derived evidence.
+When explicitly enabled, the Explorer can mark a pattern `confirmed`,
+`contextual`, `dismissed`, or `unreviewed`, add a presentation-only label, and
+store a bounded context note. Records are private, append-only,
+content-addressed, predecessor-linked, and retained across re-derivations by a
+stable kind/signal/role handle.
+
+`POST /api/pattern-annotations` is the only mutating Workbench route. It is
+browser-only and requires all of:
+
+- `CHATLOG_ALLOW_ANNOTATIONS=1`;
+- an exact server-configured `Origin` (loopback origins are built in);
+- a present `Sec-Fetch-Site: same-origin` header;
+- JSON within the declared byte bound;
+- the public snapshot token and per-pattern revision the client reviewed.
+
+The server does not trust `Host` or forwarded headers as mutation authority.
+Stale revisions or pattern snapshots return HTTP 409. These controls make the
+annotation write route resistant to CSRF and DNS rebinding; they are not
+application authentication and do not gate the existing read APIs. Keep the
+service loopback-bound behind a private overlay. A lost authoritative
+annotation manifest must be restored from backup rather than reconstructed
+from potentially forked objects.
+
+Writes serialize through a private SQLite coordination lock below
+`annotations/`. It contains no annotation content or authority and is released
+automatically by SQLite when a writer exits; the sealed JSON manifest remains
+the sole current-state authority. The global rate bound counts all allowed
+mutation attempts, including invalid or conflicting writes.
 
 ## Package and deploy
 
@@ -286,6 +325,8 @@ default:
     # dataRoot = "${config.xdg.dataHome}/chatlog";         # default
     # host = "127.0.0.1";                                  # default; loopback
     # port = 4789;                                         # default
+    # allowAnnotations = false;                            # default
+    # annotationOrigins = [ "https://chatlog.example.net" ];
   };
 }
 ```
@@ -297,6 +338,13 @@ stays read-only to the unit) and creates `dataRoot` on activation if it does
 not already exist. `host` defaults to loopback. The server itself refuses a
 non-loopback bind unless `CHATLOG_ALLOW_REMOTE=1` is set in its environment, so
 changing `host` alone does not expose the service.
+
+`allowAnnotations` opts into only the append-only pattern review endpoint.
+External reverse-proxy origins must also be declared with
+`annotationOrigins`. The server always permits its exact loopback origins,
+requires same-origin browser fetch metadata, ignores forwarded headers for
+authorization, and requires a separate acknowledgement if a manually launched
+instance combines writes with a non-loopback bind.
 
 `GET /api/health` is the lightweight readiness probe for operators and
 monitors. It verifies that the manifest-backed source projection is current

@@ -7,6 +7,18 @@ const state = {
   receipts: [],
   receiptError: null,
   candidateFilter: "all",
+  patternFilters: {
+    query: "",
+    kind: "all",
+    signal: "all",
+    role: "all",
+    outcome: "all",
+    review: "all",
+    harness: "all",
+    from: "",
+    to: "",
+  },
+  selectedPatternHandle: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -31,6 +43,22 @@ async function api(path) {
   const response = await fetch(path);
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Request failed: ${response.status}`);
+  return body;
+}
+
+async function apiMutation(path, input) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const error = new Error(body.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
   return body;
 }
 
@@ -164,6 +192,268 @@ async function openEvidence(uri) {
   }
 }
 
+const patternDisposition = (pattern) =>
+  pattern.annotation?.disposition || "unreviewed";
+
+function patternMatchesFilters(pattern) {
+  const filters = state.patternFilters;
+  const annotation = pattern.annotation || {};
+  const searchable = [
+    annotation.label,
+    annotation.note,
+    pattern.title,
+    pattern.claim,
+    pattern.kind,
+    pattern.signal,
+    pattern.role,
+    ...(pattern.coverage?.harnesses || []),
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (filters.query && !searchable.includes(filters.query.toLowerCase()))
+    return false;
+  if (filters.kind !== "all" && pattern.kind !== filters.kind) return false;
+  if (filters.signal !== "all" && pattern.signal !== filters.signal)
+    return false;
+  if (filters.role !== "all" && pattern.role !== filters.role) return false;
+  if (
+    filters.outcome !== "all"
+    && pattern.outcomes?.status !== filters.outcome
+  ) return false;
+  if (
+    filters.review !== "all"
+    && patternDisposition(pattern) !== filters.review
+  ) return false;
+  if (
+    filters.harness !== "all"
+    && !(pattern.coverage?.harnesses || []).includes(filters.harness)
+  ) return false;
+  if (filters.from || filters.to) {
+    const from = filters.from || "0000-01-01";
+    const to = filters.to || "9999-12-31";
+    const occurrences = pattern.sequence?.timeline || [];
+    if (!occurrences.some((item) => {
+      const day = String(item.occurredAt || "").slice(0, 10);
+      return day >= from && day <= to;
+    })) return false;
+  }
+  return true;
+}
+
+function renderWorkflowPatterns(patterns) {
+  const all = patterns?.patterns || [];
+  const summary = patterns?.summary || {};
+  const annotationState = patterns?.annotations;
+  $("#workflow-patterns-count").textContent =
+    `${formatNumber(summary.repeatedPatterns)} repeated`;
+  $("#workflow-patterns-summary").innerHTML = `
+    <div class="workflow-pattern-summary">
+      <div><strong>${formatNumber(summary.repeatedPatterns)}</strong><span>multi-day repeated patterns</span></div>
+      <div><strong>${formatNumber(summary.candidateSignatures)}</strong><span>deterministic signatures</span></div>
+      <div><strong>${formatNumber(summary.outcomeObservedPatterns)}</strong><span>with repeated outcome coverage</span></div>
+      <div><strong>${formatNumber(annotationState?.summary?.confirmed)}</strong><span>operator confirmed</span></div>
+    </div>
+    <p class="pattern-causality">${escapeHtml(patterns.methodology?.causality || "Outcome directions are descriptive and do not establish causation.")}</p>`;
+
+  const harnesses = [...new Set(all.flatMap(
+    (pattern) => pattern.coverage?.harnesses || [],
+  ))].sort();
+  const harnessSelect = $("#pattern-filter-harness");
+  const currentHarness = state.patternFilters.harness;
+  harnessSelect.innerHTML = [
+    `<option value="all">All harnesses</option>`,
+    ...harnesses.map((harness) =>
+      `<option value="${escapeHtml(harness)}">${escapeHtml(harness)}</option>`
+    ),
+  ].join("");
+  harnessSelect.value = harnesses.includes(currentHarness)
+    ? currentHarness
+    : "all";
+  state.patternFilters.harness = harnessSelect.value;
+
+  const filtered = all.filter(patternMatchesFilters);
+  $("#pattern-filter-meta").textContent =
+    `${filtered.length} of ${all.length} patterns · date filters inspect the bounded occurrence timeline`;
+  $("#workflow-pattern-list").innerHTML = filtered.map((pattern) => {
+    const relations = pattern.sequence?.relations || {};
+    const outcome = pattern.outcomes || {};
+    const metric = outcome.metrics?.completionRate;
+    const annotation = pattern.annotation;
+    return `<article class="workflow-pattern-card" data-handle="${escapeHtml(pattern.handle)}">
+      <div class="workflow-pattern-card-head">
+        <div>
+          <span class="pattern-review ${escapeHtml(patternDisposition(pattern))}">${escapeHtml(patternDisposition(pattern))}</span>
+          <h3>${escapeHtml(annotation?.label || pattern.title)}</h3>
+        </div>
+        <span class="badge">${formatNumber(pattern.coverage?.distinctEpisodes)} episodes</span>
+      </div>
+      ${annotation?.label ? `<div class="workflow-pattern-derived-title">Derived as ${escapeHtml(pattern.title)}</div>` : ""}
+      <p>${escapeHtml(pattern.claim)}</p>
+      <div class="workflow-pattern-meta">
+        ${formatNumber(pattern.coverage?.projectCount)} projects ·
+        ${formatNumber(pattern.coverage?.eventMemberships)} event memberships ·
+        ${formatNumber(pattern.coverage?.distinctDays)} UTC days ·
+        ${escapeHtml(pattern.boundaryEffect?.replaceAll("-", " ") || "")}
+      </div>
+      ${pattern.coverage?.sharedEventMemberships ? `<div class="workflow-pattern-meta">${formatNumber(pattern.coverage.sharedEventMemberships)} memberships also contribute to another candidate signature.</div>` : ""}
+      <div class="workflow-pattern-relations">
+        <span>${formatNumber(relations.reinforced)} reinforced</span>
+        <span>${formatNumber(relations.reformulated)} reformulated</span>
+        <span>${formatNumber(relations["returned-to-prior"])} returned</span>
+      </div>
+      <div class="workflow-pattern-outcome">
+        ${outcome.status === "observed"
+          ? `<strong>Descriptive outcome coverage</strong> · ${formatNumber(outcome.observedEpisodes)} episodes${metric?.medianDelta == null ? "" : ` · completion median ${formatRateDelta(metric.medianDelta)}`}`
+          : `Outcome association still sparse · ${formatNumber(outcome.observedEpisodes)} covered episodes`}
+      </div>
+      ${annotation?.note ? `<div class="pattern-annotation-note">${escapeHtml(annotation.note)}</div>` : ""}
+      <button class="text-button open-pattern" data-handle="${escapeHtml(pattern.handle)}">Inspect and review →</button>
+    </article>`;
+  }).join("") || `<div class="empty">No workflow patterns match these filters.</div>`;
+  $$(".open-pattern").forEach((button) =>
+    button.addEventListener("click", () => openPattern(button.dataset.handle))
+  );
+}
+
+function renderPatternDetail(pattern) {
+  const dialog = $("#pattern-dialog");
+  const annotation = pattern.annotation;
+  state.selectedPatternHandle = pattern.handle;
+  $("#pattern-detail-title").textContent = annotation?.label || pattern.title;
+  $("#pattern-detail-subtitle").textContent = annotation?.label
+    ? `Derived pattern: ${pattern.title}`
+    : `${pattern.role} · ${pattern.signal}`;
+  const relations = pattern.sequence?.relations || {};
+  const outcome = pattern.outcomes || {};
+  const methodology = state.insights?.workflowPatterns?.methodology || {};
+  const metrics = [
+    ["Completion", outcome.metrics?.completionRate],
+    ["Friction", outcome.metrics?.frictionRate],
+    ["Rework proxy", outcome.metrics?.reworkRate],
+  ];
+  $("#pattern-detail-content").innerHTML = `
+    <p class="pattern-detail-claim">${escapeHtml(pattern.claim)}</p>
+    <div class="pattern-detail-facts">
+      <span>${formatNumber(pattern.coverage?.distinctEpisodes)} episodes</span>
+      <span>${formatNumber(pattern.coverage?.distinctDays)} UTC days</span>
+      <span>${formatNumber(pattern.coverage?.distinctFormulations)} formulations</span>
+      <span>${escapeHtml((pattern.coverage?.harnesses || []).join(", ") || "unknown harness")}</span>
+      <span>${escapeHtml(pattern.boundaryEffect?.replaceAll("-", " ") || "")}</span>
+    </div>
+    <p class="pattern-detail-methodology">${escapeHtml(methodology.boundaryEffect || "")} ${escapeHtml(methodology.causality || "")}</p>
+    <div class="pattern-detail-section">
+      <h3>Formulation history</h3>
+      <div class="pattern-detail-relations">
+        <span>${formatNumber(relations.introduced)} introduced</span>
+        <span>${formatNumber(relations.reinforced)} reinforced</span>
+        <span>${formatNumber(relations.reformulated)} reformulated</span>
+        <span>${formatNumber(relations["returned-to-prior"])} returned to prior</span>
+      </div>
+      <div class="pattern-detail-timeline">${(pattern.sequence?.timeline || []).map((item) => `
+        <div><span class="timeline-dot"></span><strong>${escapeHtml(item.relation.replaceAll("-", " "))}</strong><time>${escapeHtml(formatDate(item.occurredAt))}</time></div>
+      `).join("") || `<div class="empty">No bounded timeline available.</div>`}</div>
+    </div>
+    <div class="pattern-detail-section">
+      <h3>Descriptive outcome context</h3>
+      <p>${escapeHtml(outcome.interpretation?.claim || "Coverage remains below the declared floor.")}</p>
+      <div class="pattern-detail-metrics">${metrics.map(([label, metric]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${metric?.medianDelta == null ? "—" : formatRateDelta(metric.medianDelta)}</strong>
+          <small>${formatNumber(metric?.samples)} samples · ${escapeHtml(metric?.orientation?.replaceAll("-", " ") || "not oriented")}</small>
+        </div>
+      `).join("")}</div>
+    </div>
+    <div class="pattern-detail-section">
+      <h3>Canonical examples</h3>
+      <div class="pattern-example-list">${(pattern.examples || []).map((example) => {
+        const evidence = example.evidence?.[0];
+        return `<div>
+          <span>${escapeHtml(formatDate(example.occurredAt))} · ${escapeHtml(example.relation.replaceAll("-", " "))}</span>
+          ${evidence ? `<button class="text-button pattern-detail-evidence" data-uri="${escapeHtml(evidence.pointer)}">Open evidence</button>` : ""}
+        </div>`;
+      }).join("") || `<div class="empty">No examples available.</div>`}</div>
+    </div>`;
+
+  const enabled = state.insights?.workflowPatterns?.annotations?.enabled;
+  $("#pattern-annotation-disposition").value =
+    annotation?.disposition || "unreviewed";
+  $("#pattern-annotation-label").value = annotation?.label || "";
+  $("#pattern-annotation-note").value = annotation?.note || "";
+  $("#pattern-annotation-revision").textContent =
+    annotation ? `Revision ${annotation.revision} · ${relativeTime(annotation.updatedAt)}` : "Not reviewed yet";
+  $("#save-pattern-annotation").disabled = !enabled;
+  $("#pattern-annotation-disposition").disabled = !enabled;
+  $("#pattern-annotation-label").disabled = !enabled;
+  $("#pattern-annotation-note").disabled = !enabled;
+  $("#pattern-annotation-state").textContent = enabled
+    ? "Your review is stored locally and never changes the derived evidence."
+    : "Annotations are disabled for this deployment.";
+  $$(".pattern-detail-evidence", dialog).forEach((button) =>
+    button.addEventListener("click", () => openEvidence(button.dataset.uri))
+  );
+}
+
+function openPattern(handle) {
+  const pattern = state.insights?.workflowPatterns?.patterns
+    ?.find((candidate) => candidate.handle === handle);
+  if (!pattern) return;
+  renderPatternDetail(pattern);
+  $("#pattern-dialog").showModal();
+}
+
+async function savePatternAnnotation() {
+  const patterns = state.insights?.workflowPatterns;
+  const pattern = patterns?.patterns?.find(
+    (candidate) => candidate.handle === state.selectedPatternHandle,
+  );
+  if (!pattern) return;
+  const button = $("#save-pattern-annotation");
+  const status = $("#pattern-annotation-state");
+  button.disabled = true;
+  status.textContent = "Saving private annotation…";
+  try {
+    await apiMutation("/api/pattern-annotations", {
+      handle: pattern.handle,
+      expectedRevision: pattern.annotation?.revision || 0,
+      observedSnapshot: patterns.annotations?.snapshot,
+      disposition: $("#pattern-annotation-disposition").value,
+      label: $("#pattern-annotation-label").value,
+      note: $("#pattern-annotation-note").value,
+    });
+    try {
+      state.insights = await api("/api/insights");
+    } catch (refreshError) {
+      status.textContent =
+        `Saved locally, but refresh failed: ${refreshError.message}`;
+      return;
+    }
+    state.insightsError = null;
+    renderInsights();
+    const refreshed = state.insights?.workflowPatterns?.patterns
+      ?.find((candidate) => candidate.handle === pattern.handle);
+    if (refreshed) renderPatternDetail(refreshed);
+    status.textContent = "Saved locally.";
+  } catch (error) {
+    if (error.status === 409) {
+      try {
+        state.insights = await api("/api/insights");
+        renderInsights();
+        const refreshed = state.insights?.workflowPatterns?.patterns
+          ?.find((candidate) => candidate.handle === pattern.handle);
+        if (refreshed) renderPatternDetail(refreshed);
+        status.textContent =
+          "The pattern or annotation changed. Review the refreshed values before saving.";
+      } catch (refreshError) {
+        status.textContent =
+          `The pattern changed, but refresh failed: ${refreshError.message}`;
+      }
+    } else {
+      status.textContent = error.message;
+    }
+  } finally {
+    button.disabled = !state.insights?.workflowPatterns?.annotations?.enabled;
+  }
+}
+
 function renderInsights() {
   if (state.insightsError) {
     const message = `Insights unavailable: ${state.insightsError}`;
@@ -190,49 +480,7 @@ function renderInsights() {
     $("#workflow-patterns-summary").innerHTML = `<div class="empty">Run <code>chatlog query workflow-patterns</code> to synthesize repeated operator instructions.</div>`;
     $("#workflow-pattern-list").innerHTML = "";
   } else {
-    const summary = patterns.summary || {};
-    $("#workflow-patterns-count").textContent = `${formatNumber(summary.repeatedPatterns)} repeated`;
-    $("#workflow-patterns-summary").innerHTML = `
-      <div class="workflow-pattern-summary">
-        <div><strong>${formatNumber(summary.repeatedPatterns)}</strong><span>multi-day repeated patterns</span></div>
-        <div><strong>${formatNumber(summary.candidateSignatures)}</strong><span>deterministic signatures</span></div>
-        <div><strong>${formatNumber(summary.outcomeObservedPatterns)}</strong><span>with repeated outcome coverage</span></div>
-      </div>
-      <p class="pattern-causality">${escapeHtml(patterns.methodology?.causality || "Outcome directions are descriptive and do not establish causation.")}</p>`;
-    $("#workflow-pattern-list").innerHTML = (patterns.patterns || []).slice(0, 12).map((pattern) => {
-      const relations = pattern.sequence?.relations || {};
-      const outcome = pattern.outcomes || {};
-      const metric = outcome.metrics?.completionRate;
-      const evidence = pattern.examples?.find((item) => item.evidence?.[0])?.evidence?.[0];
-      return `<article class="workflow-pattern-card">
-        <div class="workflow-pattern-card-head">
-          <h3>${escapeHtml(pattern.title)}</h3>
-          <span class="badge">${formatNumber(pattern.coverage?.distinctEpisodes)} episodes</span>
-        </div>
-        <p>${escapeHtml(pattern.claim)}</p>
-        <div class="workflow-pattern-meta">
-          ${formatNumber(pattern.coverage?.projectCount)} projects ·
-          ${formatNumber(pattern.coverage?.eventMemberships)} event memberships ·
-          ${formatNumber(pattern.coverage?.distinctDays)} UTC days ·
-          ${escapeHtml(pattern.boundaryEffect?.replaceAll("-", " ") || "")}
-        </div>
-        ${pattern.coverage?.sharedEventMemberships ? `<div class="workflow-pattern-meta">${formatNumber(pattern.coverage.sharedEventMemberships)} memberships also contribute to another candidate signature.</div>` : ""}
-        <div class="workflow-pattern-relations">
-          <span>${formatNumber(relations.reinforced)} reinforced</span>
-          <span>${formatNumber(relations.reformulated)} reformulated</span>
-          <span>${formatNumber(relations["returned-to-prior"])} returned</span>
-        </div>
-        <div class="workflow-pattern-outcome">
-          ${outcome.status === "observed"
-            ? `<strong>Descriptive outcome coverage</strong> · ${formatNumber(outcome.observedEpisodes)} episodes${metric?.medianDelta == null ? "" : ` · completion median ${formatRateDelta(metric.medianDelta)}`}`
-            : `Outcome association still sparse · ${formatNumber(outcome.observedEpisodes)} covered episodes`}
-        </div>
-        ${evidence ? `<button class="text-button pattern-evidence" data-uri="${escapeHtml(evidence.pointer)}">Inspect canonical example</button>` : ""}
-      </article>`;
-    }).join("") || `<div class="empty">No workflow signature reaches three distinct episodes across two UTC days.</div>`;
-    $$(".pattern-evidence").forEach((button) =>
-      button.addEventListener("click", () => openEvidence(button.dataset.uri))
-    );
+    renderWorkflowPatterns(patterns);
   }
   const workflow = insights.workflowEvolution;
   if (!workflow) {
@@ -429,6 +677,42 @@ $("#project-filter").addEventListener("input", (event) => renderProjects(event.t
 $("#close-project").addEventListener("click", () => $("#project-drawer").classList.add("hidden"));
 $("#close-evidence").addEventListener("click", () => $("#evidence-dialog").close());
 $("#evidence-dialog").addEventListener("click", (event) => { if (event.target === $("#evidence-dialog")) $("#evidence-dialog").close(); });
+$("#close-pattern").addEventListener("click", () => $("#pattern-dialog").close());
+$("#pattern-dialog").addEventListener("click", (event) => {
+  if (event.target === $("#pattern-dialog")) $("#pattern-dialog").close();
+});
+$("#pattern-annotation-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  savePatternAnnotation();
+});
+const patternFilterInputs = {
+  query: $("#pattern-filter-query"),
+  kind: $("#pattern-filter-kind"),
+  signal: $("#pattern-filter-signal"),
+  role: $("#pattern-filter-role"),
+  harness: $("#pattern-filter-harness"),
+  outcome: $("#pattern-filter-outcome"),
+  review: $("#pattern-filter-review"),
+  from: $("#pattern-filter-from"),
+  to: $("#pattern-filter-to"),
+};
+Object.entries(patternFilterInputs).forEach(([name, input]) =>
+  input.addEventListener(name === "query" ? "input" : "change", () => {
+    state.patternFilters[name] = input.value;
+    if (state.insights?.workflowPatterns)
+      renderWorkflowPatterns(state.insights.workflowPatterns);
+  })
+);
+$("#pattern-filter-reset").addEventListener("click", () => {
+  for (const [name, input] of Object.entries(patternFilterInputs)) {
+    input.value = name === "query" || name === "from" || name === "to"
+      ? ""
+      : "all";
+    state.patternFilters[name] = input.value;
+  }
+  if (state.insights?.workflowPatterns)
+    renderWorkflowPatterns(state.insights.workflowPatterns);
+});
 $("#candidate-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]");
   if (!button) return;

@@ -19,6 +19,13 @@ import {
 } from "../derived-authority";
 import { loadWorkflowOutcomes } from "../workflow-outcomes";
 import { loadWorkflowPatterns } from "../workflow-patterns";
+import {
+  loadPatternAnnotationView,
+  patternHandle,
+  writePatternAnnotation,
+  type PatternAnnotationWriteInput,
+  type PublicPatternAnnotation,
+} from "../pattern-annotations";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || value.trim() === "") return fallback;
@@ -57,7 +64,10 @@ export function boundedOutcomeComparison(comparison: any): unknown {
   };
 }
 
-export function boundedWorkflowPattern(pattern: any): unknown {
+export function boundedWorkflowPattern(
+  pattern: any,
+  annotation: PublicPatternAnnotation | null = null,
+): unknown {
   if (!pattern) return null;
   const coverage = pattern.coverage ?? {};
   const metric = (value: any) => ({
@@ -69,6 +79,7 @@ export function boundedWorkflowPattern(pattern: any): unknown {
     medianDelta: value?.medianDelta,
   });
   return {
+    handle: patternHandle(pattern),
     kind: pattern.kind,
     signal: pattern.signal,
     role: pattern.role,
@@ -125,6 +136,13 @@ export function boundedWorkflowPattern(pattern: any): unknown {
         (item: any) => ({ pointer: item.pointer }),
       ),
     })),
+    annotation: annotation ? {
+      disposition: annotation.disposition,
+      label: annotation.label,
+      note: annotation.note,
+      revision: annotation.revision,
+      updatedAt: annotation.updatedAt,
+    } : null,
   };
 }
 
@@ -133,9 +151,14 @@ export class WorkbenchData {
   private readonly db: Database | null;
   private readonly currentColumns: Set<string>;
   private readonly projectionGuard: ActiveProjectionGuard;
+  private readonly annotationsEnabled: boolean;
 
-  constructor(root: string) {
+  constructor(
+    root: string,
+    options: { annotationsEnabled?: boolean } = {},
+  ) {
     this.root = resolve(root);
+    this.annotationsEnabled = options.annotationsEnabled === true;
     this.projectionGuard = new ActiveProjectionGuard(this.root);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
     if (!existsSync(databasePath)) {
@@ -349,6 +372,20 @@ export class WorkbenchData {
         projection: derivedProjection,
       })
       : null;
+    const workflowPatternsCurrent = workflowPatterns
+      ? await loadCurrentDerivedArtifact(
+        this.root,
+        "workflow-patterns-manifest.json",
+      )
+      : null;
+    const patternAnnotations = workflowPatterns && workflowPatternsCurrent
+      ? await loadPatternAnnotationView(
+        this.root,
+        workflowPatterns,
+        workflowPatternsCurrent.contentHash,
+        this.annotationsEnabled,
+      )
+      : null;
     if (
       effectivenessCurrent
       && effectivenessCurrent.artifact?.roleProfileContentHash !== rolesCurrent?.contentHash
@@ -376,6 +413,11 @@ export class WorkbenchData {
     const result = {
       workflowPatterns: workflowPatterns ? {
         summary: workflowPatterns.summary,
+        annotations: patternAnnotations ? {
+          enabled: patternAnnotations.enabled,
+          snapshot: patternAnnotations.snapshot,
+          summary: patternAnnotations.summary,
+        } : null,
         methodology: {
           identity: workflowPatterns.methodology?.identity,
           repetition: workflowPatterns.methodology?.repetition,
@@ -386,7 +428,13 @@ export class WorkbenchData {
         },
         patterns: (workflowPatterns.patterns ?? [])
           .slice(0, 30)
-          .map(boundedWorkflowPattern),
+          .map((pattern: any) => {
+            const handle = patternHandle(pattern);
+            return boundedWorkflowPattern(
+              pattern,
+              patternAnnotations?.annotations[handle] ?? null,
+            );
+          }),
       } : null,
       workflowOutcomes: workflowOutcomes ? {
         summary: workflowOutcomes.summary,
@@ -462,6 +510,27 @@ export class WorkbenchData {
       || finalDerivedProjection.structureProjectionHash !== derivedProjection.structureProjectionHash
     )
       throw new DerivedProjectionDriftError("derived projection changed while serving the request; retry");
+    return result;
+  }
+
+  async annotatePattern(
+    input: PatternAnnotationWriteInput,
+  ): Promise<PublicPatternAnnotation> {
+    if (!this.annotationsEnabled)
+      throw new Error("pattern annotations are disabled");
+    const projection = await assertDerivedProjection(this.root);
+    const artifact = await loadWorkflowPatterns(this.root, { projection });
+    if (!artifact) throw new Error("workflow patterns have not been derived");
+    const current = await loadCurrentDerivedArtifact(
+      this.root,
+      "workflow-patterns-manifest.json",
+    );
+    if (!current)
+      throw new Error("workflow patterns have not been derived");
+    const result = await writePatternAnnotation(this.root, input, {
+      artifact,
+      artifactContentHash: current.contentHash,
+    });
     return result;
   }
 

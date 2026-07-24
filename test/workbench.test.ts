@@ -107,6 +107,9 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     .rejects.toThrow("Evidence not found");
 
   const handler = workbenchHandler(data);
+  const healthResponse = await handler(new Request("http://localhost/api/health"));
+  expect(healthResponse.status).toBe(200);
+  expect(await healthResponse.json()).toEqual({ ready: true, activeSources: 1 });
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
@@ -137,6 +140,7 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(await driftResponse.json()).toEqual({
     error: "active source projection is unavailable or stale; run `chatlog source reconcile`",
   });
+  expect((await handler(new Request("http://localhost/api/health"))).status).toBe(503);
   expect((await handler(new Request("http://localhost/api/sources"))).status).toBe(200);
   data.close();
 });

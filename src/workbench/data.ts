@@ -81,6 +81,12 @@ export class WorkbenchData {
     return current;
   }
 
+  health(): { ready: boolean; activeSources: number } {
+    if (!this.db) return { ready: false, activeSources: 0 };
+    const projection = this.assertProjection();
+    return { ready: true, activeSources: projection.activeSources };
+  }
+
   async overview(): Promise<unknown> {
     if (!this.db) return {
       ready: false,

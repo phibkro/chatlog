@@ -248,6 +248,12 @@ not already exist. `host` defaults to loopback. The server itself refuses a
 non-loopback bind unless `CHATLOG_ALLOW_REMOTE=1` is set in its environment, so
 changing `host` alone does not expose the service.
 
+`GET /api/health` is the lightweight readiness probe for operators and
+monitors. It verifies that the manifest-backed source projection is current
+without running the dashboard's corpus, project, tool, or time-series
+aggregations; it returns HTTP 503 when the database is absent or the projection
+has drifted.
+
 Remote access is deliberately not this module's job. Front Workbench with
 Tailscale Serve or another authenticated reverse proxy pointed at
 `127.0.0.1:<port>`. That remains an operator action at the network boundary;

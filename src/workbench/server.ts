@@ -39,6 +39,10 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
     try {
       if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "read-only workbench" }, 405);
       const url = new URL(request.url);
+      if (url.pathname === "/api/health") {
+        const health = data.health();
+        return json(health, health.ready ? 200 : 503);
+      }
       if (url.pathname === "/api/overview") return json(await data.overview());
       if (url.pathname === "/api/projects") return json(data.projects(url.searchParams.get("limit")));
       if (url.pathname === "/api/sessions") return json(data.sessions(url));

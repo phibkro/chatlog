@@ -286,10 +286,9 @@ Implemented on 2026-07-24.
 - Read paths validate authority before and after assembling a response. Pi
   bridge emission additionally holds the ingest lock across validation,
   canonical reads, and the output commit.
-- Aggregate derived manifests and `derived/current-hashes.jsonl` are still a
-  separate consistency boundary: current readers reject SQLite authority
-  drift, but lifecycle mutation must explicitly invalidate or regenerate
-  aggregate derived state before it can be considered projection-receipted.
+- Aggregate derived manifests and `derived/current-hashes.jsonl` remained a
+  separate consistency boundary at this checkpoint; the derived projection
+  guard below closes its read-side authority gap.
 - `bun run check` passes 48 tests with 293 assertions and all runtime/browser
   bundles. `nix flake check --offline` passes, and the packaged CLI reconciled a
   consistent 3,322-source production copy with zero reindexing while preserving
@@ -301,3 +300,30 @@ Implemented on 2026-07-24.
   ready to merge. Multi-statement non-authority metric snapshots and derived
   aggregate receipts remain explicitly deferred.
 - Reclassify, revoke, purge, and mutating Workbench endpoints remain unexposed.
+
+## Derived projection guard results
+
+Implemented on 2026-07-24.
+
+- Structural derivation and every aggregate writer share one canonical active
+  conversation projection serialization. Writers consume the exact validated
+  snapshot rather than re-reading a mutable projection file.
+- Aggregate manifests are accepted only when their `inputProjectionHash`
+  matches the active corpus-derived projection and their current artifact
+  passes content-hash validation. Missing artifacts, invalid paths, and
+  modified content fail closed.
+- Workbench validates one derived snapshot across orchestration, role,
+  effectiveness, and refinery sections, then rechecks it before returning.
+  Derived drift returns HTTP 503 without disabling source and receipt
+  diagnostics.
+- Effectiveness results are additionally bound to the currently valid role
+  artifact. DuckDB token, time-series, tool, length, and project analytics
+  validate the derived projection before and after each query.
+- Synthetic tests cover stale projections, absent optional aggregates,
+  dangling and modified artifacts,
+  traversal attempts, stale analytics, and the Workbench 503 boundary.
+  `bun run check` passes 49 tests with 313 assertions; `nix flake check
+  --offline` passes.
+- Durable operation intents are now the next prerequisite for reclassification
+  and revocation. A lifecycle writer must still regenerate or explicitly
+  invalidate derived state before marking its intent complete.

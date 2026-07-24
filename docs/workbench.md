@@ -160,6 +160,13 @@ active rows before serving current data. Missing or unequal state fails closed;
 Workbench reports drift as HTTP 503 while the Sources and receipt audit views
 remain available for diagnosis.
 
+Workbench insights and DuckDB analytics apply the same rule to derived state.
+The active conversation projection, aggregate input hashes, and current
+content-addressed artifacts must agree. If source authority advances before
+derivation completes—or an aggregate artifact is missing or modified—the
+affected read fails with an actionable derived-projection error instead of
+serving an older insight.
+
 The current importer does not ingest Claude Projects, memories, or design
 artifacts. Those have different authority and retention semantics, so they
 should become distinct, reviewable source types.
@@ -255,6 +262,12 @@ The workstation consumes Chatlog as a pinned `github:phibkro/chatlog` flake
 input. Homelab enables the user service at `127.0.0.1:4789`, keeps mutable
 state at `~/.local/share/chatlog`, and exposes that loopback endpoint through
 Tailscale Serve. The source checkout is no longer a runtime dependency.
+
+Derived projection checks deliberately hash the small projection and aggregate
+artifacts, not every structural object on every read. Missing active objects
+fail closed during analytics coverage checks; detecting out-of-band
+modification of an existing structural object remains a trusted-local-storage
+boundary so routine reads do not add a full filesystem hashing pass.
 
 Codex's user-level MCP registration and each Claude Code project's `.mcp.json`
 can launch the installed `chatlog-mcp` binary. Agent access should normally set

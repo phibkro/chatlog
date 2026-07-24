@@ -1,7 +1,14 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Conversation, Turn } from "./types";
 import { redact } from "./redact";
+import {
+  assertDerivedProjection,
+  DerivedProjectionDriftError,
+  loadCurrentDerivedArtifact,
+  loadProjectionBoundArtifact,
+  type DerivedProjectionReceipt,
+} from "./derived-authority";
 
 export type OrchestrationPole = "autonomy-grant" | "determinism-impose";
 export type SignalName =
@@ -84,9 +91,9 @@ function validation(labels: OrchestrationLabel[], byPointer: Map<string, Match[]
   return { agreedErrorBar: { minimumSignalAgreement: 0.85 }, calibration: summarize("calibration"), heldOut: summarize("held-out"), rows };
 }
 
-export async function buildOrchestrationProfile(root: string, labels: OrchestrationLabel[]): Promise<any> {
-  const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8");
-  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).sort();
+export async function buildOrchestrationProfile(root: string, labels: OrchestrationLabel[], projection?: DerivedProjectionReceipt): Promise<any> {
+  const currentProjection = projection ?? await assertDerivedProjection(root);
+  const hashes = currentProjection.conversationHashes;
   const matches: Match[] = []; const conversationSets = new Map<SignalName, Set<string>>();
   for (const conversationHash of hashes) {
     const conversation = await loadConversation(root, conversationHash);
@@ -127,7 +134,7 @@ export async function buildOrchestrationProfile(root: string, labels: Orchestrat
     const turn = await resolveOrchestrationPointer(root, item.pointer);
     if (!classifyOrchestrationTurn(turn.content).length) throw new Error(`unsupported evidence pointer: ${item.pointer}`);
   }
-  const inputProjectionHash = hash(projectionText);
+  const inputProjectionHash = currentProjection.contentHash;
   return {
     schemaVersion: 1, outputKind: "orchestration-lean", inputProjectionHash,
     finding: {
@@ -146,20 +153,27 @@ export async function buildOrchestrationProfile(root: string, labels: Orchestrat
 
 export async function deriveOrchestrationProfile(root: string, labelsPath = join(import.meta.dir, "orchestration-labels.json")): Promise<{ processed: boolean; artifactPath: string; contentHash: string; inputProjectionHash: string }> {
   const labelsText = await readFile(labelsPath, "utf8"); const labels = JSON.parse(labelsText) as OrchestrationLabel[];
-  const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8"); const inputProjectionHash = hash(projectionText);
+  const projection = await assertDerivedProjection(root);
+  const inputProjectionHash = projection.contentHash;
   const recipeHash = hash(await Bun.file(import.meta.path).text() + "\n" + labelsText);
   const manifestPath = join(root, "derived", "orchestration-lean-manifest.json");
   let manifest: any = { version: 1 }; try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   if (manifest.current?.inputProjectionHash === inputProjectionHash && manifest.current?.recipeHash === recipeHash) {
-    const artifactPath = join(root, "derived", manifest.current.artifactPath); try { await stat(artifactPath); return { processed: false, artifactPath, contentHash: manifest.current.contentHash, inputProjectionHash }; } catch {}
+    try {
+      const current = await loadCurrentDerivedArtifact(root, "orchestration-lean-manifest.json");
+      if (current?.inputProjectionHash === inputProjectionHash)
+        return { processed: false, artifactPath: join(root, "derived", manifest.current.artifactPath), contentHash: manifest.current.contentHash, inputProjectionHash };
+    } catch (error) {
+      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+    }
   }
-  const artifact = await buildOrchestrationProfile(root, labels); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
+  const artifact = await buildOrchestrationProfile(root, labels, projection); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
   const artifactRel = `orchestration-lean/${contentHash.slice(0, 2)}/${contentHash}.json`; await atomicWrite(join(root, "derived", artifactRel), text);
   manifest.current = { inputProjectionHash, recipeHash, artifactPath: artifactRel, contentHash }; await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { processed: true, artifactPath: join(root, "derived", artifactRel), contentHash, inputProjectionHash };
 }
 export async function loadOrchestrationProfile(root: string): Promise<any> {
-  const manifest = JSON.parse(await readFile(join(root, "derived", "orchestration-lean-manifest.json"), "utf8"));
-  if (!manifest.current) throw new Error("orchestration profile has not been derived");
-  return JSON.parse(await readFile(join(root, "derived", manifest.current.artifactPath), "utf8"));
+  const current = await loadProjectionBoundArtifact(root, "orchestration-lean-manifest.json", { optional: true });
+  if (!current) throw new Error("orchestration profile has not been derived");
+  return current.artifact;
 }

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "../src/effectiveness-ranking";
+import { deriveCorpus } from "../src/derive";
 import type { Conversation } from "../src/types";
 
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -11,12 +12,19 @@ test("promotion-v1 metrics rank an evidence-bound role pattern without default e
   const root = await mkdtemp(join(tmpdir(), "chatlog-effectiveness-")); const conversationHash = "a".repeat(64);
   const conversation: Conversation = { id: "worker", provider: "test", harness: "test", project: "/test", cwd: "/test", model: "transient", startedAt: "2026-07-01T00:00:00Z", endedAt: "2026-07-01T00:01:00Z", sourcePath: "/test", contentHash: conversationHash, turns: [{ role: "user", content: "Build the tracer as sole writer and stop-and-report at a wall." }] };
   const corpusDir = join(root, "corpus", "objects", "aa"); await mkdir(corpusDir, { recursive: true }); await writeFile(join(corpusDir, `${conversationHash}.json`), JSON.stringify(conversation));
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
+    version: 1,
+    sources: { [conversation.sourcePath]: { contentHash: conversationHash } },
+  }));
+  await deriveCorpus(root);
+  const derivedManifest = JSON.parse(await readFile(join(root, "derived", "manifest.json"), "utf8"));
+  const inputProjectionHash = derivedManifest.currentProjection.contentHash;
 
   const pointer = `chatlog://conversation/${conversationHash}/turn/0`;
-  const roleArtifact = { profiles: [{ role: "worker", evidence: [{ pointer, snippet: conversation.turns[0].content, signal: "one-writer", pole: "determinism-impose" }] }, { role: "advisor", evidence: [{ pointer, snippet: conversation.turns[0].content, signal: "one-writer", pole: "determinism-impose" }] }] };
+  const roleArtifact = { inputProjectionHash, profiles: [{ role: "worker", evidence: [{ pointer, snippet: conversation.turns[0].content, signal: "one-writer", pole: "determinism-impose" }] }, { role: "advisor", evidence: [{ pointer, snippet: conversation.turns[0].content, signal: "one-writer", pole: "determinism-impose" }] }] };
   const roleText = JSON.stringify(roleArtifact) + "\n"; const roleHash = sha(roleText); const roleRel = `orchestration-roles/${roleHash}.json`;
   await mkdir(join(root, "derived", "orchestration-roles"), { recursive: true }); await writeFile(join(root, "derived", roleRel), roleText);
-  await writeFile(join(root, "derived", "orchestration-roles-manifest.json"), JSON.stringify({ version: 1, current: { artifactPath: roleRel, contentHash: roleHash } }));
+  await writeFile(join(root, "derived", "orchestration-roles-manifest.json"), JSON.stringify({ version: 1, current: { inputProjectionHash, artifactPath: roleRel, contentHash: roleHash } }));
 
   const runs = ["1", "2", "3"].flatMap((pairId) => [
     { pairId, arm: "control", gatePassed: true, tokensToGate: 100, wallClockMs: 20, interventions: 0, rederivationCount: 1 },

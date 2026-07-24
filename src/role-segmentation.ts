@@ -1,8 +1,15 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Conversation, Turn } from "./types";
 import { classifyOrchestrationTurn, isOperatorTurn, resolveOrchestrationPointer, type OrchestrationPole, type SignalName } from "./orchestration-profile";
 import { redact } from "./redact";
+import {
+  assertDerivedProjection,
+  DerivedProjectionDriftError,
+  loadCurrentDerivedArtifact,
+  loadProjectionBoundArtifact,
+  type DerivedProjectionReceipt,
+} from "./derived-authority";
 
 export type AgentRole = "manager" | "worker" | "reviewer" | "advisor" | "unclassified";
 export interface RoleLabel { conversationHash: string; evidenceTurnIndex: number; expectedRole: Exclude<AgentRole, "unclassified"> }
@@ -113,9 +120,9 @@ async function atomicWrite(path: string, data: string): Promise<void> {
   await writeFile(temp, data, { mode: 0o600 }); await rename(temp, path); await chmod(path, 0o600);
 }
 
-export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): Promise<any> {
-  const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8");
-  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).sort();
+export async function buildRoleSegmentation(root: string, labels: RoleLabel[], projection?: DerivedProjectionReceipt): Promise<any> {
+  const currentProjection = projection ?? await assertDerivedProjection(root);
+  const hashes = currentProjection.conversationHashes;
   const roles = new Map<string, RoleInference>(); const conversations = new Map<string, Conversation>();
   for (const conversationHash of hashes) { const conversation = await loadConversation(root, conversationHash); conversations.set(conversationHash, conversation); roles.set(conversationHash, inferAgentRole(conversation)); }
 
@@ -184,7 +191,7 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
   for (const item of [...taxonomy.flatMap((entry) => entry.evidence), ...profiles.flatMap((entry) => entry.evidence)]) await resolveOrchestrationPointer(root, item.pointer);
   const inferredCounts = Object.fromEntries([...ROLE_ORDER, "unclassified" as const].map((role) => [role, [...roles.values()].filter((item) => item.role === role).length]));
   return {
-    schemaVersion: 1, outputKind: "orchestration-role-boundaries", inputProjectionHash: hash(projectionText),
+    schemaVersion: 1, outputKind: "orchestration-role-boundaries", inputProjectionHash: currentProjection.contentHash,
     taxonomy, inferenceMethod: { claim: "Roles are inferred from corpus-observed launch labels and mandates, then supported by delegation, mutation, or research interaction shape. Per-role boundaries use high-confidence sessions only; medium-confidence and unclassified sessions remain counted but do not shape claims. Project and harness are retained as provenance but never mapped to a role by a hardcoded project or model name.", evidence: taxonomy.flatMap((entry) => entry.evidence.slice(0, 1)), signals: ["launch-prompt content", "embedded Herdr/skill label", "delegation/mutation/research tool shape", "project/harness provenance"] },
     inferredCounts, profiles,
     validation: { roleInference: roleValidity, distinguishability: { method: "absolute autonomy-choice-rate difference >= 0.10 with non-overlapping Wilson 95% intervals and >=15 classified choices per role", pairs, distinguishablePairs } },
@@ -195,19 +202,27 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
 
 export async function deriveRoleSegmentation(root: string, labelsPath = join(import.meta.dir, "orchestration-role-labels.json")): Promise<{ processed: boolean; artifactPath: string; contentHash: string; inputProjectionHash: string }> {
   const labelsText = await readFile(labelsPath, "utf8"); const labels = JSON.parse(labelsText) as RoleLabel[];
-  const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8"); const inputProjectionHash = hash(projectionText);
+  const projection = await assertDerivedProjection(root);
+  const inputProjectionHash = projection.contentHash;
   const recipeHash = hash(await Bun.file(import.meta.path).text() + "\n" + await Bun.file(join(import.meta.dir, "orchestration-profile.ts")).text() + "\n" + labelsText);
   const manifestPath = join(root, "derived", "orchestration-roles-manifest.json"); let manifest: any = { version: 1 };
   try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   if (manifest.current?.inputProjectionHash === inputProjectionHash && manifest.current?.recipeHash === recipeHash) {
-    const artifactPath = join(root, "derived", manifest.current.artifactPath); try { await stat(artifactPath); return { processed: false, artifactPath, contentHash: manifest.current.contentHash, inputProjectionHash }; } catch {}
+    try {
+      const current = await loadCurrentDerivedArtifact(root, "orchestration-roles-manifest.json");
+      if (current?.inputProjectionHash === inputProjectionHash)
+        return { processed: false, artifactPath: join(root, "derived", manifest.current.artifactPath), contentHash: manifest.current.contentHash, inputProjectionHash };
+    } catch (error) {
+      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+    }
   }
-  const artifact = await buildRoleSegmentation(root, labels); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
+  const artifact = await buildRoleSegmentation(root, labels, projection); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
   const artifactRel = `orchestration-roles/${contentHash.slice(0, 2)}/${contentHash}.json`; await atomicWrite(join(root, "derived", artifactRel), text);
   manifest.current = { inputProjectionHash, recipeHash, artifactPath: artifactRel, contentHash }; await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { processed: true, artifactPath: join(root, "derived", artifactRel), contentHash, inputProjectionHash };
 }
 export async function loadRoleSegmentation(root: string): Promise<any> {
-  const manifest = JSON.parse(await readFile(join(root, "derived", "orchestration-roles-manifest.json"), "utf8"));
-  if (!manifest.current) throw new Error("role segmentation has not been derived"); return JSON.parse(await readFile(join(root, "derived", manifest.current.artifactPath), "utf8"));
+  const current = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", { optional: true });
+  if (!current) throw new Error("role segmentation has not been derived");
+  return current.artifact;
 }

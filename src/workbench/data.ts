@@ -11,6 +11,12 @@ import {
   type ProjectionReceipt,
 } from "../source-authority";
 import type { Conversation } from "../types";
+import {
+  DerivedProjectionDriftError,
+  assertDerivedProjection,
+  loadCurrentDerivedArtifact,
+  loadProjectionBoundArtifact,
+} from "../derived-authority";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || value.trim() === "") return fallback;
@@ -22,17 +28,6 @@ function searchExpression(query: string): string {
   const terms = query.toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
   if (!terms.length) throw new Error("Search needs at least one concrete word");
   return [...new Set(terms)].slice(0, 10).map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
-}
-
-async function currentArtifact(root: string, manifestName: string): Promise<any | null> {
-  try {
-    const manifest = JSON.parse(await readFile(join(root, "derived", manifestName), "utf8"));
-    const path = manifest.current?.artifactPath;
-    return path ? JSON.parse(await readFile(join(root, "derived", path), "utf8")) : null;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
 }
 
 export class WorkbenchData {
@@ -217,12 +212,35 @@ export class WorkbenchData {
 
   async insights(): Promise<unknown> {
     const projection = this.assertProjection();
-    const [lean, roles, effectiveness, refinery] = await Promise.all([
-      currentArtifact(this.root, "orchestration-lean-manifest.json"),
-      currentArtifact(this.root, "orchestration-roles-manifest.json"),
-      currentArtifact(this.root, "orchestration-effectiveness-manifest.json"),
-      currentArtifact(this.root, "refinery-manifest.json"),
+    const derivedProjection = await assertDerivedProjection(this.root);
+    const [leanCurrent, rolesCurrent, refineryCurrent] = await Promise.all([
+      loadProjectionBoundArtifact(this.root, "orchestration-lean-manifest.json", { optional: true, projection: derivedProjection }),
+      loadProjectionBoundArtifact(this.root, "orchestration-roles-manifest.json", { optional: true, projection: derivedProjection }),
+      loadProjectionBoundArtifact(this.root, "refinery-manifest.json", {
+        optional: true,
+        projection: derivedProjection,
+        inputProjectionHash: derivedProjection.structureProjectionHash,
+      }),
     ]);
+    const effectivenessCurrent = rolesCurrent
+      ? await loadCurrentDerivedArtifact(
+        this.root,
+        "orchestration-effectiveness-manifest.json",
+        { optional: true },
+      )
+      : null;
+    if (
+      effectivenessCurrent
+      && effectivenessCurrent.artifact?.roleProfileContentHash !== rolesCurrent?.contentHash
+    ) {
+      throw new DerivedProjectionDriftError(
+        "orchestration-effectiveness-manifest.json: current artifact does not match the active role projection",
+      );
+    }
+    const lean = leanCurrent?.artifact;
+    const roles = rolesCurrent?.artifact;
+    const effectiveness = effectivenessCurrent?.artifact;
+    const refinery = refineryCurrent?.artifact;
     const result = {
       orchestration: lean?.finding ? {
         claim: lean.finding.claim,
@@ -267,6 +285,12 @@ export class WorkbenchData {
       } : null,
     };
     this.assertProjection(projection);
+    const finalDerivedProjection = await assertDerivedProjection(this.root);
+    if (
+      finalDerivedProjection.contentHash !== derivedProjection.contentHash
+      || finalDerivedProjection.structureProjectionHash !== derivedProjection.structureProjectionHash
+    )
+      throw new DerivedProjectionDriftError("derived projection changed while serving the request; retry");
     return result;
   }
 

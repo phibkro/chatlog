@@ -1,6 +1,12 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DerivedConversation, Evidence, Pointer } from "./derive";
+import {
+  assertDerivedProjection,
+  DerivedProjectionDriftError,
+  loadCurrentDerivedArtifact,
+  loadProjectionBoundArtifact,
+} from "./derived-authority";
 
 export type PromotionType = "skill" | "gotcha-skill" | "memory-or-adr" | "claude-md" | "wiki-page-later";
 export interface PromotionEvidence extends Evidence {
@@ -146,17 +152,30 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
 
 export async function refineCorpus(root: string, threshold = 3): Promise<RefinerySummary> {
   if (!Number.isInteger(threshold) || threshold < 3) throw new Error("refinery threshold must be an integer >= 3");
-  const derivedDir = join(root, "derived"); const projectionPath = join(derivedDir, "current-hashes.jsonl");
-  const derivedManifest = JSON.parse(await readFile(join(derivedDir, "manifest.json"), "utf8"));
-  const inputProjectionHash = String(derivedManifest.currentProjection?.contentHash ?? "");
-  if (!inputProjectionHash) throw new Error("derived manifest has no current projection");
+  const derivedDir = join(root, "derived");
+  const projection = await assertDerivedProjection(root);
+  const inputProjectionHash = projection.structureProjectionHash;
   const recipeHash = hash(await Bun.file(import.meta.path).text()); const manifestPath = join(derivedDir, "refinery-manifest.json");
   let manifest: RefineryManifest = { version: 1 }; try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   const prior = manifest.current;
   if (prior?.inputProjectionHash === inputProjectionHash && prior.recipeHash === recipeHash && prior.threshold === threshold) {
-    try { await stat(join(derivedDir, prior.artifactPath)); return { inputConversations: (await readFile(projectionPath, "utf8")).trim().split("\n").filter(Boolean).length, candidates: JSON.parse(await readFile(join(derivedDir, prior.artifactPath), "utf8")).candidates.length, processed: false, artifactPath: join(derivedDir, prior.artifactPath), contentHash: prior.contentHash }; } catch {}
+    try {
+      const current = await loadCurrentDerivedArtifact<RefineryArtifact>(
+        root,
+        "refinery-manifest.json",
+      );
+      if (
+        current
+        && current.inputProjectionHash === inputProjectionHash
+        && current.artifact.inputProjectionHash === inputProjectionHash
+      ) {
+        return { inputConversations: projection.conversations, candidates: current.artifact.candidates.length, processed: false, artifactPath: join(derivedDir, prior.artifactPath), contentHash: prior.contentHash };
+      }
+    } catch (error) {
+      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+    }
   }
-  const hashes = (await readFile(projectionPath, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string);
+  const hashes = projection.conversationHashes;
   const observations: Observation[] = [];
   for (const conversationHash of hashes) {
     const artifact = JSON.parse(await readFile(join(derivedDir, "objects", conversationHash.slice(0, 2), `${conversationHash}.json`), "utf8")) as DerivedConversation;
@@ -171,7 +190,14 @@ export async function refineCorpus(root: string, threshold = 3): Promise<Refiner
 }
 
 export async function loadRefinery(root: string): Promise<RefineryArtifact> {
-  const manifest = JSON.parse(await readFile(join(root, "derived", "refinery-manifest.json"), "utf8")) as RefineryManifest;
-  if (!manifest.current) throw new Error("refinery has not been derived");
-  return JSON.parse(await readFile(join(root, "derived", manifest.current.artifactPath), "utf8")) as RefineryArtifact;
+  const current = await loadProjectionBoundArtifact<RefineryArtifact>(
+    root,
+    "refinery-manifest.json",
+    {
+      optional: true,
+      inputProjectionHash: (await assertDerivedProjection(root)).structureProjectionHash,
+    },
+  );
+  if (!current) throw new Error("refinery has not been derived");
+  return current.artifact;
 }

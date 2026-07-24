@@ -2,6 +2,7 @@ const state = {
   overview: null,
   projects: [],
   insights: null,
+  insightsError: null,
   sources: [],
   receipts: [],
   receiptError: null,
@@ -162,6 +163,14 @@ async function openEvidence(uri) {
 }
 
 function renderInsights() {
+  if (state.insightsError) {
+    const message = `Insights unavailable: ${state.insightsError}`;
+    $("#orchestration-claim").textContent = message;
+    $("#role-profiles").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    $("#effectiveness-result").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    return;
+  }
   const insights = state.insights || {};
   $("#orchestration-claim").textContent = insights.orchestration?.claim || "No orchestration profile has been derived yet.";
   const profiles = insights.roles?.profiles || [];
@@ -187,6 +196,10 @@ function renderInsights() {
 }
 
 function renderCandidates() {
+  if (state.insightsError) {
+    $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(`Insights unavailable: ${state.insightsError}`)}</div>`;
+    return;
+  }
   const candidates = state.insights?.refinery?.candidates || [];
   const filtered = state.candidateFilter === "all" ? candidates : candidates.filter((candidate) => candidate.type === state.candidateFilter);
   $("#candidate-list").innerHTML = filtered.slice(0, 40).map((candidate) => `
@@ -232,9 +245,16 @@ function renderSources() {
 async function load() {
   $("#day-part").textContent = new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening";
   try {
-    [state.overview, state.projects, state.insights, state.sources] = await Promise.all([
-      api("/api/overview"), api("/api/projects?limit=200"), api("/api/insights"), api("/api/sources"),
+    [state.overview, state.projects, state.sources] = await Promise.all([
+      api("/api/overview"), api("/api/projects?limit=200"), api("/api/sources"),
     ]);
+    try {
+      state.insights = await api("/api/insights");
+      state.insightsError = null;
+    } catch (error) {
+      state.insights = null;
+      state.insightsError = error.message;
+    }
     try {
       state.receipts = await api("/api/receipts?limit=20");
       state.receiptError = null;

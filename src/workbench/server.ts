@@ -4,6 +4,7 @@ import { redact } from "../redact";
 import { WorkbenchData } from "./data";
 import { resolveDataRoot } from "../data-root";
 import { ActiveProjectionDriftError } from "../source-authority";
+import { DerivedProjectionDriftError } from "../derived-authority";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -66,6 +67,7 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
     } catch (error: any) {
       const message = redact(String(error?.message ?? error));
       const status = error instanceof ActiveProjectionDriftError
+        || error instanceof DerivedProjectionDriftError
         ? 503
         : message.includes("not found") ? 404 : 400;
       return json({ error: message }, status);

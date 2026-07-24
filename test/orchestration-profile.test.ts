@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { classifyOrchestrationTurn, deriveOrchestrationProfile, loadOrchestrationProfile, resolveOrchestrationPointer, type OrchestrationLabel } from "../src/orchestration-profile";
+import { deriveCorpus } from "../src/derive";
 import type { Conversation } from "../src/types";
 
 const hashes = ["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64)];
@@ -21,13 +22,15 @@ const labels: OrchestrationLabel[] = [
 
 test("orchestration lean is local, evidence-bound, validated, and content-idempotent", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-orchestration-"));
+  const sources: Record<string, { contentHash: string }> = {};
   for (let index = 0; index < hashes.length; index++) {
     const conversation: Conversation = { id: `s${index}`, provider: "test", harness: "test", project: "/test", cwd: "/test", model: `snapshot-model-${index}`, startedAt: "2026-07-01T00:00:00Z", endedAt: "2026-07-01T00:01:00Z", sourcePath: `/s${index}`, contentHash: hashes[index], turns: [{ role: "user", content: turns[index] }] };
     const dir = join(root, "corpus", "objects", hashes[index].slice(0, 2)); await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${hashes[index]}.json`), JSON.stringify(conversation));
+    sources[conversation.sourcePath] = { contentHash: conversation.contentHash };
   }
-  await mkdir(join(root, "derived"), { recursive: true });
-  await writeFile(join(root, "derived", "current-hashes.jsonl"), hashes.map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n");
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
+  await deriveCorpus(root);
   const labelsPath = join(root, "labels.json"); await writeFile(labelsPath, JSON.stringify(labels));
 
   const first = await deriveOrchestrationProfile(root, labelsPath); const second = await deriveOrchestrationProfile(root, labelsPath);

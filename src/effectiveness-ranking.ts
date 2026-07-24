@@ -1,6 +1,11 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { resolveOrchestrationPointer } from "./orchestration-profile";
+import {
+  DerivedProjectionDriftError,
+  loadCurrentDerivedArtifact,
+  loadProjectionBoundArtifact,
+} from "./derived-authority";
 
 interface PilotConfig {
   schema: "chatlog/orchestration-effectiveness-pilot-v1";
@@ -68,9 +73,9 @@ async function treatmentConsumption(experimentPath: string, experiment: Promotio
 
 export async function buildEffectivenessRanking(root: string, config: PilotConfig, scorer: (root: string, path: string) => Promise<any> = runExistingScorer): Promise<any> {
   if (config.schema !== "chatlog/orchestration-effectiveness-pilot-v1" || config.minimumPairs < 3) throw new Error("invalid effectiveness pilot config");
-  const roleManifest = JSON.parse(await readFile(join(root, "derived", "orchestration-roles-manifest.json"), "utf8"));
-  if (!roleManifest.current) throw new Error("role segmentation has not been derived");
-  const roleText = await readFile(join(root, "derived", roleManifest.current.artifactPath), "utf8"); const roleReport = JSON.parse(roleText);
+  const roleCurrent = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", { optional: true });
+  if (!roleCurrent) throw new Error("role segmentation has not been derived");
+  const roleReport = roleCurrent.artifact;
   const profile = roleReport.profiles.find((item: any) => item.role === config.role); if (!profile) throw new Error(`role profile not found: ${config.role}`);
   const evidence = profile.evidence.map((item: any) => ({ pointer: item.pointer, snippet: item.snippet }));
   if (!evidence.length) throw new Error(`role profile has no evidence: ${config.role}`);
@@ -78,7 +83,7 @@ export async function buildEffectivenessRanking(root: string, config: PilotConfi
 
   const experimentPath = resolve(root, config.experimentPath); const experimentText = await readFile(experimentPath, "utf8");
   const experiment = validateExperiment(JSON.parse(experimentText), config.minimumPairs); const consumption = await treatmentConsumption(experimentPath, experiment);
-  if (experiment.candidate.contentHash !== roleManifest.current.contentHash) throw new Error("pilot candidate is not bound to the current role-profile content hash");
+  if (experiment.candidate.contentHash !== roleCurrent.contentHash) throw new Error("pilot candidate is not bound to the current role-profile content hash");
   const score = await scorer(config.agentEvalRoot, experimentPath);
   if (score.schema !== experiment.schema || score.candidate?.contentHash !== experiment.candidate.contentHash) throw new Error("agent-eval score is not bound to the pilot experiment");
   const candidateWins = score.recommendation === "keep";
@@ -98,7 +103,7 @@ export async function buildEffectivenessRanking(root: string, config: PilotConfi
   const observedPatternCandidates = roleReport.profiles.reduce((count: number, item: any) => count + new Set(item.evidence.map((row: any) => row.signal)).size, 0);
   const scale = (candidates: number) => ({ candidates, hostedCalls: candidates * perCandidateRuns, maximumBudgetUsd: candidates * perCandidateRuns * config.pilotEgress.maxBudgetUsdPerCall, linearWallClockMs: Math.round(observedWallMs / runs.length * candidates * perCandidateRuns), linearTokens: Math.round(observedTokens / runs.length * candidates * perCandidateRuns), linearOutputBytes: Math.round(1_000_000 / runs.length * candidates * perCandidateRuns) });
   return {
-    schemaVersion: 1, outputKind: "orchestration-effectiveness-ranking", roleProfileContentHash: roleManifest.current.contentHash,
+    schemaVersion: 1, outputKind: "orchestration-effectiveness-ranking", roleProfileContentHash: roleCurrent.contentHash,
     ranking: {
       claim: `For the bounded ${config.role} pilot, ${winner} ranks above ${loser}: both arms passed the gate with equal intervention/correction-proxy and re-derivation medians, while the winner had ${betterMetric}.`,
       winner, loser, role: config.role, evidence,
@@ -124,13 +129,24 @@ export async function buildEffectivenessRanking(root: string, config: PilotConfi
 export async function deriveEffectivenessRanking(root: string, configPath = join(root, "eval", "effectiveness-pilot.json")): Promise<{ processed: boolean; artifactPath: string; contentHash: string; inputProjectionHash: string }> {
   const configText = await readFile(configPath, "utf8"); const config = JSON.parse(configText) as PilotConfig;
   const experimentPath = resolve(root, config.experimentPath); const experimentText = await readFile(experimentPath, "utf8"); const experiment = validateExperiment(JSON.parse(experimentText), config.minimumPairs); const consumption = await treatmentConsumption(experimentPath, experiment); const realTaskText = await readFile(config.realTaskReferencePath, "utf8");
-  const roleManifestText = await readFile(join(root, "derived", "orchestration-roles-manifest.json"), "utf8"); const roleManifest = JSON.parse(roleManifestText);
+  const roleCurrent = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", { optional: true });
+  if (!roleCurrent) throw new Error("role segmentation has not been derived");
   const runnerText = await readFile(join(config.agentEvalRoot, "src", "promotion-runner.ts"), "utf8"); const scorerText = await readFile(join(config.agentEvalRoot, "src", "promotion-score.ts"), "utf8");
-  const inputProjectionHash = hash(JSON.stringify({ roleContentHash: roleManifest.current?.contentHash, experimentContentHash: hash(experimentText), treatmentConsumptionHash: consumption.projectionHash, realTaskReferenceHash: hash(realTaskText), runnerHash: hash(runnerText), scorerHash: hash(scorerText) }));
+  const inputProjectionHash = hash(JSON.stringify({ roleContentHash: roleCurrent.contentHash, experimentContentHash: hash(experimentText), treatmentConsumptionHash: consumption.projectionHash, realTaskReferenceHash: hash(realTaskText), runnerHash: hash(runnerText), scorerHash: hash(scorerText) }));
   const recipeHash = hash(await Bun.file(import.meta.path).text() + "\n" + configText); const manifestPath = join(root, "derived", "orchestration-effectiveness-manifest.json"); let manifest: any = { version: 1 };
   try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   if (manifest.current?.inputProjectionHash === inputProjectionHash && manifest.current?.recipeHash === recipeHash) {
-    const artifactPath = join(root, "derived", manifest.current.artifactPath); try { await stat(artifactPath); return { processed: false, artifactPath, contentHash: manifest.current.contentHash, inputProjectionHash }; } catch {}
+    try {
+      const current = await loadCurrentDerivedArtifact(root, "orchestration-effectiveness-manifest.json");
+      if (
+        current?.inputProjectionHash === inputProjectionHash
+        && current.artifact?.roleProfileContentHash === roleCurrent.contentHash
+      ) {
+        return { processed: false, artifactPath: join(root, "derived", manifest.current.artifactPath), contentHash: manifest.current.contentHash, inputProjectionHash };
+      }
+    } catch (error) {
+      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+    }
   }
   const artifact = await buildEffectivenessRanking(root, config); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
   const artifactRel = `orchestration-effectiveness/${contentHash.slice(0, 2)}/${contentHash}.json`; await atomicWrite(join(root, "derived", artifactRel), text);
@@ -138,6 +154,10 @@ export async function deriveEffectivenessRanking(root: string, configPath = join
   return { processed: true, artifactPath: join(root, "derived", artifactRel), contentHash, inputProjectionHash };
 }
 export async function loadEffectivenessRanking(root: string): Promise<any> {
-  const manifest = JSON.parse(await readFile(join(root, "derived", "orchestration-effectiveness-manifest.json"), "utf8"));
-  if (!manifest.current) throw new Error("effectiveness ranking has not been derived"); return JSON.parse(await readFile(join(root, "derived", manifest.current.artifactPath), "utf8"));
+  const roleCurrent = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", { optional: true });
+  const current = await loadCurrentDerivedArtifact(root, "orchestration-effectiveness-manifest.json", { optional: true });
+  if (!roleCurrent || !current) throw new Error("effectiveness ranking has not been derived");
+  if (current.artifact?.roleProfileContentHash !== roleCurrent.contentHash)
+    throw new DerivedProjectionDriftError("effectiveness ranking does not match the active role projection");
+  return current.artifact;
 }

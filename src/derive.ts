@@ -2,6 +2,8 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import { basename, dirname, join } from "node:path";
 import type { Conversation, TokenUsage } from "./types";
 import { redact } from "./redact";
+import { serializeCurrentProjection } from "./derived-authority";
+import { loadCorpusManifest } from "./source-authority";
 
 export interface Pointer { turnIndex: number; uri: string }
 export interface Evidence { pointer: Pointer; snippet: string }
@@ -224,9 +226,8 @@ export async function deriveCorpus(root: string): Promise<DeriveSummary> {
     };
     processed++;
   }
-  const corpusManifest = JSON.parse(await readFile(join(corpusDir, "manifest.json"), "utf8")) as { sources: Record<string, { contentHash: string }> };
-  const currentHashes = [...new Set(Object.values(corpusManifest.sources).map((entry) => entry.contentHash))].sort();
-  const projectionText = currentHashes.map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n";
+  const corpusManifest = await loadCorpusManifest(root);
+  const projectionText = serializeCurrentProjection(corpusManifest.sources);
   const projectionPath = "current-hashes.jsonl";
   await atomicWrite(join(derivedDir, projectionPath), projectionText);
   loaded.manifest.currentProjection = { path: projectionPath, contentHash: hash(projectionText) };

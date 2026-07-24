@@ -1,8 +1,9 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { Conversation, TokenUsage } from "./types";
 import { redact } from "./redact";
 import { serializeCurrentProjection } from "./derived-authority";
+import { durableAtomicWrite } from "./durable-fs";
 import { loadCorpusManifest } from "./source-authority";
 
 export interface Pointer { turnIndex: number; uri: string }
@@ -182,13 +183,6 @@ export function deriveConversation(c: Conversation): DerivedConversation {
   };
 }
 
-async function atomicWrite(path: string, data: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, data, { mode: 0o600 });
-  await rename(temp, path);
-  await chmod(path, 0o600);
-}
 async function loadManifest(path: string, recipeHash: string): Promise<{ manifest: DerivedManifest; recipeChanged: boolean }> {
   try {
     const value = JSON.parse(await readFile(path, "utf8")) as DerivedManifest;
@@ -219,7 +213,7 @@ export async function deriveCorpus(root: string): Promise<DeriveSummary> {
     const conversation = JSON.parse(await readFile(canonicalPath, "utf8")) as Conversation;
     if (conversation.contentHash !== conversationHash) throw new Error(`${canonicalPath}: filename/content hash mismatch`);
     const artifactText = serializeDerived(deriveConversation(conversation));
-    await atomicWrite(artifactPath, artifactText);
+    await durableAtomicWrite(artifactPath, artifactText);
     loaded.manifest.conversations[conversationHash] = {
       derivedArtifacts: { structure: { path: artifactRel, contentHash: hash(artifactText) } },
       processedAt: new Date().toISOString(),
@@ -229,11 +223,9 @@ export async function deriveCorpus(root: string): Promise<DeriveSummary> {
   const corpusManifest = await loadCorpusManifest(root);
   const projectionText = serializeCurrentProjection(corpusManifest.sources);
   const projectionPath = "current-hashes.jsonl";
-  await atomicWrite(join(derivedDir, projectionPath), projectionText);
+  await durableAtomicWrite(join(derivedDir, projectionPath), projectionText);
   loaded.manifest.currentProjection = { path: projectionPath, contentHash: hash(projectionText) };
-  await mkdir(derivedDir, { recursive: true, mode: 0o700 });
-  await chmod(derivedDir, 0o700);
-  await atomicWrite(manifestPath, JSON.stringify(loaded.manifest, null, 2) + "\n");
+  await durableAtomicWrite(manifestPath, JSON.stringify(loaded.manifest, null, 2) + "\n");
   return { discovered: hashes.length, processed, skipped, recipeChanged: loaded.recipeChanged, manifestPath };
 }
 

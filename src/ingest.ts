@@ -1,11 +1,18 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, mkdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { Conversation, SourceAdapter } from "./types";
 import { backfillCacheWrite, indexConversation, openAnalysis } from "./analysis";
+import { durableAtomicWrite } from "./durable-fs";
 import { withIngestLock } from "./lock";
-import { deriveCorpus, type DeriveSummary } from "./derive";
+import type { DeriveSummary } from "./derive";
+import {
+  createOperationIntent,
+  recoverPendingOperations,
+  resolveManifestWriteFailure,
+  resumeCommittedOperation,
+} from "./operation-intents";
 import { redact, REDACTION_RECIPE } from "./redact";
-import { refineCorpus, type RefinerySummary } from "./refinery";
+import type { RefinerySummary } from "./refinery";
 import { reconcileSourceAuthority } from "./source-authority";
 
 interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
@@ -23,11 +30,7 @@ async function loadManifest(path: string): Promise<Manifest> {
 }
 
 async function atomicWrite(path: string, data: string, mode = 0o600): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, data, { mode });
-  await rename(tmp, path);
-  await chmod(path, mode);
+  await durableAtomicWrite(path, data, { mode });
 }
 
 export function canonicalizeConversation(value: Omit<Conversation, "contentHash">): Conversation {
@@ -55,12 +58,14 @@ export async function ingest(adapters: SourceAdapter[], root: string): Promise<I
 }
 
 async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<IngestSummary> {
+  await recoverPendingOperations(root);
   const corpusDir = join(root, "corpus");
   const manifestPath = join(corpusDir, "manifest.json");
   const dbPath = join(root, "analysis", "chatlog.sqlite");
   await mkdir(corpusDir, { recursive: true, mode: 0o700 });
   await chmod(corpusDir, 0o700);
   const manifest = await loadManifest(manifestPath);
+  const beforeManifest = structuredClone(manifest);
   const redactionChanged = manifest.redactionRecipe !== REDACTION_RECIPE;
   const db = openAnalysis(dbPath);
   const summary: IngestSummary = { discovered: {}, ingested: {}, skipped: {}, partialTails: 0, changedDuringRead: 0, corpusBytes: 0 };
@@ -93,16 +98,31 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
       }
     }
     manifest.redactionRecipe = REDACTION_RECIPE;
-    await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-    await reconcileSourceAuthority(root, db, manifest.sources);
   } finally { db.close(); }
+  const intent = await createOperationIntent(root, {
+    operation: "ingest",
+    before: beforeManifest,
+    after: manifest,
+    derive: true,
+  });
+  try {
+    await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  } catch (error) {
+    await resolveManifestWriteFailure(root, intent, error);
+  }
+  const operation = await resumeCommittedOperation(root, intent);
+  summary.derived = operation.derived;
+  summary.refinery = operation.refinery;
+  if (operation.derivationFailed) {
+    throw new Error(
+      `ingest committed as operation ${intent.operationId}, but derived state was explicitly invalidated after derivation failed`,
+    );
+  }
   async function size(dir: string): Promise<number> {
     let total = 0;
     for (const entry of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true })) total += (await stat(join(dir, entry))).size;
     return total;
   }
   summary.corpusBytes = await size(corpusDir);
-  summary.derived = await deriveCorpus(root);
-  summary.refinery = await refineCorpus(root);
   return summary;
 }

@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, readFile, rmdir, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rmdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ingest } from "../src/ingest";
@@ -12,6 +20,8 @@ test("local ingestion reconciles the manifest-backed active projection", async (
   const sourcePath = join(root, "session.jsonl");
   await writeFile(sourcePath, "{}\n");
   let content = "Reconcile the active projection.";
+  let blockManifestPath: string | undefined;
+  let manifestBackupPath: string | undefined;
   const adapter: SourceAdapter = {
     harness: "test-harness",
     async discover() {
@@ -19,6 +29,11 @@ test("local ingestion reconciles the manifest-backed active projection", async (
       return [{ path: sourcePath, size: info.size, mtimeMs: info.mtimeMs }];
     },
     async adapt() {
+      if (blockManifestPath && manifestBackupPath) {
+        await rename(blockManifestPath, manifestBackupPath);
+        await mkdir(blockManifestPath);
+        blockManifestPath = undefined;
+      }
       return {
         partialTail: false,
         conversation: {
@@ -60,12 +75,13 @@ test("local ingestion reconciles the manifest-backed active projection", async (
   const beforeHash = before.sources[sourcePath].contentHash;
   content = "A changed conversation that must not become active before the manifest commit.";
   await writeFile(sourcePath, '{"changed":true}\n');
-  const blockedTemporary = `${manifestPath}.${process.pid}.tmp`;
-  await mkdir(blockedTemporary);
+  blockManifestPath = manifestPath;
+  manifestBackupPath = `${manifestPath}.test-backup`;
   try {
     await expect(ingest([adapter], root)).rejects.toThrow();
   } finally {
-    await rmdir(blockedTemporary);
+    await rmdir(manifestPath);
+    await rename(manifestBackupPath, manifestPath);
   }
 
   const after = JSON.parse(await readFile(manifestPath, "utf8"));

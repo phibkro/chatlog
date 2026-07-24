@@ -10,6 +10,7 @@ import { openAnalysis, queryModels, querySearch, queryStats } from "./analysis";
 import { deriveCorpus } from "./derive";
 import { agentAsk, agentAskLexical, agentGet, agentGrok, agentProject, agentSearch, agentSemanticSearch } from "./agent-query";
 import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTime } from "./duckdb";
+import { clearDerivedInvalidation } from "./derived-invalidation";
 import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
@@ -22,6 +23,7 @@ import { normalizeConversationDomain } from "./domain";
 import { resolveDataRoot } from "./data-root";
 import { listImportReceipts } from "./import-receipts";
 import { withIngestLock } from "./lock";
+import { recoverPendingOperations } from "./operation-intents";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
@@ -69,21 +71,35 @@ if (command === "ingest") {
     throw new Error("receipt limit must be at most 200");
   console.log(JSON.stringify(await listImportReceipts(root, limit), null, 2));
 } else if (command === "source") {
-  if (subcommand !== "reconcile" || args.length)
-    throw new Error("usage: chatlog source reconcile");
+  if (args.length || (subcommand !== "reconcile" && subcommand !== "recover"))
+    throw new Error("usage: chatlog source <reconcile|recover>");
   console.log(JSON.stringify(await withIngestLock(root, async () => {
+    const recovery = await recoverPendingOperations(root);
+    if (subcommand === "recover") return recovery;
     const manifest = await loadCorpusManifest(root);
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
     try {
-      return await reconcileSourceAuthority(root, db, manifest.sources);
+      return {
+        ...await reconcileSourceAuthority(root, db, manifest.sources),
+        recovery,
+      };
     } finally {
       db.close();
     }
   }), null, 2));
 } else if (command === "derive") {
-  console.log(JSON.stringify({ derived: await deriveCorpus(root), refinery: await refineCorpus(root) }, null, 2));
+  console.log(JSON.stringify(await withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
+    const derived = await deriveCorpus(root);
+    const refinery = await refineCorpus(root, 3, { allowExplicitInvalidation: true });
+    await clearDerivedInvalidation(root);
+    return { derived, refinery };
+  }), null, 2));
 } else if (command === "refine") {
-  console.log(JSON.stringify(await refineCorpus(root, Number(subcommand ?? 3)), null, 2));
+  console.log(JSON.stringify(await withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
+    return refineCorpus(root, Number(subcommand ?? 3));
+  }), null, 2));
 } else if (command === "query") {
   const db = new Database(join(root, "analysis", "chatlog.sqlite"), {
     readonly: true,

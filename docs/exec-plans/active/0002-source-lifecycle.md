@@ -327,3 +327,35 @@ Implemented on 2026-07-24.
 - Durable operation intents are now the next prerequisite for reclassification
   and revocation. A lifecycle writer must still regenerate or explicitly
   invalidate derived state before marking its intent complete.
+
+## Durable operation-intent results
+
+Implemented on 2026-07-24.
+
+- Local ingestion and Anthropic imports write a private, hash-sealed
+  `chatlog/operation-intent-v1` record before the manifest authority commit.
+  Each intent binds the complete before/after manifest hashes, active-source
+  hashes, and a bounded mapping-transition sample with its exact total count.
+  Large first ingests therefore remain recoverable without producing unbounded
+  journal records.
+- Intent, manifest, immutable-object, receipt, invalidation, and terminal-state
+  writes—and structural/refinery derived artifacts—use one shared durable
+  writer with randomized temporary files, file `fsync`, atomic rename, and
+  directory-ancestry `fsync` at their durability boundaries.
+- Recovery treats the actual manifest as authoritative. A before-state match
+  aborts an uncommitted intent, an after-state match resumes it, and a match to
+  neither side fails closed without guessing. Projection reconciliation is
+  rerun because its recorded phase is only a durable hint.
+- Committed operations deterministically resume derived-state resolution and
+  receipt writing with the original resolution timestamp. A source transition
+  is explicitly invalidated until derivation succeeds; disabled or failed
+  derivation leaves a reasoned, hash-sealed marker that derived readers reject.
+  `chatlog derive` repairs the projection and clears the marker.
+- `chatlog source recover` exposes bounded recovery under the ingest lock.
+  Ingestion, imports, derivation, and source reconciliation recover pending work
+  before continuing. Workbench remains read-only.
+- Synthetic crash tests cover pre-commit abort, committed recovery, unrelated
+  manifest conflict, post-rename error classification, modified intent
+  rejection, large-transition bounding, receipt replay, and completion replay
+  after deleting successfully derived state. Reclassify, revoke, and purge
+  remain unexposed until this journal passes packaging and closure review.

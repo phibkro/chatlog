@@ -1,17 +1,20 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { indexConversation, openAnalysis } from "../analysis";
-import { deriveCorpus, type DeriveSummary } from "../derive";
+import type { DeriveSummary } from "../derive";
 import { normalizeConversationDomain } from "../domain";
+import { durableAtomicWrite } from "../durable-fs";
 import { canonicalizeConversation } from "../ingest";
-import {
-  manifestSourcesHash,
-  writeImportReceipt,
-  type ImportReceipt,
-} from "../import-receipts";
+import { manifestSourcesHash, type ImportReceipt } from "../import-receipts";
 import { withIngestLock } from "../lock";
+import {
+  createOperationIntent,
+  recoverPendingOperations,
+  resolveManifestWriteFailure,
+  resumeCommittedOperation,
+} from "../operation-intents";
 import { redact } from "../redact";
-import { refineCorpus, type RefinerySummary } from "../refinery";
+import type { RefinerySummary } from "../refinery";
 import { reconcileSourceAuthority } from "../source-authority";
 import type { Conversation, ConversationDomain, ToolCall, Turn } from "../types";
 
@@ -218,11 +221,7 @@ export function adaptAnthropicConversation(
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, text);
 }
 
 async function loadManifest(path: string): Promise<CorpusManifest> {
@@ -381,6 +380,7 @@ export async function importAnthropicExport(
   options: AnthropicImportOptions = {},
 ): Promise<AnthropicImportSummary> {
   return withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
     const domain = normalizeConversationDomain(options.domain ?? "general");
     const resolved = resolve(sourcePath);
     const source = await stat(resolved);
@@ -392,6 +392,7 @@ export async function importAnthropicExport(
     const corpusDir = join(root, "corpus");
     const manifestPath = join(corpusDir, "manifest.json");
     const manifest = await loadManifest(manifestPath);
+    const beforeManifest = structuredClone(manifest);
     const beforeHash = manifestSourcesHash(manifest.sources);
     const beforeSources = Object.keys(manifest.sources).length;
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
@@ -435,61 +436,59 @@ export async function importAnthropicExport(
         };
         summary.imported++;
       }
-      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      await reconcileSourceAuthority(root, db, manifest.sources);
     } finally {
       db.close();
     }
 
-    let derivationError: unknown;
-    if (options.derive !== false) {
-      try {
-        summary.derived = await deriveCorpus(root);
-        summary.refinery = await refineCorpus(root);
-      } catch (error) {
-        derivationError = error;
-      }
-    }
-    const receipt = await writeImportReceipt(root, {
-      source: {
-        path: resolved,
-        contentHash: sourceContentHash,
-        bytes: source.size,
-        modifiedAt: source.mtime.toISOString(),
+    const intent = await createOperationIntent(root, {
+      operation: "anthropic-import",
+      before: beforeManifest,
+      after: manifest,
+      derive: options.derive !== false,
+      receipt: {
+        kind: "import",
+        input: {
+          source: {
+            path: resolved,
+            contentHash: sourceContentHash,
+            bytes: source.size,
+            modifiedAt: source.mtime.toISOString(),
+          },
+          domain,
+          counts: {
+            discovered: summary.discovered,
+            imported: summary.imported,
+            skipped: summary.skipped,
+            turns: summary.turns,
+            attachments: summary.attachments,
+            files: summary.files,
+          },
+          manifest: {
+            beforeHash,
+            afterHash: manifestSourcesHash(manifest.sources),
+            beforeSources,
+            afterSources: Object.keys(manifest.sources).length,
+            added,
+            replaced,
+            unchanged: summary.skipped,
+          },
+          deriveEnabled: options.derive !== false,
+        },
       },
-      domain,
-      counts: {
-        discovered: summary.discovered,
-        imported: summary.imported,
-        skipped: summary.skipped,
-        turns: summary.turns,
-        attachments: summary.attachments,
-        files: summary.files,
-      },
-      manifest: {
-        beforeHash,
-        afterHash: manifestSourcesHash(manifest.sources),
-        beforeSources,
-        afterSources: Object.keys(manifest.sources).length,
-        added,
-        replaced,
-        unchanged: summary.skipped,
-      },
-      deriveEnabled: options.derive !== false,
-      derivationStatus: options.derive === false
-        ? "not-requested"
-        : derivationError
-          ? "failed"
-          : "completed",
-      derived: summary.derived,
-      refinery: summary.refinery,
     });
-    if (derivationError) {
-      const message = derivationError instanceof Error
-        ? derivationError.message
-        : String(derivationError);
+    try {
+      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    } catch (error) {
+      await resolveManifestWriteFailure(root, intent, error);
+    }
+    const operation = await resumeCommittedOperation(root, intent);
+    const receipt = operation.receipt;
+    if (!receipt) throw new Error("committed import operation produced no receipt");
+    summary.derived = operation.derived;
+    summary.refinery = operation.refinery;
+    if (operation.derivationFailed) {
       throw new Error(
-        `import committed as receipt ${receipt.receiptId}, but derivation failed: ${redact(message)}`,
+        `import committed as receipt ${receipt.receiptId}, but derived state was explicitly invalidated after derivation failed`,
       );
     }
     return { ...summary, receipt };

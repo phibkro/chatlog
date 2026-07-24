@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, normalize, sep } from "node:path";
-import { loadCorpusManifest } from "./source-authority";
+import {
+  assertDerivedNotInvalidated,
+  ExplicitDerivedInvalidationError,
+} from "./derived-invalidation";
+import { loadCorpusManifest, manifestSourcesHash } from "./source-authority";
 
 export interface DerivedProjectionReceipt {
   contentHash: string;
@@ -51,11 +55,16 @@ function derivedPath(root: string, relativePath: unknown): string {
   return join(root, "derived", normalized);
 }
 
-export async function assertDerivedProjection(root: string): Promise<DerivedProjectionReceipt> {
+export async function assertDerivedProjection(
+  root: string,
+  options: { ignoreExplicitInvalidation?: boolean } = {},
+): Promise<DerivedProjectionReceipt> {
   try {
     const corpus = await loadCorpusManifest(root);
     const expectedText = serializeCurrentProjection(corpus.sources);
     const expectedHash = sha256(expectedText);
+    if (!options.ignoreExplicitInvalidation)
+      await assertDerivedNotInvalidated(root, manifestSourcesHash(corpus.sources));
     const manifest = JSON.parse(
       await readFile(join(root, "derived", "manifest.json"), "utf8"),
     );
@@ -95,6 +104,8 @@ export async function assertDerivedProjection(root: string): Promise<DerivedProj
     };
   } catch (error) {
     if (error instanceof DerivedProjectionDriftError) throw error;
+    if (error instanceof ExplicitDerivedInvalidationError)
+      throw new DerivedProjectionDriftError(error.message, { cause: error });
     throw new DerivedProjectionDriftError(undefined, { cause: error });
   }
 }

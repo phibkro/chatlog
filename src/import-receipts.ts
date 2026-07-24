@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { DeriveSummary } from "./derive";
+import { durableAtomicWrite } from "./durable-fs";
 import type { RefinerySummary } from "./refinery";
 export { manifestSourcesHash } from "./source-authority";
 
@@ -95,16 +96,6 @@ function validateTimestamp(value: string, label: string): string {
   return value;
 }
 
-async function atomicWrite(path: string, text: string): Promise<void> {
-  const directory = dirname(path);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
-}
-
 export async function writeImportReceipt(
   root: string,
   input: ImportReceiptInput,
@@ -180,9 +171,10 @@ export async function writeImportReceipt(
   const receiptId = sha256(JSON.stringify(body));
   const receipt: ImportReceipt = { ...body, receiptId };
   const timestamp = completedAt.replaceAll(/[^0-9A-Za-z]/g, "");
-  await atomicWrite(
+  await durableAtomicWrite(
     join(root, "receipts", "imports", `${timestamp}-${receiptId}.json`),
     JSON.stringify(receipt, null, 2) + "\n",
+    { maxBytes: 65_536 },
   );
   return receipt;
 }

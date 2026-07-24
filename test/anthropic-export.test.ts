@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rmdir,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -213,7 +220,7 @@ test("records the committed manifest transition when derivation fails", async ()
   expect(Object.keys(manifest.sources)).toHaveLength(1);
 });
 
-test("does not advance projection or write a receipt when manifest commit fails", async () => {
+test("does not advance authority when journal preparation fails", async () => {
   const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-commit-failure-"));
   const source = join(base, "source");
   const root = join(base, "chatlog");
@@ -234,9 +241,16 @@ test("does not advance projection or write a receipt when manifest commit fails"
     join(source, "conversations.json"),
     JSON.stringify([{ ...fixture, name: "A changed idea" }]),
   );
-  await mkdir(`${manifestPath}.${process.pid}.tmp`);
-  await expect(importAnthropicExport(source, root, { domain: "ideas", derive: false }))
-    .rejects.toThrow();
+  const pendingDirectory = join(root, "operations", "pending");
+  await rmdir(pendingDirectory);
+  await writeFile(pendingDirectory, "blocks operation journal");
+  try {
+    await expect(importAnthropicExport(source, root, { domain: "ideas", derive: false }))
+      .rejects.toThrow();
+  } finally {
+    await unlink(pendingDirectory);
+    await mkdir(pendingDirectory, { mode: 0o700 });
+  }
 
   expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
   expect(await listImportReceipts(root)).toEqual(receiptsBefore);
@@ -245,6 +259,6 @@ test("does not advance projection or write a receipt when manifest commit fails"
     "SELECT content_hash contentHash FROM current_conversations",
   ).get()).toEqual(activeBefore);
   expect(afterDb.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 2 });
+    .toEqual({ count: 1 });
   afterDb.close();
 });

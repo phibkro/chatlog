@@ -134,8 +134,20 @@ Workbench shows the same read-only audit trail on the Sources page. Receipt
 files live beneath `receipts/imports/` in the Chatlog data root.
 If post-import derivation fails, the command still returns an error, but the
 receipt remains as evidence of the already-committed manifest transition.
-Crash recovery between the manifest commit and receipt write remains part of
-the later durable-intent lifecycle migration.
+Local ingestion and Anthropic imports now write a private, hash-sealed operation
+intent before replacing the manifest. Recovery decides from the actual
+manifest whether the authority point was crossed: an uncommitted intent is
+aborted, a committed intent resumes projection, derived-state resolution,
+receipt writing, and completion, and an unrelated manifest fails closed.
+Inspect and resume pending work explicitly with:
+
+```sh
+chatlog source recover
+```
+
+When source authority changes, derived readers remain unavailable until the
+operation either regenerates derived state or records an explicit invalidation.
+`chatlog derive` is the repair path for an invalidated projection.
 
 ### Active source projection
 
@@ -146,19 +158,21 @@ source path and content hash instead of inferring authority from whichever
 historical row was indexed most recently.
 
 Normal local ingestion and Anthropic imports reconcile this projection under
-the ingest lock. Upgrade an existing pre-projection database explicitly:
+the ingest lock and recover older pending operations before starting new work.
+Upgrade an existing pre-projection database explicitly:
 
 ```sh
 chatlog source reconcile
 ```
 
-The command rebuilds missing active index/turn/tool/FTS rows from immutable
-canonical objects, validates every manifest mapping, then replaces the
-projection and its receipt in one SQLite transaction. Workbench, MCP, operator
-queries, and Pi bridge emission compare the manifest, projection receipt, and
-active rows before serving current data. Missing or unequal state fails closed;
-Workbench reports drift as HTTP 503 while the Sources and receipt audit views
-remain available for diagnosis.
+The command first recovers pending operation intents, then rebuilds missing
+active index/turn/tool/FTS rows from immutable canonical objects, validates
+every manifest mapping, and replaces the projection and its receipt in one
+SQLite transaction. Workbench, MCP, operator queries, and Pi bridge emission
+compare the manifest, projection receipt, and active rows before serving
+current data. Missing or unequal state fails closed; Workbench reports drift as
+HTTP 503 while the Sources and receipt audit views remain available for
+diagnosis.
 
 Workbench insights and DuckDB analytics apply the same rule to derived state.
 The active conversation projection, aggregate input hashes, and current

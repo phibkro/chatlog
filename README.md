@@ -69,6 +69,7 @@ then connected as an explicit import:
 bun run preview:anthropic -- /path/to/data-export.zip personal
 bun run import:anthropic -- /path/to/data-export.zip personal
 bun run src/cli.ts receipts imports 20
+bun run src/cli.ts source recover
 bun run src/cli.ts source reconcile
 ```
 
@@ -81,10 +82,14 @@ into conversations implicitly.
 
 `corpus/manifest.json` is the durable authority for which immutable objects are
 active. SQLite keeps a rebuildable `active_sources` projection; ingestion
-reconciles it under the ingest lock. After upgrading a pre-projection database,
-run `chatlog source reconcile` once; it can reconstruct missing active analysis
-rows from canonical objects. Workbench, MCP, operator queries, and Pi bridge
-emission fail closed when the manifest and projection receipts disagree.
+reconciles it under the ingest lock. Imports and local ingestion record a
+private, hash-sealed operation intent before replacing the manifest, then
+resume projection, derivation, receipt, and completion work after a crash.
+Run `chatlog source recover` to resume pending operations explicitly. After
+upgrading a pre-projection database, run `chatlog source reconcile` once; it
+recovers pending work first and can reconstruct missing active analysis rows
+from canonical objects. Workbench, MCP, operator queries, and Pi bridge
+emission fail closed when authority, projection, or derived state disagree.
 
 ```sh
 bun run ingest

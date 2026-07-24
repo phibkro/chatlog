@@ -1,6 +1,7 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { DerivedConversation, Evidence, Pointer } from "./derive";
+import { durableAtomicWrite } from "./durable-fs";
 import {
   assertDerivedProjection,
   DerivedProjectionDriftError,
@@ -59,10 +60,6 @@ function externalReferences(text: string): string[] {
   return [...refs];
 }
 function cleanProject(project: string): string { return project.replace(/\/\.claude\/worktrees\/.*$/, ""); }
-async function atomicWrite(path: string, data: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 }); const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, data, { mode: 0o600 }); await rename(temp, path); await chmod(path, 0o600);
-}
 function route(type: PromotionType): PromotionCandidate["curation"] {
   if (type === "skill" || type === "gotcha-skill") return {
     principle: "Frequency nominates; a curator must prove this is reusable procedure, not repeated local circumstance.",
@@ -150,10 +147,16 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
   return candidates.sort((a, b) => b.frequency.sessions - a.frequency.sessions || b.frequency.projects - a.frequency.projects || b.frequency.occurrences - a.frequency.occurrences || a.id.localeCompare(b.id));
 }
 
-export async function refineCorpus(root: string, threshold = 3): Promise<RefinerySummary> {
+export async function refineCorpus(
+  root: string,
+  threshold = 3,
+  options: { allowExplicitInvalidation?: boolean } = {},
+): Promise<RefinerySummary> {
   if (!Number.isInteger(threshold) || threshold < 3) throw new Error("refinery threshold must be an integer >= 3");
   const derivedDir = join(root, "derived");
-  const projection = await assertDerivedProjection(root);
+  const projection = await assertDerivedProjection(root, {
+    ignoreExplicitInvalidation: options.allowExplicitInvalidation,
+  });
   const inputProjectionHash = projection.structureProjectionHash;
   const recipeHash = hash(await Bun.file(import.meta.path).text()); const manifestPath = join(derivedDir, "refinery-manifest.json");
   let manifest: RefineryManifest = { version: 1 }; try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
@@ -183,9 +186,9 @@ export async function refineCorpus(root: string, threshold = 3): Promise<Refiner
   }
   const artifact: RefineryArtifact = { schemaVersion: 1, inputProjectionHash, recipeHash, threshold, policy: { autoPromotion: false, frequencyIsSignalNotDecision: true, referenceWikiDeferred: true }, candidates: aggregate(observations, threshold) };
   const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text); const artifactRel = `refinery/${contentHash.slice(0, 2)}/${contentHash}.json`;
-  await atomicWrite(join(derivedDir, artifactRel), text);
+  await durableAtomicWrite(join(derivedDir, artifactRel), text);
   manifest.current = { inputProjectionHash, recipeHash, threshold, artifactPath: artifactRel, contentHash, processedAt: new Date().toISOString() };
-  await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  await durableAtomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { inputConversations: hashes.length, candidates: artifact.candidates.length, processed: true, artifactPath: join(derivedDir, artifactRel), contentHash };
 }
 

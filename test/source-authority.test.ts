@@ -185,7 +185,11 @@ test("operator reconciliation command rebuilds a manifest projection", async () 
   ]);
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
-  expect(JSON.parse(stdout)).toMatchObject({ activeSources: 1, reindexed: 1 });
+  expect(JSON.parse(stdout)).toMatchObject({
+    activeSources: 1,
+    reindexed: 1,
+    recovery: { discovered: 0, completed: 0, aborted: 0 },
+  });
 
   const reader = new Database(path, { readonly: true, create: false });
   expect(assertActiveProjection(root, reader).activeSources).toBe(1);

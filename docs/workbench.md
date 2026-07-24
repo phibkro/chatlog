@@ -260,8 +260,10 @@ creating a crash-looping service.
 
 The workstation consumes Chatlog as a pinned `github:phibkro/chatlog` flake
 input. Homelab enables the user service at `127.0.0.1:4789`, keeps mutable
-state at `~/.local/share/chatlog`, and exposes that loopback endpoint through
-Tailscale Serve. The source checkout is no longer a runtime dependency.
+state at `~/.local/share/chatlog`, and relays it on the workstation's Tailscale
+address for Pi's private Caddy entry plane. That produces the canonical
+`https://chatlog.home.phibkro.org` surface without weakening Workbench's
+loopback bind policy. The source checkout is no longer a runtime dependency.
 
 Derived projection checks deliberately hash the small projection and aggregate
 artifacts, not every structural object on every read. Missing active objects

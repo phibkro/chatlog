@@ -166,6 +166,9 @@ function renderInsights() {
   if (state.insightsError) {
     const message = `Insights unavailable: ${state.insightsError}`;
     $("#orchestration-claim").textContent = message;
+    $("#workflow-evolution-count").textContent = "Unavailable";
+    $("#workflow-evolution-summary").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    $("#workflow-event-list").innerHTML = "";
     $("#role-profiles").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#effectiveness-result").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
@@ -173,6 +176,48 @@ function renderInsights() {
   }
   const insights = state.insights || {};
   $("#orchestration-claim").textContent = insights.orchestration?.claim || "No orchestration profile has been derived yet.";
+  const workflow = insights.workflowEvolution;
+  if (!workflow) {
+    $("#workflow-evolution-count").textContent = "Not derived";
+    $("#workflow-evolution-summary").innerHTML = `<div class="empty">Run <code>chatlog query workflow-evolution</code> to build the local event ledger.</div>`;
+    $("#workflow-event-list").innerHTML = "";
+  } else {
+    const summary = workflow.summary || {};
+    const tracer = workflow.approvalGateTracer;
+    $("#workflow-evolution-count").textContent = `${formatNumber(summary.uniqueEvents)} events`;
+    $("#workflow-evolution-summary").innerHTML = `
+      <div class="evolution-metrics">
+        <div><strong>${formatNumber(summary.uniqueEvents)}</strong><span>unique decisions</span></div>
+        <div><strong>${formatNumber(summary.duplicateCopiesCollapsed)}</strong><span>fan-out copies collapsed</span></div>
+        <div><strong>${formatNumber(summary.episodes)}</strong><span>opaque session lineages</span></div>
+      </div>
+      ${tracer ? `<div class="evolution-tracer">
+        <span class="badge">Approval tracer · ${escapeHtml(formatDate(tracer.occurredAt))}</span>
+        <strong>${escapeHtml(tracer.policyDelta?.after || tracer.statement)}</strong>
+        <p>${escapeHtml(tracer.policyDelta?.retained?.join(" · ") || "No retained boundary was inferred from this statement.")}</p>
+        ${tracer.evidence?.[0] ? `<button class="text-button workflow-evidence" data-uri="${escapeHtml(tracer.evidence[0].pointer)}">Open canonical evidence →</button>` : ""}
+      </div>` : `<div class="empty">No explicit approval-policy change is present in the active corpus.</div>`}`;
+    $("#workflow-event-list").innerHTML = (workflow.events || []).map((event) => `
+      <div class="workflow-event">
+        <span class="timeline-dot"></span>
+        <div>
+          <div class="workflow-event-head">
+            <strong>${escapeHtml(event.kind.replaceAll("-", " "))}</strong>
+            <span>${escapeHtml(formatDate(event.occurredAt))}</span>
+          </div>
+          <p>${escapeHtml(event.statement)}</p>
+          <div class="workflow-event-meta">
+            ${formatNumber(event.lineage?.conversations)} conversations ·
+            ${formatNumber(event.lineage?.duplicateCopiesCollapsed)} copies collapsed ·
+            ${escapeHtml((event.lineage?.roles || []).join(", ") || "unclassified")}
+          </div>
+          ${event.evidence?.[0] ? `<button class="text-button workflow-evidence" data-uri="${escapeHtml(event.evidence[0].pointer)}">Inspect evidence</button>` : ""}
+        </div>
+      </div>`).join("") || `<div class="empty">No explicit workflow events found.</div>`;
+    $$(".workflow-evidence").forEach((button) =>
+      button.addEventListener("click", () => openEvidence(button.dataset.uri))
+    );
+  }
   const profiles = insights.roles?.profiles || [];
   $("#role-profiles").innerHTML = profiles.map((profile) => `
     <div class="role-row">

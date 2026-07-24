@@ -8,6 +8,8 @@ import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
+import { deriveCorpus } from "../src/derive";
+import { deriveWorkflowEvolution } from "../src/workflow-evolution";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-"));
@@ -57,6 +59,8 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     join(root, "corpus", "objects", "bb", `${staleHash}.json`),
     JSON.stringify(superseded),
   );
+  await deriveCorpus(root);
+  await deriveWorkflowEvolution(root);
   const receiptInput = {
     source: {
       path: "/private/anthropic.zip",
@@ -113,6 +117,17 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
+  expect(await data.insights()).toMatchObject({
+    workflowEvolution: {
+      summary: { conversationsScanned: 1, uniqueEvents: 0 },
+      events: [],
+    },
+  });
+  const insightsResponse = await handler(new Request("http://localhost/api/insights"));
+  expect(insightsResponse.status).toBe(200);
+  expect(await insightsResponse.json()).toMatchObject({
+    workflowEvolution: { summary: { uniqueEvents: 0 } },
+  });
   const receiptsResponse = await handler(new Request("http://localhost/api/receipts?limit=1"));
   expect(receiptsResponse.status).toBe(200);
   expect(await receiptsResponse.json()).toMatchObject([{

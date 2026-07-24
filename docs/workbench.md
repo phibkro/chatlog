@@ -14,9 +14,9 @@ hosted telemetry product.
 - **Recall** — local SQLite FTS5 search. Results carry
   `chatlog://conversation/<hash>/turn/<index>` pointers, and the evidence viewer
   resolves the canonical redacted turn on demand.
-- **Patterns** — inferred role boundaries, measured agent experiments, and
-  knowledge-refinery candidates. A candidate is a prompt for review, never an
-  automatic configuration change.
+- **Patterns** — a session-aware workflow-change history, inferred role
+  boundaries, measured agent experiments, and knowledge-refinery candidates.
+  A candidate is a prompt for review, never an automatic configuration change.
 - **Sources** — connected harnesses, discovered exports, planned connectors,
   provenance domains, and their privacy behavior.
 
@@ -30,6 +30,7 @@ explicit evidence action.
 bun run ingest
 bun run derive
 bun run refine
+bun run query workflow-evolution
 bun run workbench
 ```
 
@@ -204,7 +205,7 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/sessions?project=…` | Session metadata for a project |
 | `/api/search?q=…&limit=…` | Ranked local FTS results and evidence pointers |
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
-| `/api/insights` | Orchestration, role, experiment, and refinery artifacts |
+| `/api/insights` | Bounded workflow evolution, orchestration, role, experiment, and refinery artifacts |
 | `/api/sources` | Connector state and import actions |
 | `/api/receipts?limit=…` | Newest bounded completed-import receipts |
 
@@ -214,6 +215,14 @@ does not require a resident server. The implemented Wave 1 MCP server exposes a
 smaller policy-filtered subset over stdio: search, one-turn evidence, recent
 project work, and bounded project briefs. Both surfaces use the same analysis
 store.
+
+Workflow evolution is derived explicitly with
+`chatlog query workflow-evolution`. Workbench shows the newest 40 events and at
+most three evidence pointers per event. It collapses exact same-session/day
+conversation copies, keeps cross-session identity conservative, and presents
+the July 22 approval-policy decision as an evidence-backed tracer. The surface
+describes operator policy; it neither changes agent authority nor attributes
+causal outcomes.
 
 ## Package and deploy
 

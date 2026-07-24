@@ -219,13 +219,17 @@ export class WorkbenchData {
   async insights(): Promise<unknown> {
     const projection = this.assertProjection();
     const derivedProjection = await assertDerivedProjection(this.root);
-    const [leanCurrent, rolesCurrent, refineryCurrent] = await Promise.all([
+    const [leanCurrent, rolesCurrent, refineryCurrent, workflowCurrent] = await Promise.all([
       loadProjectionBoundArtifact(this.root, "orchestration-lean-manifest.json", { optional: true, projection: derivedProjection }),
       loadProjectionBoundArtifact(this.root, "orchestration-roles-manifest.json", { optional: true, projection: derivedProjection }),
       loadProjectionBoundArtifact(this.root, "refinery-manifest.json", {
         optional: true,
         projection: derivedProjection,
         inputProjectionHash: derivedProjection.structureProjectionHash,
+      }),
+      loadProjectionBoundArtifact(this.root, "workflow-evolution-manifest.json", {
+        optional: true,
+        projection: derivedProjection,
       }),
     ]);
     const effectivenessCurrent = rolesCurrent
@@ -247,7 +251,29 @@ export class WorkbenchData {
     const roles = rolesCurrent?.artifact;
     const effectiveness = effectivenessCurrent?.artifact;
     const refinery = refineryCurrent?.artifact;
+    const workflow = workflowCurrent?.artifact;
+    const boundedWorkflowEvent = (event: any) => event ? ({
+      id: event.id,
+      kind: event.kind,
+      occurredAt: event.occurredAt,
+      statement: event.statement,
+      confidence: event.confidence,
+      lineage: event.lineage,
+      signals: event.signals,
+      policyDelta: event.policyDelta,
+      evidence: (event.evidence ?? []).slice(0, 3),
+    }) : null;
     const result = {
+      workflowEvolution: workflow ? {
+        summary: workflow.summary,
+        methodology: {
+          grouping: workflow.methodology?.grouping,
+          crossSessionBoundary: workflow.methodology?.crossSessionBoundary,
+          causalBoundary: workflow.methodology?.causalBoundary,
+        },
+        approvalGateTracer: boundedWorkflowEvent(workflow.tracers?.approvalGate),
+        events: (workflow.events ?? []).slice(-40).reverse().map(boundedWorkflowEvent),
+      } : null,
       orchestration: lean?.finding ? {
         claim: lean.finding.claim,
         decisionBoundary: lean.finding.decisionBoundary,

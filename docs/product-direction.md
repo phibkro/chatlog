@@ -8,6 +8,10 @@ that deployment understandable and repeatable for other technical users.
 
 ## Near-term product
 
+- Make workflow evolution the primary insight loop: identify repeated operator
+  patterns, deduplicate instructions propagated through agent fan-out, show
+  when boundaries are revised, and only then compare outcome indicators. Keep
+  every claim evidence-backed and distinguish association from causation.
 - Connect local harness logs and explicit provider exports through reviewable
   adapters.
 - Turn them into project recall, bounded evidence, source health, and measured

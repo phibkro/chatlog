@@ -18,6 +18,7 @@ import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
+import { deriveWorkflowEvolution, loadWorkflowEvolution } from "./workflow-evolution";
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { normalizeConversationDomain } from "./domain";
 import { resolveDataRoot } from "./data-root";
@@ -135,6 +136,9 @@ if (command === "ingest") {
       const roleDerivation = await deriveRoleSegmentation(root);
       const effectivenessDerivation = await deriveEffectivenessRanking(root);
       output = { derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) }, effectiveness: { derivation: effectivenessDerivation, report: await loadEffectivenessRanking(root) } };
+    } else if (subcommand === "workflow-evolution") {
+      const derivation = await deriveWorkflowEvolution(root);
+      output = { derivation, report: await loadWorkflowEvolution(root) };
     } else if (subcommand === "refinery") {
       output = await agentRefinery(root, args[0], Number(args[1] ?? 30));
     } else if (subcommand === "candidate") {
@@ -155,7 +159,7 @@ if (command === "ingest") {
       output = await duckUsageOverTime(root, bucket, Number(args[1] ?? 60));
     } else if (subcommand === "tools") output = await duckToolFrequency(root, Number(args[0] ?? 30));
     else if (subcommand === "lengths") output = await duckSessionLengths(root);
-    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
+    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|workflow-evolution|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
     const currentProjection = projectionGuard.assert(db);
     if (
       currentProjection.manifestSourcesHash !== projection.manifestSourcesHash

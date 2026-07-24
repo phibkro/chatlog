@@ -14,8 +14,8 @@ analysis files are mode 0600 inside mode 0700 directories and are gitignored.
 
 Chatlog Workbench turns the corpus into a local product for both the operator
 and coding agents. It provides a project and session browser, full-text recall
-with resolvable evidence, measured orchestration patterns, refinery candidates,
-and a source-connection screen.
+with resolvable evidence, a deduplicated workflow-change history, measured
+orchestration patterns, refinery candidates, and a source-connection screen.
 
 ```sh
 bun run ingest
@@ -103,6 +103,7 @@ bun run query ask 'what did I try last time for X' 10
 bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
 bun run query orchestration-profile
+bun run query workflow-evolution
 bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
 bun run query candidate <candidate-id>
 bun run query eval-plan <candidate-id>
@@ -177,6 +178,22 @@ tool shape as supporting signals; project and harness remain provenance rather
 than hardcoded role mappings. The report publishes the labelled-sample confusion
 rows, per-role decision boundaries, and a distinguishability test using Wilson
 95% intervals.
+
+## Workflow evolution
+
+`query workflow-evolution` derives a local, projection-bound event ledger from
+explicit operator workflow instructions. Exact copies propagated across
+conversations in the same provider/harness session and UTC day are one event;
+the report retains a count of collapsed conversation copies and bounded
+canonical evidence. Raw session and resume identifiers are replaced with
+opaque hashes.
+
+The first tracer recognizes the explicit approval-policy change that lets
+verified agents integrate without a separate operator review gate while
+retaining required checks. Generic autonomous-integration instructions remain
+autonomy events rather than receiving that stronger policy claim. The ledger
+is descriptive, performs no egress, changes no harness authority, and makes no
+causal outcome claim.
 
 Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
 runs the existing external scorer to rank a concrete role pattern against its

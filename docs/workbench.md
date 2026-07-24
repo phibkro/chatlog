@@ -50,6 +50,12 @@ Remote access is deliberately opt-in. If access from another machine is needed,
 prefer a private overlay or authenticated reverse proxy rather than exposing
 the port directly.
 
+The operator deployment keeps Workbench on loopback and publishes
+`https://chatlog.home.phibkro.org` only inside the LAN/tailnet through the
+Homelab entry plane. This is deployment policy rather than an application
+feature: the public Internet remains outside the trust boundary while Chatlog
+has no application authentication.
+
 ## Connect sources
 
 Claude Code, Codex, and Pi are discovered from their standard local session

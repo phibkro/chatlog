@@ -26,7 +26,9 @@ bun run workbench
 The server binds to loopback, reads the existing corpus without mutating it, and
 does not use hosted analytics. Set `CHATLOG_DATA_ROOT` when the data lives
 outside this checkout. See [docs/workbench.md](docs/workbench.md) for source
-configuration, the API, and privacy boundaries.
+configuration, the API, and privacy boundaries. The durable local-first product
+and deferred hosted-companion direction is recorded in
+[docs/product-direction.md](docs/product-direction.md).
 
 ## Agent MCP
 

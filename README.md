@@ -105,6 +105,7 @@ bun run query project /exact/project/path
 bun run query orchestration-profile
 bun run query workflow-evolution
 bun run query workflow-outcomes
+bun run query workflow-patterns
 bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
 bun run query candidate <candidate-id>
 bun run query eval-plan <candidate-id>
@@ -204,6 +205,16 @@ same-provider/harness token proxies only above declared
 sample floors. Sparse windows remain visible without deltas. Every comparison
 is explicitly descriptive: temporal association does not establish that a
 workflow change caused the observed result.
+
+`query workflow-patterns` synthesizes repeated operator instructions from the
+event ledger. A pattern is one workflow kind, explicit signal, and inferred
+agent role repeated across at least three distinct opaque episodes and two UTC
+days. Same-episode and one-day fan-out cannot inflate the floor, and episode
+lineages are not presented as statistical independence. Chatlog distinguishes
+exact recurrence, reformulation, and return to a prior formulation while
+keeping the underlying boundary effect separate. Outcome directions appear
+only with three covered event windows and remain descriptive rather than
+causal.
 
 Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
 runs the existing external scorer to rank a concrete role pattern against its

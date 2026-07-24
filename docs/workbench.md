@@ -32,6 +32,7 @@ bun run derive
 bun run refine
 bun run query workflow-evolution
 bun run query workflow-outcomes
+bun run query workflow-patterns
 bun run workbench
 ```
 
@@ -206,7 +207,7 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/sessions?project=…` | Session metadata for a project |
 | `/api/search?q=…&limit=…` | Ranked local FTS results and evidence pointers |
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
-| `/api/insights` | Bounded workflow evolution, orchestration, role, experiment, and refinery artifacts |
+| `/api/insights` | Bounded workflow patterns, evolution, outcomes, orchestration, role, experiment, and refinery artifacts |
 | `/api/sources` | Connector state and import actions |
 | `/api/receipts?limit=…` | Newest bounded completed-import receipts |
 
@@ -233,6 +234,22 @@ friction, and failed-attempt rates are proxies with visible denominators;
 provider-reported tokens are compared only within the same provider/harness
 with three samples per side.
 The panel never labels a delta as an effect or recommendation.
+
+`chatlog query workflow-patterns` derives the optional repeated-pattern layer
+after Workflow Evolution and Workflow Outcomes. One newest event per opaque
+episode contributes to a workflow-kind, explicit-signal, and inferred-role
+signature; three distinct episodes across two UTC days are required. Workbench
+exposes at most 30 patterns and renders the 12 most supported cards with exact
+recurrence,
+reformulation, return-to-prior, coverage, and canonical-example drilldown.
+Outcome directions require three covered episode windows and are disclosed as
+descriptive associations across potentially overlapping windows.
+Opaque episode lineages are a deduplication boundary, not statistical
+independence.
+
+The Workbench projection replaces structured project paths with counts and
+omits internal pattern, event, episode, and statement identifiers. The
+canonical evidence endpoint remains the explicit one-turn drilldown boundary.
 
 ## Package and deploy
 

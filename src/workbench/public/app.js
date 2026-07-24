@@ -174,6 +174,9 @@ function renderInsights() {
     $("#workflow-outcomes-count").textContent = "Unavailable";
     $("#workflow-outcomes-summary").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#workflow-outcome-list").innerHTML = "";
+    $("#workflow-patterns-count").textContent = "Unavailable";
+    $("#workflow-patterns-summary").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+    $("#workflow-pattern-list").innerHTML = "";
     $("#role-profiles").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#effectiveness-result").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
     $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
@@ -181,6 +184,56 @@ function renderInsights() {
   }
   const insights = state.insights || {};
   $("#orchestration-claim").textContent = insights.orchestration?.claim || "No orchestration profile has been derived yet.";
+  const patterns = insights.workflowPatterns;
+  if (!patterns) {
+    $("#workflow-patterns-count").textContent = "Not derived";
+    $("#workflow-patterns-summary").innerHTML = `<div class="empty">Run <code>chatlog query workflow-patterns</code> to synthesize repeated operator instructions.</div>`;
+    $("#workflow-pattern-list").innerHTML = "";
+  } else {
+    const summary = patterns.summary || {};
+    $("#workflow-patterns-count").textContent = `${formatNumber(summary.repeatedPatterns)} repeated`;
+    $("#workflow-patterns-summary").innerHTML = `
+      <div class="workflow-pattern-summary">
+        <div><strong>${formatNumber(summary.repeatedPatterns)}</strong><span>multi-day repeated patterns</span></div>
+        <div><strong>${formatNumber(summary.candidateSignatures)}</strong><span>deterministic signatures</span></div>
+        <div><strong>${formatNumber(summary.outcomeObservedPatterns)}</strong><span>with repeated outcome coverage</span></div>
+      </div>
+      <p class="pattern-causality">${escapeHtml(patterns.methodology?.causality || "Outcome directions are descriptive and do not establish causation.")}</p>`;
+    $("#workflow-pattern-list").innerHTML = (patterns.patterns || []).slice(0, 12).map((pattern) => {
+      const relations = pattern.sequence?.relations || {};
+      const outcome = pattern.outcomes || {};
+      const metric = outcome.metrics?.completionRate;
+      const evidence = pattern.examples?.find((item) => item.evidence?.[0])?.evidence?.[0];
+      return `<article class="workflow-pattern-card">
+        <div class="workflow-pattern-card-head">
+          <h3>${escapeHtml(pattern.title)}</h3>
+          <span class="badge">${formatNumber(pattern.coverage?.distinctEpisodes)} episodes</span>
+        </div>
+        <p>${escapeHtml(pattern.claim)}</p>
+        <div class="workflow-pattern-meta">
+          ${formatNumber(pattern.coverage?.projectCount)} projects ·
+          ${formatNumber(pattern.coverage?.eventMemberships)} event memberships ·
+          ${formatNumber(pattern.coverage?.distinctDays)} UTC days ·
+          ${escapeHtml(pattern.boundaryEffect?.replaceAll("-", " ") || "")}
+        </div>
+        ${pattern.coverage?.sharedEventMemberships ? `<div class="workflow-pattern-meta">${formatNumber(pattern.coverage.sharedEventMemberships)} memberships also contribute to another candidate signature.</div>` : ""}
+        <div class="workflow-pattern-relations">
+          <span>${formatNumber(relations.reinforced)} reinforced</span>
+          <span>${formatNumber(relations.reformulated)} reformulated</span>
+          <span>${formatNumber(relations["returned-to-prior"])} returned</span>
+        </div>
+        <div class="workflow-pattern-outcome">
+          ${outcome.status === "observed"
+            ? `<strong>Descriptive outcome coverage</strong> · ${formatNumber(outcome.observedEpisodes)} episodes${metric?.medianDelta == null ? "" : ` · completion median ${formatRateDelta(metric.medianDelta)}`}`
+            : `Outcome association still sparse · ${formatNumber(outcome.observedEpisodes)} covered episodes`}
+        </div>
+        ${evidence ? `<button class="text-button pattern-evidence" data-uri="${escapeHtml(evidence.pointer)}">Inspect canonical example</button>` : ""}
+      </article>`;
+    }).join("") || `<div class="empty">No workflow signature reaches three distinct episodes across two UTC days.</div>`;
+    $$(".pattern-evidence").forEach((button) =>
+      button.addEventListener("click", () => openEvidence(button.dataset.uri))
+    );
+  }
   const workflow = insights.workflowEvolution;
   if (!workflow) {
     $("#workflow-evolution-count").textContent = "Not derived";

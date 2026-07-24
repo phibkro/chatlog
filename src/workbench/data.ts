@@ -18,6 +18,7 @@ import {
   loadProjectionBoundArtifact,
 } from "../derived-authority";
 import { loadWorkflowOutcomes } from "../workflow-outcomes";
+import { loadWorkflowPatterns } from "../workflow-patterns";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || value.trim() === "") return fallback;
@@ -53,6 +54,77 @@ export function boundedOutcomeComparison(comparison: any): unknown {
     post: comparison.post,
     deltas: comparison.deltas,
     interpretation: comparison.interpretation,
+  };
+}
+
+export function boundedWorkflowPattern(pattern: any): unknown {
+  if (!pattern) return null;
+  const coverage = pattern.coverage ?? {};
+  const metric = (value: any) => ({
+    orientation: value?.orientation,
+    samples: value?.samples,
+    favorable: value?.favorable,
+    unfavorable: value?.unfavorable,
+    unchanged: value?.unchanged,
+    medianDelta: value?.medianDelta,
+  });
+  return {
+    kind: pattern.kind,
+    signal: pattern.signal,
+    role: pattern.role,
+    title: pattern.title,
+    claim: pattern.claim,
+    boundaryEffect: pattern.boundaryEffect,
+    coverage: {
+      eventMemberships: coverage.eventMemberships,
+      sharedEventMemberships: coverage.sharedEventMemberships,
+      distinctEpisodes: coverage.distinctEpisodes,
+      distinctDays: coverage.distinctDays,
+      distinctFormulations: coverage.distinctFormulations,
+      collapsedSameEpisodeMemberships:
+        coverage.collapsedSameEpisodeMemberships,
+      projectCount: Array.isArray(coverage.projects)
+        ? coverage.projects.length
+        : coverage.projectCount,
+      harnesses: coverage.harnesses,
+      firstSeenAt: coverage.firstSeenAt,
+      lastSeenAt: coverage.lastSeenAt,
+      minimumDistinctEpisodes: coverage.minimumDistinctEpisodes,
+      minimumDistinctDays: coverage.minimumDistinctDays,
+    },
+    sequence: {
+      relations: pattern.sequence?.relations,
+      latestRelation: pattern.sequence?.latestRelation,
+      timeline: (pattern.sequence?.timeline ?? []).slice(-12).map(
+        (item: any) => ({
+          occurredAt: item.occurredAt,
+          relation: item.relation,
+        }),
+      ),
+    },
+    outcomes: {
+      status: pattern.outcomes?.status,
+      observedEpisodes: pattern.outcomes?.observedEpisodes,
+      sparseEpisodes: pattern.outcomes?.sparseEpisodes,
+      minimumObservedEpisodes: pattern.outcomes?.minimumObservedEpisodes,
+      reasons: pattern.outcomes?.reasons,
+      metrics: {
+        completionRate: metric(pattern.outcomes?.metrics?.completionRate),
+        frictionRate: metric(pattern.outcomes?.metrics?.frictionRate),
+        reworkRate: metric(pattern.outcomes?.metrics?.reworkRate),
+      },
+      interpretation: {
+        claim: pattern.outcomes?.interpretation?.claim,
+        causal: false,
+      },
+    },
+    examples: (pattern.examples ?? []).slice(0, 4).map((example: any) => ({
+      occurredAt: example.occurredAt,
+      relation: example.relation,
+      evidence: (example.evidence ?? []).slice(0, 1).map(
+        (item: any) => ({ pointer: item.pointer }),
+      ),
+    })),
   };
 }
 
@@ -271,6 +343,12 @@ export class WorkbenchData {
         projection: derivedProjection,
       })
       : null;
+    const workflowPatterns = workflowOutcomes
+      ? await loadWorkflowPatterns(this.root, {
+        optional: true,
+        projection: derivedProjection,
+      })
+      : null;
     if (
       effectivenessCurrent
       && effectivenessCurrent.artifact?.roleProfileContentHash !== rolesCurrent?.contentHash
@@ -296,6 +374,20 @@ export class WorkbenchData {
       evidence: (event.evidence ?? []).slice(0, 3),
     }) : null;
     const result = {
+      workflowPatterns: workflowPatterns ? {
+        summary: workflowPatterns.summary,
+        methodology: {
+          identity: workflowPatterns.methodology?.identity,
+          repetition: workflowPatterns.methodology?.repetition,
+          relations: workflowPatterns.methodology?.relations,
+          boundaryEffect: workflowPatterns.methodology?.boundaryEffect,
+          outcomes: workflowPatterns.methodology?.outcomes,
+          causality: workflowPatterns.methodology?.causality,
+        },
+        patterns: (workflowPatterns.patterns ?? [])
+          .slice(0, 30)
+          .map(boundedWorkflowPattern),
+      } : null,
       workflowOutcomes: workflowOutcomes ? {
         summary: workflowOutcomes.summary,
         methodology: {

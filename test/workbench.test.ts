@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import {
   boundedOutcomeComparison,
+  boundedWorkflowPattern,
   WorkbenchData,
 } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
@@ -14,6 +15,7 @@ import type { Conversation } from "../src/types";
 import { deriveCorpus } from "../src/derive";
 import { deriveWorkflowEvolution } from "../src/workflow-evolution";
 import { deriveWorkflowOutcomes } from "../src/workflow-outcomes";
+import { deriveWorkflowPatterns } from "../src/workflow-patterns";
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-"));
@@ -66,6 +68,7 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   await deriveCorpus(root);
   await deriveWorkflowEvolution(root);
   await deriveWorkflowOutcomes(root);
+  await deriveWorkflowPatterns(root);
   const receiptInput = {
     source: {
       path: "/private/anthropic.zip",
@@ -123,6 +126,13 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
   expect(await data.insights()).toMatchObject({
+    workflowPatterns: {
+      summary: { repeatedPatterns: 0, candidateSignatures: 0 },
+      methodology: {
+        boundaryEffect: expect.stringContaining("silence never implies reversal"),
+      },
+      patterns: [],
+    },
     workflowOutcomes: {
       summary: { events: 0, observed: 0, insufficientCoverage: 0 },
       comparisons: [],
@@ -210,5 +220,100 @@ test("Workflow Outcomes projection removes internal identifiers and project path
   });
   const encoded = JSON.stringify(projected);
   expect(encoded).not.toContain("internal-event-id");
+  expect(encoded).not.toContain("/private/project");
+});
+
+test("Workflow Pattern projection keeps evidence drilldown but removes internal lineage", () => {
+  const projected = boundedWorkflowPattern({
+    id: "internal-pattern-id",
+    kind: "ownership-boundary",
+    signal: "one-writer",
+    role: "worker",
+    title: "Worker agents: keep one writer",
+    claim: "Repeated in three episodes.",
+    boundaryEffect: "guardrail-imposed",
+    coverage: {
+      eventMemberships: 4,
+      sharedEventMemberships: 2,
+      distinctEpisodes: 3,
+      distinctDays: 2,
+      distinctFormulations: 2,
+      collapsedSameEpisodeMemberships: 1,
+      projects: ["/private/project-one", "/private/project-two"],
+      harnesses: ["test-harness"],
+      firstSeenAt: "2026-07-01T00:00:00.000Z",
+      lastSeenAt: "2026-07-03T00:00:00.000Z",
+      minimumDistinctEpisodes: 3,
+      minimumDistinctDays: 2,
+    },
+    sequence: {
+      relations: {
+        introduced: 1,
+        reinforced: 1,
+        reformulated: 1,
+        "returned-to-prior": 0,
+      },
+      latestRelation: "reformulated",
+      timeline: [{
+        eventId: "internal-event-id",
+        episodeId: "internal-episode-id",
+        statementHash: "internal-statement-hash",
+        occurredAt: "2026-07-03T00:00:00.000Z",
+        relation: "reformulated",
+      }],
+    },
+    outcomes: {
+      status: "insufficient-coverage",
+      observedEpisodes: 1,
+      sparseEpisodes: 2,
+      minimumObservedEpisodes: 3,
+      reasons: ["observed-episodes-below-3"],
+      metrics: {
+        completionRate: {
+          orientation: "higher-is-favorable",
+          samples: 1,
+          favorable: null,
+          unfavorable: null,
+          unchanged: null,
+          medianDelta: null,
+        },
+        frictionRate: {},
+        reworkRate: {},
+      },
+      interpretation: { causal: false },
+      futureInternalEventId: "internal-outcome-id",
+      futureProjectPath: "/private/project-three",
+    },
+    examples: [{
+      eventId: "internal-event-id",
+      occurredAt: "2026-07-03T00:00:00.000Z",
+      relation: "reformulated",
+      statement: "Use /private/project-one as the only tree.",
+      evidence: [{
+        pointer: `chatlog://conversation/${"a".repeat(64)}/turn/0`,
+        snippet: "Use /private/project-one.",
+      }],
+    }],
+  });
+  expect(projected).toMatchObject({
+    signal: "one-writer",
+    coverage: {
+      projectCount: 2,
+      distinctEpisodes: 3,
+      distinctDays: 2,
+      sharedEventMemberships: 2,
+    },
+    sequence: {
+      timeline: [{
+        occurredAt: "2026-07-03T00:00:00.000Z",
+        relation: "reformulated",
+      }],
+    },
+    examples: [{
+      evidence: [{ pointer: expect.stringContaining("chatlog://") }],
+    }],
+  });
+  const encoded = JSON.stringify(projected);
+  expect(encoded).not.toContain("internal-");
   expect(encoded).not.toContain("/private/project");
 });

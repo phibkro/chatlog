@@ -12,6 +12,11 @@ that deployment understandable and repeatable for other technical users.
   patterns, deduplicate instructions propagated through agent fan-out, show
   when boundaries are revised, and only then compare outcome indicators. Keep
   every claim evidence-backed and distinguish association from causation.
+- Treat repeated-pattern synthesis as the bridge from individual events to an
+  operator profile: require distinct multi-day episodes, avoid presenting
+  session lineages as statistical independence, separate wording revision from
+  policy effect, and expose outcome direction only above declared coverage
+  floors.
 - Connect local harness logs and explicit provider exports through reviewable
   adapters.
 - Turn them into project recall, bounded evidence, source health, and measured

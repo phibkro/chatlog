@@ -17,5 +17,8 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt .",
     "no-throw": "bash scripts/no-throw-ratchet.sh"
+  },
+  "dependencies": {
+    "effect": "4.0.0-beta.98"
   }
 }

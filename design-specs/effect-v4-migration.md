@@ -48,11 +48,30 @@ failure as a value.
    changes between releases. Pin an exact version in `package.json` — never a
    range, never `@beta` floating.
 
+## Reference material — READ BEFORE WRITING CODE
+
+A shallow clone of the v4 source lives at
+`/srv/share/projects/.reference/effect-smol` (rev `3a1128c`, version
+`4.0.0-beta.98`). Effect v4 postdates most model training data, so patterns
+recalled from memory will be v3. Work from these files, not from recall:
+
+| Path | Use for |
+|---|---|
+| `.patterns/effect.md` | **The house style, and the anti-pattern list.** Explicit ❌/✅ pairs: never try-catch inside `Effect.gen`; always `return yield*` for terminal effects. |
+| `migration/error-handling.md` | The `catch*` renamings — `catchAll`→`catch`, `catchSome`→`catchFilter`, `catchSomeDefect` removed. |
+| `migration/*.md` | 11 topic guides: cause, generators, layer-memoization, runtime, schema, fiberref, forking. |
+| `MIGRATION.md` | The v3→v4 overview. |
+| `AGENTS.md` | Upstream's own instructions for agents in this codebase. |
+| `packages/effect/src/` | Ground truth when a doc is ambiguous. |
+
+Pin the exact version this reference was taken at. If a pattern here disagrees
+with anything in this spec, the reference wins on *mechanism* and this spec
+wins on *scope* — say so rather than silently choosing.
+
 **Values (soft):**
 
-- Prefer upstream migration tooling over hand-porting. Check the v3→v4
-  Migration Guide and any published codemods FIRST; a mechanical transform
-  beats 100 hand edits.
+- Prefer upstream migration tooling over hand-porting. Check `MIGRATION.md` and
+  any published codemods FIRST; a mechanical transform beats 100 hand edits.
 - Keep the pure core pure. Derivation and refinery are pure functions of
   corpus + recipe hash; if Effect does not make a given pure function safer,
   leave it alone. Wrapping pure code in `Effect` for uniformity is churn.

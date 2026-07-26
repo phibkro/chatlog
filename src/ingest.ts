@@ -7,8 +7,16 @@ import { deriveCorpus, type DeriveSummary } from "./derive";
 import { redact, REDACTION_RECIPE } from "./redact";
 import { refineCorpus, type RefinerySummary } from "./refinery";
 
-interface ManifestEntry { size: number; mtimeMs: number; contentHash: string }
-interface Manifest { version: 1; redactionRecipe?: string; sources: Record<string, ManifestEntry> }
+interface ManifestEntry {
+  size: number;
+  mtimeMs: number;
+  contentHash: string;
+}
+interface Manifest {
+  version: 1;
+  redactionRecipe?: string;
+  sources: Record<string, ManifestEntry>;
+}
 
 async function loadManifest(path: string): Promise<Manifest> {
   try {
@@ -35,7 +43,8 @@ export function canonicalizeConversation(value: Omit<Conversation, "contentHash"
   const scrub = (item: unknown): unknown => {
     if (typeof item === "string") return redact(item);
     if (Array.isArray(item)) return item.map(scrub);
-    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, scrub(child)]));
+    if (item && typeof item === "object")
+      return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, scrub(child)]));
     return item;
   };
   const scrubbed = scrub(value) as Omit<Conversation, "contentHash">;
@@ -45,8 +54,14 @@ export function canonicalizeConversation(value: Omit<Conversation, "contentHash"
 }
 
 export interface IngestSummary {
-  discovered: Record<string, number>; ingested: Record<string, number>; skipped: Record<string, number>;
-  partialTails: number; changedDuringRead: number; corpusBytes: number; derived?: DeriveSummary; refinery?: RefinerySummary;
+  discovered: Record<string, number>;
+  ingested: Record<string, number>;
+  skipped: Record<string, number>;
+  partialTails: number;
+  changedDuringRead: number;
+  corpusBytes: number;
+  derived?: DeriveSummary;
+  refinery?: RefinerySummary;
 }
 
 export async function ingest(adapters: SourceAdapter[], root: string): Promise<IngestSummary> {
@@ -62,10 +77,18 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
   const manifest = await loadManifest(manifestPath);
   const redactionChanged = manifest.redactionRecipe !== REDACTION_RECIPE;
   const db = openAnalysis(dbPath);
-  const summary: IngestSummary = { discovered: {}, ingested: {}, skipped: {}, partialTails: 0, changedDuringRead: 0, corpusBytes: 0 };
+  const summary: IngestSummary = {
+    discovered: {},
+    ingested: {},
+    skipped: {},
+    partialTails: 0,
+    changedDuringRead: 0,
+    corpusBytes: 0,
+  };
   try {
     const backfilled = await backfillCacheWrite(db, corpusDir);
-    if (backfilled) console.error(`analysis: backfilled cache-write totals for ${backfilled} corpus objects`);
+    if (backfilled)
+      console.error(`analysis: backfilled cache-write totals for ${backfilled} corpus objects`);
     for (const adapter of adapters) {
       const files = await adapter.discover();
       summary.discovered[adapter.harness] = files.length;
@@ -73,29 +96,48 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
       summary.skipped[adapter.harness] = 0;
       for (const [index, source] of files.entries()) {
         const old = manifest.sources[source.path];
-        if (!redactionChanged && old?.size === source.size && old?.mtimeMs === source.mtimeMs) { summary.skipped[adapter.harness]++; continue; }
+        if (!redactionChanged && old?.size === source.size && old?.mtimeMs === source.mtimeMs) {
+          summary.skipped[adapter.harness]++;
+          continue;
+        }
         const result = await adapter.adapt(source);
         if (result.partialTail) summary.partialTails++;
         const after = await stat(source.path);
-        if (after.size !== source.size || after.mtimeMs !== source.mtimeMs) summary.changedDuringRead++;
+        if (after.size !== source.size || after.mtimeMs !== source.mtimeMs)
+          summary.changedDuringRead++;
         const conversation = canonicalizeConversation(result.conversation);
-        const outputPath = join(corpusDir, "objects", conversation.contentHash.slice(0, 2), `${conversation.contentHash}.json`);
-        try { await stat(outputPath); } catch (error: any) {
+        const outputPath = join(
+          corpusDir,
+          "objects",
+          conversation.contentHash.slice(0, 2),
+          `${conversation.contentHash}.json`,
+        );
+        try {
+          await stat(outputPath);
+        } catch (error: any) {
           if (error?.code !== "ENOENT") throw error;
           await atomicWrite(outputPath, JSON.stringify(conversation) + "\n");
         }
         indexConversation(db, conversation, source.mtimeMs, source.size);
-        manifest.sources[source.path] = { size: source.size, mtimeMs: source.mtimeMs, contentHash: conversation.contentHash };
+        manifest.sources[source.path] = {
+          size: source.size,
+          mtimeMs: source.mtimeMs,
+          contentHash: conversation.contentHash,
+        };
         summary.ingested[adapter.harness]++;
-        if ((index + 1) % 100 === 0) console.error(`${adapter.harness}: ${index + 1}/${files.length}`);
+        if ((index + 1) % 100 === 0)
+          console.error(`${adapter.harness}: ${index + 1}/${files.length}`);
       }
     }
     manifest.redactionRecipe = REDACTION_RECIPE;
     await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
   async function size(dir: string): Promise<number> {
     let total = 0;
-    for (const entry of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true })) total += (await stat(join(dir, entry))).size;
+    for (const entry of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true }))
+      total += (await stat(join(dir, entry))).size;
     return total;
   }
   summary.corpusBytes = await size(corpusDir);

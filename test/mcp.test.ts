@@ -53,15 +53,21 @@ async function fixture(): Promise<{ root: string; coding: Conversation; personal
   for (const conversation of [coding, personal]) {
     const directory = join(root, "corpus", "objects", conversation.contentHash.slice(0, 2));
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, `${conversation.contentHash}.json`), JSON.stringify(conversation));
+    await writeFile(
+      join(directory, `${conversation.contentHash}.json`),
+      JSON.stringify(conversation),
+    );
   }
-  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
-    version: 1,
-    sources: {
-      "/coding": { contentHash: coding.contentHash },
-      "/personal": { contentHash: personal.contentHash },
-    },
-  }));
+  await writeFile(
+    join(root, "corpus", "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      sources: {
+        "/coding": { contentHash: coding.contentHash },
+        "/personal": { contentHash: personal.contentHash },
+      },
+    }),
+  );
   await deriveCorpus(root);
   return { root, coding, personal };
 }
@@ -85,46 +91,58 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
     expect(recent.sessions).toHaveLength(1);
     expect(recent.sessions[0].sessionId).toBe(coding.id);
 
-    await unlink(join(
-      root,
-      "derived",
-      "objects",
-      coding.contentHash.slice(0, 2),
-      `${coding.contentHash}.json`,
-    ));
-    const brief = await data.projectBrief({ project: "/project" }) as any;
+    await unlink(
+      join(
+        root,
+        "derived",
+        "objects",
+        coding.contentHash.slice(0, 2),
+        `${coding.contentHash}.json`,
+      ),
+    );
+    const brief = (await data.projectBrief({ project: "/project" })) as any;
     expect(brief.overview.sessions).toBe(1);
     expect(brief.derivedMissing).toBe(1);
     expect(JSON.stringify(brief)).not.toContain(personal.id);
 
-    const codingEvidence = await data.evidence({
+    const codingEvidence = (await data.evidence({
       uri: `chatlog://conversation/${coding.contentHash.toUpperCase()}/turn/0`,
-    }) as any;
+    })) as any;
     expect(codingEvidence.evidenceUri).toBe(`chatlog://conversation/${coding.contentHash}/turn/0`);
     expect(codingEvidence.truncated).toBe(true);
     expect(codingEvidence.turn.content).toHaveLength(12_000);
     expect(codingEvidence.fullLength).toBeGreaterThan(12_000);
     expect(codingEvidence.turn.toolCalls).toBeUndefined();
 
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
-    })).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
 
     await writeFile(
       join(root, "corpus", "objects", coding.contentHash.slice(0, 2), `${coding.contentHash}.json`),
       JSON.stringify({ ...coding, domain: "personal" }),
     );
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
 
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
-    expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow("domain access denied");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
+    expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow(
+      "domain access denied",
+    );
   } finally {
     data.close();
   }
@@ -135,38 +153,60 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
   const data = new McpData(root);
   const state = createMcpState();
   try {
-    const beforeInitialization = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 0,
-      method: "tools/list",
-    }, state) as any;
+    const beforeInitialization = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 0,
+        method: "tools/list",
+      },
+      state,
+    )) as any;
     expect(beforeInitialization.error).toEqual({
       code: -32002,
       message: "server not initialized",
     });
 
-    const initialized = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } },
-    }, state) as any;
+    const initialized = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+      },
+      state,
+    )) as any;
     expect(initialized.result).toMatchObject({
       protocolVersion: "2025-11-25",
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: "chatlog" },
     });
-    expect(await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-    }, state)).toBeNull();
+    expect(
+      await handleMcpMessage(
+        data,
+        {
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        },
+        state,
+      ),
+    ).toBeNull();
     expect(state.initialized).toBe(true);
 
-    const listed = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 2,
-      method: "tools/list",
-    }, state) as any;
+    const listed = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+      },
+      state,
+    )) as any;
     expect(listed.result.tools.map((tool: any) => tool.name)).toEqual([
       "chatlog_search",
       "chatlog_get_evidence",
@@ -174,34 +214,46 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
       "chatlog_project_brief",
     ]);
 
-    const called = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 3,
-      method: "tools/call",
-      params: { name: "chatlog_search", arguments: { query: "projection" } },
-    }, state) as any;
+    const called = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "chatlog_search", arguments: { query: "projection" } },
+      },
+      state,
+    )) as any;
     expect(called.result.isError).toBeUndefined();
     expect(called.result.structuredContent.hits).toHaveLength(1);
 
-    const denied = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: {
-        name: "chatlog_get_evidence",
-        arguments: { uri: `chatlog://conversation/${personal.contentHash}/turn/0` },
+    const denied = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "chatlog_get_evidence",
+          arguments: { uri: `chatlog://conversation/${personal.contentHash}/turn/0` },
+        },
       },
-    }, state) as any;
+      state,
+    )) as any;
     expect(denied.result.isError).toBe(true);
     expect(denied.result.content[0].text).toBe("evidence not found or not permitted");
 
-    const unknownMethod = await handleMcpMessage(data, {
-      jsonrpc: "2.0",
-      id: 5,
-      method: "archive/everything",
-    }, state) as any;
+    const unknownMethod = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "archive/everything",
+      },
+      state,
+    )) as any;
     expect(unknownMethod.error.code).toBe(-32601);
-    expect((await processMcpLine(data, "{", state) as any).error.code).toBe(-32700);
+    expect(((await processMcpLine(data, "{", state)) as any).error.code).toBe(-32700);
   } finally {
     data.close();
   }
@@ -209,12 +261,29 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
 
 test("MCP stdio emits one JSON-RPC message per line and no diagnostic stdout", async () => {
   const { root } = await fixture();
-  const transcript = [
-    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } } },
-    { jsonrpc: "2.0", method: "notifications/initialized" },
-    { jsonrpc: "2.0", id: 2, method: "tools/list" },
-    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "chatlog_search", arguments: { query: "projection" } } },
-  ].map((message) => JSON.stringify(message)).join("\n") + "\n";
+  const transcript =
+    [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "chatlog_search", arguments: { query: "projection" } },
+      },
+    ]
+      .map((message) => JSON.stringify(message))
+      .join("\n") + "\n";
   const child = Bun.spawn([process.execPath, "run", "src/mcp/server.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, CHATLOG_DATA_ROOT: root, CHATLOG_MCP_DOMAINS: "coding" },

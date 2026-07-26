@@ -4,7 +4,9 @@ import { dirname } from "node:path";
 import type { Conversation } from "./types";
 
 function hasColumn(db: Database, table: string, column: string): boolean {
-  return (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((row) => row.name === column);
+  return (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
+    (row) => row.name === column,
+  );
 }
 
 export function openAnalysis(path: string): Database {
@@ -43,7 +45,9 @@ export function openAnalysis(path: string): Database {
     call_id TEXT, name TEXT NOT NULL, arguments TEXT, output TEXT,
     PRIMARY KEY(content_hash, turn_index, call_index)
   )`);
-  db.run("CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(content, content_hash UNINDEXED, turn_index UNINDEXED, harness UNINDEXED, project UNINDEXED, tokenize='unicode61')");
+  db.run(
+    "CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(content, content_hash UNINDEXED, turn_index UNINDEXED, harness UNINDEXED, project UNINDEXED, tokenize='unicode61')",
+  );
   db.run("DROP VIEW IF EXISTS current_token_usage");
   db.run("DROP VIEW IF EXISTS current_turns");
   db.run("DROP VIEW IF EXISTS current_conversations");
@@ -71,28 +75,87 @@ export function openAnalysis(path: string): Database {
   return db;
 }
 
-export function indexConversation(db: Database, c: Conversation, sourceMtime: number, sourceSize: number): boolean {
-  if (db.query("SELECT 1 FROM conversations WHERE content_hash = ?").get(c.contentHash)) return false;
-  const totals = c.turns.reduce((a, t) => ({
-    input: a.input + (t.tokens?.input ?? 0), output: a.output + (t.tokens?.output ?? 0),
-    cached: a.cached + (t.tokens?.cachedInput ?? 0), reasoning: a.reasoning + (t.tokens?.reasoning ?? 0),
-    total: a.total + (t.tokens?.total ?? 0),
-  }), { input: 0, output: 0, cached: 0, reasoning: 0, total: 0 });
+export function indexConversation(
+  db: Database,
+  c: Conversation,
+  sourceMtime: number,
+  sourceSize: number,
+): boolean {
+  if (db.query("SELECT 1 FROM conversations WHERE content_hash = ?").get(c.contentHash))
+    return false;
+  const totals = c.turns.reduce(
+    (a, t) => ({
+      input: a.input + (t.tokens?.input ?? 0),
+      output: a.output + (t.tokens?.output ?? 0),
+      cached: a.cached + (t.tokens?.cachedInput ?? 0),
+      reasoning: a.reasoning + (t.tokens?.reasoning ?? 0),
+      total: a.total + (t.tokens?.total ?? 0),
+    }),
+    { input: 0, output: 0, cached: 0, reasoning: 0, total: 0 },
+  );
   const insertConversation = db.prepare(`INSERT INTO conversations
     (content_hash,id,provider,harness,project,cwd,model,started_at,ended_at,resume_id,source_path,
      source_mtime,source_size,ingested_at,turn_count,input_tokens,output_tokens,cached_input_tokens,
      reasoning_tokens,total_tokens,cache_write_tokens,title,domain,source_kind)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insertTurn = db.prepare("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-  const insertFts = db.prepare("INSERT INTO turns_fts(content, content_hash, turn_index, harness, project) VALUES (?, ?, ?, ?, ?)");
+  const insertFts = db.prepare(
+    "INSERT INTO turns_fts(content, content_hash, turn_index, harness, project) VALUES (?, ?, ?, ?, ?)",
+  );
   const insertTool = db.prepare("INSERT INTO tool_calls VALUES (?, ?, ?, ?, ?, ?, ?)");
   db.transaction(() => {
     const cacheWrite = c.turns.reduce((sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0), 0);
-    insertConversation.run(c.contentHash, c.id, c.provider, c.harness, c.project, c.cwd, c.model, c.startedAt, c.endedAt, c.resumeId ?? null, c.sourcePath, sourceMtime, sourceSize, new Date().toISOString(), c.turns.length, totals.input, totals.output, totals.cached, totals.reasoning, totals.total, cacheWrite, c.title ?? "", c.domain ?? "coding", c.sourceKind ?? "session-log");
+    insertConversation.run(
+      c.contentHash,
+      c.id,
+      c.provider,
+      c.harness,
+      c.project,
+      c.cwd,
+      c.model,
+      c.startedAt,
+      c.endedAt,
+      c.resumeId ?? null,
+      c.sourcePath,
+      sourceMtime,
+      sourceSize,
+      new Date().toISOString(),
+      c.turns.length,
+      totals.input,
+      totals.output,
+      totals.cached,
+      totals.reasoning,
+      totals.total,
+      cacheWrite,
+      c.title ?? "",
+      c.domain ?? "coding",
+      c.sourceKind ?? "session-log",
+    );
     c.turns.forEach((t, i) => {
-      insertTurn.run(c.contentHash, i, t.role, t.content, t.at ?? null, t.tokens?.input ?? 0, t.tokens?.output ?? 0, t.tokens?.cachedInput ?? 0, t.tokens?.reasoning ?? 0, t.tokens?.total ?? 0);
+      insertTurn.run(
+        c.contentHash,
+        i,
+        t.role,
+        t.content,
+        t.at ?? null,
+        t.tokens?.input ?? 0,
+        t.tokens?.output ?? 0,
+        t.tokens?.cachedInput ?? 0,
+        t.tokens?.reasoning ?? 0,
+        t.tokens?.total ?? 0,
+      );
       if (t.content) insertFts.run(t.content, c.contentHash, i, c.harness, c.project);
-      t.toolCalls?.forEach((call, j) => insertTool.run(c.contentHash, i, j, call.id ?? null, call.name, call.arguments ?? null, call.output ?? null));
+      t.toolCalls?.forEach((call, j) =>
+        insertTool.run(
+          c.contentHash,
+          i,
+          j,
+          call.id ?? null,
+          call.name,
+          call.arguments ?? null,
+          call.output ?? null,
+        ),
+      );
     });
   })();
   return true;
@@ -100,57 +163,76 @@ export function indexConversation(db: Database, c: Conversation, sourceMtime: nu
 
 export function queryStats(db: Database): { providers: unknown[]; projects: unknown[] } {
   return {
-    providers: db.query(`SELECT provider, harness, count(*) sessions, sum(turn_count) turns,
+    providers: db
+      .query(`SELECT provider, harness, count(*) sessions, sum(turn_count) turns,
       sum(non_cached_tokens) non_cached_tokens, sum(cache_read_tokens) cache_read_tokens,
       sum(cache_write_tokens) cache_write_tokens, sum(reported_total_tokens) reported_total_tokens
-      FROM current_token_usage GROUP BY provider, harness ORDER BY sessions DESC`).all(),
-    projects: db.query(`SELECT project, provider, harness, count(*) sessions, sum(turn_count) turns,
+      FROM current_token_usage GROUP BY provider, harness ORDER BY sessions DESC`)
+      .all(),
+    projects: db
+      .query(`SELECT project, provider, harness, count(*) sessions, sum(turn_count) turns,
       sum(non_cached_tokens) non_cached_tokens, sum(cached_tokens) cached_tokens,
       sum(reported_total_tokens) reported_total_tokens FROM current_token_usage GROUP BY project, provider, harness
-      ORDER BY sessions DESC, reported_total_tokens DESC LIMIT 30`).all(),
+      ORDER BY sessions DESC, reported_total_tokens DESC LIMIT 30`)
+      .all(),
   };
 }
 
 export function querySearch(db: Database, term: string, limit = 10): unknown[] {
-  return db.query(`SELECT f.harness, f.project, c.started_at, substr(highlight(turns_fts, 0, '[', ']'), 1, 240) excerpt,
+  return db
+    .query(`SELECT f.harness, f.project, c.started_at, substr(highlight(turns_fts, 0, '[', ']'), 1, 240) excerpt,
     f.content_hash, f.turn_index FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
-    WHERE turns_fts MATCH ? ORDER BY rank LIMIT ?`).all(term, limit);
+    WHERE turns_fts MATCH ? ORDER BY rank LIMIT ?`)
+    .all(term, limit);
 }
 
 export function queryModels(db: Database): unknown[] {
-  return db.query(`SELECT project, harness, model, count(*) sessions, sum(total_tokens) total_tokens
+  return db
+    .query(`SELECT project, harness, model, count(*) sessions, sum(total_tokens) total_tokens
     FROM current_conversations GROUP BY project, harness, model
-    ORDER BY sessions DESC, total_tokens DESC LIMIT 30`).all();
+    ORDER BY sessions DESC, total_tokens DESC LIMIT 30`)
+    .all();
 }
 
 export function queryTokenUsage(db: Database): unknown[] {
-  return db.query(`SELECT provider, harness, count(*) sessions,
+  return db
+    .query(`SELECT provider, harness, count(*) sessions,
     sum(non_cached_tokens) non_cached_tokens, sum(cache_read_tokens) cache_read_tokens,
     sum(cache_write_tokens) cache_write_tokens, sum(cached_tokens) cached_tokens,
     sum(reported_total_tokens) reported_total_tokens
-    FROM current_token_usage GROUP BY provider, harness ORDER BY sessions DESC`).all();
+    FROM current_token_usage GROUP BY provider, harness ORDER BY sessions DESC`)
+    .all();
 }
 
-export function queryUsageOverTime(db: Database, bucket: "day" | "month" = "month", limit = 60): unknown[] {
+export function queryUsageOverTime(
+  db: Database,
+  bucket: "day" | "month" = "month",
+  limit = 60,
+): unknown[] {
   const format = bucket === "day" ? "%Y-%m-%d" : "%Y-%m";
-  return db.query(`SELECT strftime('${format}', started_at) period, harness, model, count(*) sessions,
+  return db
+    .query(`SELECT strftime('${format}', started_at) period, harness, model, count(*) sessions,
     sum(non_cached_tokens) non_cached_tokens, sum(cached_tokens) cached_tokens,
     sum(reported_total_tokens) reported_total_tokens
     FROM current_token_usage GROUP BY period, harness, model
-    ORDER BY period DESC, reported_total_tokens DESC LIMIT ?`).all(limit);
+    ORDER BY period DESC, reported_total_tokens DESC LIMIT ?`)
+    .all(limit);
 }
 
 export function queryToolFrequency(db: Database, limit = 30): unknown[] {
-  return db.query(`SELECT c.harness, tc.name tool, count(*) calls,
+  return db
+    .query(`SELECT c.harness, tc.name tool, count(*) calls,
     count(DISTINCT tc.content_hash) sessions
     FROM tool_calls tc JOIN current_conversations c USING(content_hash)
     JOIN turns t ON t.content_hash=tc.content_hash AND t.turn_index=tc.turn_index
     WHERE t.role='assistant'
-    GROUP BY c.harness, tc.name ORDER BY calls DESC LIMIT ?`).all(limit);
+    GROUP BY c.harness, tc.name ORDER BY calls DESC LIMIT ?`)
+    .all(limit);
 }
 
 export function querySessionLengths(db: Database): unknown[] {
-  return db.query(`SELECT
+  return db
+    .query(`SELECT
     CASE WHEN turn_count = 0 THEN '0'
       WHEN turn_count <= 10 THEN '1-10'
       WHEN turn_count <= 50 THEN '11-50'
@@ -160,22 +242,32 @@ export function querySessionLengths(db: Database): unknown[] {
     count(*) sessions, round(avg(turn_count), 1) avg_turns,
     min(turn_count) min_turns, max(turn_count) max_turns
     FROM current_conversations GROUP BY turn_bucket
-    ORDER BY min(turn_count)`).all();
+    ORDER BY min(turn_count)`)
+    .all();
 }
 
 export async function backfillCacheWrite(db: Database, corpusDir: string): Promise<number> {
   db.run("CREATE TABLE IF NOT EXISTS analysis_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  if (db.query("SELECT value FROM analysis_meta WHERE key='cache_write_backfill_v1'").get()) return 0;
+  if (db.query("SELECT value FROM analysis_meta WHERE key='cache_write_backfill_v1'").get())
+    return 0;
   const update = db.prepare("UPDATE conversations SET cache_write_tokens=? WHERE content_hash=?");
   let count = 0;
   db.transaction(() => {
-    for (const rel of new Bun.Glob("objects/**/*.json").scanSync({ cwd: corpusDir, onlyFiles: true })) {
+    for (const rel of new Bun.Glob("objects/**/*.json").scanSync({
+      cwd: corpusDir,
+      onlyFiles: true,
+    })) {
       const conversation = JSON.parse(readFileSync(`${corpusDir}/${rel}`, "utf8")) as Conversation;
-      const tokens = conversation.turns.reduce((sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0), 0);
+      const tokens = conversation.turns.reduce(
+        (sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0),
+        0,
+      );
       update.run(tokens, conversation.contentHash);
       count++;
     }
-    db.query("INSERT OR REPLACE INTO analysis_meta(key,value) VALUES ('cache_write_backfill_v1',?)").run(new Date().toISOString());
+    db.query(
+      "INSERT OR REPLACE INTO analysis_meta(key,value) VALUES ('cache_write_backfill_v1',?)",
+    ).run(new Date().toISOString());
   })();
   return count;
 }

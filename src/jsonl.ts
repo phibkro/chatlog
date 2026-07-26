@@ -19,7 +19,9 @@ export async function readJsonLines(
       try {
         record = JSON.parse(line);
       } catch (error) {
-        throw new Error(`${path}:${lineNo}: invalid JSON before final line: ${String(error)}`, { cause: error });
+        throw new Error(`${path}:${lineNo}: invalid JSON before final line: ${String(error)}`, {
+          cause: error,
+        });
       }
       visit(record, lineNo);
     }

@@ -39,7 +39,10 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   indexConversation(db, conversation, 1, 1);
   db.close();
   await mkdir(join(root, "corpus", "objects", "aa"), { recursive: true });
-  await writeFile(join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`), JSON.stringify(conversation));
+  await writeFile(
+    join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`),
+    JSON.stringify(conversation),
+  );
   await mkdir(join(root, "corpus", "objects", "bb"), { recursive: true });
   await writeFile(
     join(root, "corpus", "objects", "bb", `${staleHash}.json`),
@@ -47,7 +50,10 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   );
 
   const data = new WorkbenchData(root);
-  expect(await data.overview()).toMatchObject({ ready: true, corpus: { sessions: 1, projects: 1, turns: 2 } });
+  expect(await data.overview()).toMatchObject({
+    ready: true,
+    corpus: { sessions: 1, projects: 1, turns: 2 },
+  });
   const result = data.search(new URL("http://localhost/api/search?q=nix+flake")) as any;
   expect(result.hits).toHaveLength(1);
   expect(result.hits[0]).toMatchObject({ title: "Nix source visibility", domain: "coding" });
@@ -56,14 +62,17 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     turnIndex: 0,
     turn: { role: "user" },
   });
-  await expect(data.evidence(`chatlog://conversation/${staleHash}/turn/0`))
-    .rejects.toThrow("Evidence not found");
+  await expect(data.evidence(`chatlog://conversation/${staleHash}/turn/0`)).rejects.toThrow(
+    "Evidence not found",
+  );
 
   const handler = workbenchHandler(data);
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));
   expect(overviewResponse.status).toBe(200);
   expect(await overviewResponse.json()).toMatchObject({ ready: true, corpus: { sessions: 1 } });
-  const readOnlyResponse = await handler(new Request("http://localhost/api/overview", { method: "POST" }));
+  const readOnlyResponse = await handler(
+    new Request("http://localhost/api/overview", { method: "POST" }),
+  );
   expect(readOnlyResponse.status).toBe(405);
   expect(await readOnlyResponse.json()).toEqual({ error: "read-only workbench" });
   const staticResponse = await handler(new Request("http://localhost/"));
@@ -75,12 +84,17 @@ test("serves overview, local search, and canonical evidence from one corpus", as
 
 test("Workbench bind policy defaults to loopback and requires an explicit remote override", () => {
   expect(resolveBindConfig({})).toEqual({ host: "127.0.0.1", port: 4789 });
-  expect(resolveBindConfig({ CHATLOG_HOST: "::1", CHATLOG_PORT: "4790" }))
-    .toEqual({ host: "::1", port: 4790 });
-  expect(() => resolveBindConfig({ CHATLOG_HOST: "100.64.0.7" }))
-    .toThrow("Refusing non-loopback bind");
-  expect(resolveBindConfig({
-    CHATLOG_HOST: "100.64.0.7",
-    CHATLOG_ALLOW_REMOTE: "1",
-  })).toEqual({ host: "100.64.0.7", port: 4789 });
+  expect(resolveBindConfig({ CHATLOG_HOST: "::1", CHATLOG_PORT: "4790" })).toEqual({
+    host: "::1",
+    port: 4790,
+  });
+  expect(() => resolveBindConfig({ CHATLOG_HOST: "100.64.0.7" })).toThrow(
+    "Refusing non-loopback bind",
+  );
+  expect(
+    resolveBindConfig({
+      CHATLOG_HOST: "100.64.0.7",
+      CHATLOG_ALLOW_REMOTE: "1",
+    }),
+  ).toEqual({ host: "100.64.0.7", port: 4789 });
 });

@@ -91,11 +91,11 @@ Owned paths:
 
 Wave 1 tools:
 
-| Tool | Purpose | Default / maximum |
-| --- | --- | --- |
-| `chatlog_search` | Ranked local lexical snippets | 8 / 20 hits |
-| `chatlog_get_evidence` | One canonical redacted turn | 12,000 characters |
-| `chatlog_recent_work` | Recent session metadata for one project | 8 / 20 sessions |
+| Tool                    | Purpose                                       | Default / maximum   |
+| ----------------------- | --------------------------------------------- | ------------------- |
+| `chatlog_search`        | Ranked local lexical snippets                 | 8 / 20 hits         |
+| `chatlog_get_evidence`  | One canonical redacted turn                   | 12,000 characters   |
+| `chatlog_recent_work`   | Recent session metadata for one project       | 8 / 20 sessions     |
 | `chatlog_project_brief` | Bounded project activity and derived findings | fixed bounded shape |
 
 Protocol requirements:

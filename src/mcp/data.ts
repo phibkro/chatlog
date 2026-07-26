@@ -27,7 +27,8 @@ export function parseDomainPolicy(value = process.env.CHATLOG_MCP_DOMAINS ?? "")
 
 function boundedLimit(value: unknown, fallback: number, maximum: number): number {
   if (value == null) return fallback;
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("limit must be a finite number");
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error("limit must be a finite number");
   return Math.max(1, Math.min(maximum, Math.trunc(value)));
 }
 
@@ -44,7 +45,8 @@ function searchExpression(query: unknown): { query: string; expression: string }
 }
 
 function exactProject(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error("project must be an exact non-empty path");
+  if (typeof value !== "string" || !value.trim())
+    throw new Error("project must be an exact non-empty path");
   return value;
 }
 
@@ -63,10 +65,13 @@ export class McpData {
     this.root = resolve(root);
     this.configuredDomains = normalizeConversationDomains(configuredDomains);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
-    if (!existsSync(databasePath)) throw new Error(`No Chatlog analysis database at ${databasePath}`);
+    if (!existsSync(databasePath))
+      throw new Error(`No Chatlog analysis database at ${databasePath}`);
     this.db = new Database(databasePath, { readonly: true, create: false });
     this.currentColumns = new Set(
-      (this.db.query("PRAGMA table_info(current_conversations)").all() as Array<{ name: string }>).map((row) => row.name),
+      (
+        this.db.query("PRAGMA table_info(current_conversations)").all() as Array<{ name: string }>
+      ).map((row) => row.name),
     );
   }
 
@@ -110,7 +115,8 @@ export class McpData {
     const placeholders = policy.effectiveDomains.map(() => "?").join(",");
     const domain = this.domainSql();
     const title = this.titleSql();
-    const hits = this.db.query(`SELECT c.content_hash contentHash, c.id sessionId, ${title} title,
+    const hits = this.db
+      .query(`SELECT c.content_hash contentHash, c.id sessionId, ${title} title,
       ${domain} domain, c.project, c.harness, c.model, c.ended_at endedAt,
       f.turn_index turnIndex, snippet(turns_fts, 0, '[', ']', ' … ', 28) snippet,
       -bm25(turns_fts) score
@@ -118,7 +124,8 @@ export class McpData {
       JOIN turns t ON t.content_hash=f.content_hash AND t.turn_index=f.turn_index
       WHERE turns_fts MATCH ? AND t.role IN ('user', 'assistant')
       AND ${domain} IN (${placeholders})
-      ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, ...policy.effectiveDomains, limit) as any[];
+      ORDER BY bm25(turns_fts) LIMIT ?`)
+      .all(expression, ...policy.effectiveDomains, limit) as any[];
     return {
       query,
       policy,
@@ -132,17 +139,26 @@ export class McpData {
   async evidence(args: Record<string, unknown>): Promise<unknown> {
     const pointer = parseEvidenceUri(args.uri);
     const policy = this.policy(args.domains);
-    const indexed = this.db.query(`SELECT ${this.domainSql()} domain
-      FROM current_conversations c WHERE c.content_hash = ?`).get(pointer.contentHash) as
-      { domain: string } | null;
+    const indexed = this.db
+      .query(`SELECT ${this.domainSql()} domain
+      FROM current_conversations c WHERE c.content_hash = ?`)
+      .get(pointer.contentHash) as { domain: string } | null;
     if (!indexed) throw new Error(EVIDENCE_UNAVAILABLE);
 
     let conversation: Conversation;
     try {
-      conversation = JSON.parse(await readFile(
-        join(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`),
-        "utf8",
-      )) as Conversation;
+      conversation = JSON.parse(
+        await readFile(
+          join(
+            this.root,
+            "corpus",
+            "objects",
+            pointer.contentHash.slice(0, 2),
+            `${pointer.contentHash}.json`,
+          ),
+          "utf8",
+        ),
+      ) as Conversation;
     } catch {
       throw new Error(EVIDENCE_UNAVAILABLE);
     }
@@ -156,15 +172,15 @@ export class McpData {
       throw new Error(EVIDENCE_UNAVAILABLE);
     }
     if (
-      typeof conversation.contentHash !== "string"
-      || conversation.contentHash.toLowerCase() !== pointer.contentHash
-      || indexed.domain !== objectDomain
-      || !policy.effectiveDomains.includes(objectDomain)
-    ) throw new Error(EVIDENCE_UNAVAILABLE);
+      typeof conversation.contentHash !== "string" ||
+      conversation.contentHash.toLowerCase() !== pointer.contentHash ||
+      indexed.domain !== objectDomain ||
+      !policy.effectiveDomains.includes(objectDomain)
+    )
+      throw new Error(EVIDENCE_UNAVAILABLE);
 
     const turn = conversation.turns[pointer.turnIndex];
-    if (!turn || !["user", "assistant"].includes(turn.role))
-      throw new Error(EVIDENCE_UNAVAILABLE);
+    if (!turn || !["user", "assistant"].includes(turn.role)) throw new Error(EVIDENCE_UNAVAILABLE);
     const fullLength = turn.content.length;
     const content = turn.content.slice(0, EVIDENCE_CHARACTER_LIMIT);
     return {
@@ -194,12 +210,14 @@ export class McpData {
     const placeholders = policy.effectiveDomains.map(() => "?").join(",");
     const domain = this.domainSql();
     const title = this.titleSql();
-    const sessions = this.db.query(`SELECT c.content_hash contentHash, c.id sessionId,
+    const sessions = this.db
+      .query(`SELECT c.content_hash contentHash, c.id sessionId,
       ${title} title, ${domain} domain, c.project, c.harness, c.model,
       c.started_at startedAt, c.ended_at endedAt, c.turn_count turns
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
-      ORDER BY c.ended_at DESC LIMIT ?`).all(project, ...policy.effectiveDomains, limit);
+      ORDER BY c.ended_at DESC LIMIT ?`)
+      .all(project, ...policy.effectiveDomains, limit);
     return { project, policy, sessions };
   }
 
@@ -209,22 +227,30 @@ export class McpData {
     const placeholders = policy.effectiveDomains.map(() => "?").join(",");
     const domain = this.domainSql();
     const params = [project, ...policy.effectiveDomains];
-    const overview = this.db.query(`SELECT count(*) sessions, sum(c.turn_count) turns,
+    const overview = this.db
+      .query(`SELECT count(*) sessions, sum(c.turn_count) turns,
       min(c.started_at) firstSeen, max(c.ended_at) lastSeen
       FROM current_conversations c
-      WHERE c.project = ? AND ${domain} IN (${placeholders})`).get(...params) as any;
-    const harnesses = this.db.query(`SELECT c.harness, count(*) sessions, sum(c.turn_count) turns
+      WHERE c.project = ? AND ${domain} IN (${placeholders})`)
+      .get(...params) as any;
+    const harnesses = this.db
+      .query(`SELECT c.harness, count(*) sessions, sum(c.turn_count) turns
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
-      GROUP BY c.harness ORDER BY sessions DESC LIMIT 8`).all(...params);
-    const models = this.db.query(`SELECT c.model, c.harness, count(*) sessions
+      GROUP BY c.harness ORDER BY sessions DESC LIMIT 8`)
+      .all(...params);
+    const models = this.db
+      .query(`SELECT c.model, c.harness, count(*) sessions
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
-      GROUP BY c.model, c.harness ORDER BY sessions DESC LIMIT 8`).all(...params);
-    const hashes = this.db.query(`SELECT c.content_hash contentHash
+      GROUP BY c.model, c.harness ORDER BY sessions DESC LIMIT 8`)
+      .all(...params);
+    const hashes = this.db
+      .query(`SELECT c.content_hash contentHash
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
-      ORDER BY c.ended_at DESC LIMIT 8`).all(...params) as Array<{ contentHash: string }>;
+      ORDER BY c.ended_at DESC LIMIT 8`)
+      .all(...params) as Array<{ contentHash: string }>;
 
     const outcomes: Record<string, number> = { success: 0, failure: 0, mixed: 0, unknown: 0 };
     const problems: unknown[] = [];
@@ -232,8 +258,9 @@ export class McpData {
     let derivedMissing = 0;
     for (const { contentHash } of hashes) {
       let artifact: DerivedConversation;
-      try { artifact = await loadDerived(this.root, contentHash); }
-      catch {
+      try {
+        artifact = await loadDerived(this.root, contentHash);
+      } catch {
         derivedMissing++;
         continue;
       }

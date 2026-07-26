@@ -1,20 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "unicorn",
-    "oxc"
-  ],
+  "plugins": ["typescript", "unicorn", "oxc"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
     "perf": "warn"
   },
-  "ignorePatterns": [
-    "dist",
-    "corpus",
-    "derived",
-    "analysis",
-    "node_modules"
-  ]
+  "ignorePatterns": ["dist", "corpus", "derived", "analysis", "node_modules"]
 }

@@ -9,12 +9,12 @@ an allow-list at agent retrieval boundaries.
 
 ## Default policy
 
-| Surface | Default domains | Reason |
-| --- | --- | --- |
-| Workbench | all locally indexed domains | Human-controlled evidence viewer |
-| Existing CLI | unchanged | Backward compatibility; operator invokes it directly |
-| MCP | `coding` | Safe default for autonomous coding agents |
-| Hosted reranking | existing explicit opt-in contract | Bounded redacted egress |
+| Surface          | Default domains                   | Reason                                               |
+| ---------------- | --------------------------------- | ---------------------------------------------------- |
+| Workbench        | all locally indexed domains       | Human-controlled evidence viewer                     |
+| Existing CLI     | unchanged                         | Backward compatibility; operator invokes it directly |
+| MCP              | `coding`                          | Safe default for autonomous coding agents            |
+| Hosted reranking | existing explicit opt-in contract | Bounded redacted egress                              |
 
 The MCP server reads `CHATLOG_MCP_DOMAINS` as a comma-separated allow-list.
 Unset or empty selects `coding`.

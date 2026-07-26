@@ -2,7 +2,11 @@ import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-interface LockRecord { pid: number; runId: string; startedAt: string }
+interface LockRecord {
+  pid: number;
+  runId: string;
+  startedAt: string;
+}
 
 export class IngestLockedError extends Error {
   constructor(public readonly lock: Partial<LockRecord>) {
@@ -12,8 +16,12 @@ export class IngestLockedError extends Error {
 }
 
 function processExists(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error: any) { return error?.code !== "ESRCH"; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code !== "ESRCH";
+  }
 }
 
 async function staleLock(path: string): Promise<{ stale: boolean; record: Partial<LockRecord> }> {
@@ -29,14 +37,21 @@ async function staleLock(path: string): Promise<{ stale: boolean; record: Partia
 export async function withIngestLock<T>(root: string, work: () => Promise<T>): Promise<T> {
   const analysisDir = join(root, "analysis");
   const path = join(analysisDir, "ingest.lock");
-  const record: LockRecord = { pid: process.pid, runId: randomUUID(), startedAt: new Date().toISOString() };
+  const record: LockRecord = {
+    pid: process.pid,
+    runId: randomUUID(),
+    startedAt: new Date().toISOString(),
+  };
   await mkdir(analysisDir, { recursive: true, mode: 0o700 });
   await chmod(analysisDir, 0o700);
   for (let attempt = 0; ; attempt++) {
     try {
       const handle = await open(path, "wx", 0o600);
-      try { await handle.writeFile(JSON.stringify(record) + "\n"); }
-      finally { await handle.close(); }
+      try {
+        await handle.writeFile(JSON.stringify(record) + "\n");
+      } finally {
+        await handle.close();
+      }
       await chmod(path, 0o600);
       break;
     } catch (error: any) {
@@ -46,8 +61,9 @@ export async function withIngestLock<T>(root: string, work: () => Promise<T>): P
       await unlink(path);
     }
   }
-  try { return await work(); }
-  finally {
+  try {
+    return await work();
+  } finally {
     try {
       const current = JSON.parse(await readFile(path, "utf8")) as Partial<LockRecord>;
       if (current.runId === record.runId) await unlink(path);

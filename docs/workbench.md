@@ -38,13 +38,13 @@ default.
 
 Environment variables:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `CHATLOG_DATA_ROOT` | repository root | Corpus, derived data, and analysis DB |
-| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json` | Additional source catalog |
-| `CHATLOG_HOST` | `127.0.0.1` | Listen address |
-| `CHATLOG_PORT` | `4789` | Listen port |
-| `CHATLOG_ALLOW_REMOTE` | unset | Must equal `1` before a non-loopback bind |
+| Variable                | Default                          | Purpose                                   |
+| ----------------------- | -------------------------------- | ----------------------------------------- |
+| `CHATLOG_DATA_ROOT`     | repository root                  | Corpus, derived data, and analysis DB     |
+| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json` | Additional source catalog                 |
+| `CHATLOG_HOST`          | `127.0.0.1`                      | Listen address                            |
+| `CHATLOG_PORT`          | `4789`                           | Listen port                               |
+| `CHATLOG_ALLOW_REMOTE`  | unset                            | Must equal `1` before a non-loopback bind |
 
 Remote access is deliberately opt-in. If access from another machine is needed,
 prefer a private overlay or authenticated reverse proxy rather than exposing
@@ -129,15 +129,15 @@ connected.
 
 Workbench's JSON endpoints expose the same bounded views used by the UI:
 
-| Endpoint | Result |
-| --- | --- |
-| `/api/overview` | Corpus counts, recent sessions, project concentration |
-| `/api/projects` | Project activity and harness mix |
-| `/api/sessions?project=…` | Session metadata for a project |
-| `/api/search?q=…&limit=…` | Ranked local FTS results and evidence pointers |
-| `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
-| `/api/insights` | Orchestration, role, experiment, and refinery artifacts |
-| `/api/sources` | Connector state and import actions |
+| Endpoint                        | Result                                                  |
+| ------------------------------- | ------------------------------------------------------- |
+| `/api/overview`                 | Corpus counts, recent sessions, project concentration   |
+| `/api/projects`                 | Project activity and harness mix                        |
+| `/api/sessions?project=…`       | Session metadata for a project                          |
+| `/api/search?q=…&limit=…`       | Ranked local FTS results and evidence pointers          |
+| `/api/evidence?uri=chatlog://…` | One canonical redacted turn                             |
+| `/api/insights`                 | Orchestration, role, experiment, and refinery artifacts |
+| `/api/sources`                  | Connector state and import actions                      |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and

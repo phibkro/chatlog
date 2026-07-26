@@ -214,7 +214,6 @@ path is given; they never register or modify a live harness session.
 This is reconstruction, not native cross-harness resume. See
 `docs/cross-harness-continuity-findings.md` and the corresponding design spec.
 
-
 ## Adapter seam
 
 New sources implement `SourceAdapter.discover()` and `SourceAdapter.adapt()` and

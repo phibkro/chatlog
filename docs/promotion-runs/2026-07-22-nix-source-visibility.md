@@ -39,10 +39,10 @@ candidate skill only—no chat corpus or real project content.
 
 ## Measurement and disposition
 
-| Arm | Gate pass | Median non-cached tokens | Median wall time | Median re-derivations |
-|---|---:|---:|---:|---:|
-| Control | 3/3 | 637 | 15,413 ms | 0 |
-| Treatment | 3/3 | 668 | 14,485 ms | 0 |
+| Arm       | Gate pass | Median non-cached tokens | Median wall time | Median re-derivations |
+| --------- | --------: | -----------------------: | ---------------: | --------------------: |
+| Control   |       3/3 |                      637 |        15,413 ms |                     0 |
+| Treatment |       3/3 |                      668 |        14,485 ms |                     0 |
 
 Treatment discovered the skill in all runs and explicitly invoked it in two of
 three. Control already knew the Git-backed-flake visibility rule, so treatment

@@ -24,20 +24,32 @@ function json(value: unknown, status = 200): Response {
 
 function securityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  headers.set(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  );
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
-export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(import.meta.dir, "public")) {
+export function workbenchHandler(
+  data: WorkbenchData,
+  publicRoot = resolve(import.meta.dir, "public"),
+) {
   return async function fetch(request: Request): Promise<Response> {
     try {
-      if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "read-only workbench" }, 405);
+      if (request.method !== "GET" && request.method !== "HEAD")
+        return json({ error: "read-only workbench" }, 405);
       const url = new URL(request.url);
       if (url.pathname === "/api/overview") return json(await data.overview());
-      if (url.pathname === "/api/projects") return json(data.projects(url.searchParams.get("limit")));
+      if (url.pathname === "/api/projects")
+        return json(data.projects(url.searchParams.get("limit")));
       if (url.pathname === "/api/sessions") return json(data.sessions(url));
       if (url.pathname === "/api/search") return json(data.search(url));
       if (url.pathname === "/api/insights") return json(await data.insights());
@@ -54,12 +66,14 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
       const file = Bun.file(resolve(publicRoot, asset));
       if (!(await file.exists())) return json({ error: "not found" }, 404);
       const extension = asset.includes(".") ? `.${asset.split(".").at(-1)}` : "";
-      return securityHeaders(new Response(request.method === "HEAD" ? null : file, {
-        headers: {
-          "Content-Type": MIME[extension] ?? "application/octet-stream",
-          "Cache-Control": asset === "index.html" ? "no-cache" : "public, max-age=3600",
-        },
-      }));
+      return securityHeaders(
+        new Response(request.method === "HEAD" ? null : file, {
+          headers: {
+            "Content-Type": MIME[extension] ?? "application/octet-stream",
+            "Cache-Control": asset === "index.html" ? "no-cache" : "public, max-age=3600",
+          },
+        }),
+      );
     } catch (error: any) {
       const message = redact(String(error?.message ?? error));
       return json({ error: message }, message.includes("not found") ? 404 : 400);

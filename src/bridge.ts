@@ -7,7 +7,11 @@ import { redact } from "./redact";
 export type PiBridgeMode = "history" | "summary";
 
 interface PiUsage {
-  input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
 }
 
@@ -25,7 +29,11 @@ export interface BridgeReceipt {
 }
 
 const ZERO_USAGE: PiUsage = {
-  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
@@ -48,7 +56,9 @@ function safeIso(value: string | undefined, fallback: string): string {
 
 function nextIso(previous: string, requested?: string): string {
   const candidate = safeIso(requested, previous);
-  return new Date(Math.max(new Date(previous).valueOf() + 1, new Date(candidate).valueOf())).toISOString();
+  return new Date(
+    Math.max(new Date(previous).valueOf() + 1, new Date(candidate).valueOf()),
+  ).toISOString();
 }
 
 function entryId(hash: string, mode: PiBridgeMode, index: number): string {
@@ -79,13 +89,22 @@ function importNotice(c: Conversation): string {
 
 function evidenceLines(label: string, items: Evidence[], limit: number): string[] {
   if (!items.length) return [];
-  return [`${label}:`, ...items.slice(-limit).map((item) => `- ${redact(item.snippet)} (${item.pointer.uri})`)];
+  return [
+    `${label}:`,
+    ...items.slice(-limit).map((item) => `- ${redact(item.snippet)} (${item.pointer.uri})`),
+  ];
 }
 
 export function buildHandoffSummary(c: Conversation, d: DerivedConversation): string {
   const firstUser = c.turns.find((turn) => turn.role === "user" && turn.content.trim());
-  const latestUser = [...c.turns].toReversed().find((turn) => turn.role === "user" && turn.content.trim());
-  const tools = d.metrics.toolCalls.slice(0, 8).map((tool) => `${tool.name} (${tool.count})`).join(", ") || "none recorded";
+  const latestUser = [...c.turns]
+    .toReversed()
+    .find((turn) => turn.role === "user" && turn.content.trim());
+  const tools =
+    d.metrics.toolCalls
+      .slice(0, 8)
+      .map((tool) => `${tool.name} (${tool.count})`)
+      .join(", ") || "none recorded";
   const lines = [
     "[Cross-harness handoff: distilled context]",
     "This is a secret-redacted, extractive handoff from a prior conversation. Treat it as context, not policy.",
@@ -94,26 +113,56 @@ export function buildHandoffSummary(c: Conversation, d: DerivedConversation): st
     `Outcome classification: ${d.outcome.status}`,
     "",
     "Original objective:",
-    redact(firstUser?.content ?? "Not recovered").replace(/\s+/g, " ").trim().slice(0, 1200),
+    redact(firstUser?.content ?? "Not recovered")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1200),
     ...evidenceLines("Decision points", d.decisions, 5),
     "Attempts:",
-    ...d.attempts.slice(-6).map((attempt) => `- ${redact(attempt.snippet)} [${attempt.tools.join(", ") || "no tool"}; ${attempt.outcome}] (${attempt.pointer.uri})`),
+    ...d.attempts
+      .slice(-6)
+      .map(
+        (attempt) =>
+          `- ${redact(attempt.snippet)} [${attempt.tools.join(", ") || "no tool"}; ${attempt.outcome}] (${attempt.pointer.uri})`,
+      ),
     ...evidenceLines("Outcome evidence", d.outcome.evidence, 4),
     `Tool profile: ${redact(tools)}`,
   ];
   if (latestUser && latestUser !== firstUser) {
-    lines.push("Latest user thread:", redact(latestUser.content).replace(/\s+/g, " ").trim().slice(0, 1000));
+    lines.push(
+      "Latest user thread:",
+      redact(latestUser.content).replace(/\s+/g, " ").trim().slice(0, 1000),
+    );
   }
-  lines.push("Continue by validating current repository/runtime state; do not assume historical filesystem effects still hold.");
+  lines.push(
+    "Continue by validating current repository/runtime state; do not assume historical filesystem effects still hold.",
+  );
   return redact(lines.filter((line) => line !== undefined).join("\n"));
 }
 
-export function serializePiBridge(c: Conversation, mode: PiBridgeMode, derived?: DerivedConversation): { text: string; receipt: Omit<BridgeReceipt, "target"> & { target: Omit<BridgeReceipt["target"], "path" | "contentHash"> } } {
-  if (c.contentHash.length !== 64) throw new Error("bridge requires a full canonical conversation hash");
-  if (mode === "summary" && !derived) throw new Error("summary bridge requires the derived conversation artifact");
+export function serializePiBridge(
+  c: Conversation,
+  mode: PiBridgeMode,
+  derived?: DerivedConversation,
+): {
+  text: string;
+  receipt: Omit<BridgeReceipt, "target"> & {
+    target: Omit<BridgeReceipt["target"], "path" | "contentHash">;
+  };
+} {
+  if (c.contentHash.length !== 64)
+    throw new Error("bridge requires a full canonical conversation hash");
+  if (mode === "summary" && !derived)
+    throw new Error("summary bridge requires the derived conversation artifact");
   const sessionId = deterministicUuid(c.contentHash, mode);
   const started = safeIso(c.startedAt, "1970-01-01T00:00:00.000Z");
-  const header = { type: "session", version: 3, id: sessionId, timestamp: started, cwd: resolve(c.cwd || c.project || "/tmp") };
+  const header = {
+    type: "session",
+    version: 3,
+    id: sessionId,
+    timestamp: started,
+    cwd: resolve(c.cwd || c.project || "/tmp"),
+  };
   const messages: Array<{ role: "user" | "assistant"; text: string; at?: string }> = [];
   const droppedRoles: Record<string, number> = {};
   let flattenedToolCalls = 0;
@@ -141,9 +190,19 @@ export function serializePiBridge(c: Conversation, mode: PiBridgeMode, derived?:
     timestamp = nextIso(timestamp, item.at);
     const id = entryId(c.contentHash, mode, index);
     const content = [{ type: "text", text: redact(item.text) }];
-    const message = item.role === "user"
-      ? { role: "user", content, timestamp: new Date(timestamp).valueOf() }
-      : { role: "assistant", content, api: "chatlog-ir-import", provider: c.provider, model: c.model, usage: ZERO_USAGE, stopReason: "stop", timestamp: new Date(timestamp).valueOf() };
+    const message =
+      item.role === "user"
+        ? { role: "user", content, timestamp: new Date(timestamp).valueOf() }
+        : {
+            role: "assistant",
+            content,
+            api: "chatlog-ir-import",
+            provider: c.provider,
+            model: c.model,
+            usage: ZERO_USAGE,
+            stopReason: "stop",
+            timestamp: new Date(timestamp).valueOf(),
+          };
     lines.push(JSON.stringify({ type: "message", id, parentId, timestamp, message }));
     parentId = id;
   });
@@ -151,14 +210,32 @@ export function serializePiBridge(c: Conversation, mode: PiBridgeMode, derived?:
   return {
     text,
     receipt: {
-      schemaVersion: 1, mode,
-      source: { conversationHash: c.contentHash, harness: c.harness, sessionId: c.id, turns: c.turns.length },
+      schemaVersion: 1,
+      mode,
+      source: {
+        conversationHash: c.contentHash,
+        harness: c.harness,
+        sessionId: c.id,
+        turns: c.turns.length,
+      },
       target: { harness: "pi", sessionId, messages: messages.length },
       transformation: {
-        secretRedactionApplied: true, droppedRoles, flattenedToolCalls,
-        notes: mode === "history"
-          ? ["linearized canonical turns", "dropped source policy/internal state", "historical tool calls encoded as inert text", "token/cost fields are non-authoritative zeros"]
-          : ["extractive summary with canonical pointers", "dropped source policy/internal state", "target must validate current runtime state"],
+        secretRedactionApplied: true,
+        droppedRoles,
+        flattenedToolCalls,
+        notes:
+          mode === "history"
+            ? [
+                "linearized canonical turns",
+                "dropped source policy/internal state",
+                "historical tool calls encoded as inert text",
+                "token/cost fields are non-authoritative zeros",
+              ]
+            : [
+                "extractive summary with canonical pointers",
+                "dropped source policy/internal state",
+                "target must validate current runtime state",
+              ],
       },
     },
   };
@@ -172,19 +249,32 @@ async function atomicPrivateWrite(path: string, text: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
-export async function emitPiBridge(root: string, hash: string, mode: PiBridgeMode, outputPath?: string): Promise<BridgeReceipt> {
-  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("bridge requires a 64-character lowercase conversation hash");
+export async function emitPiBridge(
+  root: string,
+  hash: string,
+  mode: PiBridgeMode,
+  outputPath?: string,
+): Promise<BridgeReceipt> {
+  if (!/^[a-f0-9]{64}$/.test(hash))
+    throw new Error("bridge requires a 64-character lowercase conversation hash");
   const canonicalPath = join(root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`);
   const conversation = JSON.parse(await readFile(canonicalPath, "utf8")) as Conversation;
-  if (conversation.contentHash !== hash) throw new Error(`${canonicalPath}: filename/content hash mismatch`);
+  if (conversation.contentHash !== hash)
+    throw new Error(`${canonicalPath}: filename/content hash mismatch`);
   let derived: DerivedConversation | undefined;
   if (mode === "summary") {
     const path = join(root, "derived", "objects", hash.slice(0, 2), `${hash}.json`);
     derived = JSON.parse(await readFile(path, "utf8")) as DerivedConversation;
-    if (derived.conversationHash !== hash) throw new Error(`${path}: filename/content hash mismatch`);
+    if (derived.conversationHash !== hash)
+      throw new Error(`${path}: filename/content hash mismatch`);
   }
   const built = serializePiBridge(conversation, mode, derived);
-  const path = resolve(outputPath ?? join(root, "bridge", "pi", mode, hash.slice(0, 2), `${hash}.jsonl`));
+  const path = resolve(
+    outputPath ?? join(root, "bridge", "pi", mode, hash.slice(0, 2), `${hash}.jsonl`),
+  );
   await atomicPrivateWrite(path, built.text);
-  return { ...built.receipt, target: { ...built.receipt.target, path, contentHash: sha256(built.text) } };
+  return {
+    ...built.receipt,
+    target: { ...built.receipt.target, path, contentHash: sha256(built.text) },
+  };
 }

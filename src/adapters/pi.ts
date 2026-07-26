@@ -1,6 +1,6 @@
 import { basename } from "node:path";
-import { Cause, Effect, Exit } from "effect";
-import { readJsonLines } from "../jsonl";
+import { Effect } from "effect";
+import { readJsonLines, type JsonlParseError } from "../jsonl";
 import type { AdaptResult, SourceAdapter, SourceFile, ToolCall, Turn } from "../types";
 import { redact } from "../redact";
 import { AdaptError, assertObject, contentText, discoverJsonl, finishTimes, projectOf } from "./common";
@@ -20,7 +20,7 @@ const BLOCKS = new Set(["text", "thinking", "toolCall", "toolResult", "image"]);
 const adaptSource = Effect.fnUntraced(function* (
   harness: "pi",
   source: SourceFile,
-): Effect.fn.Return<AdaptResult, AdaptError> {
+): Effect.fn.Return<AdaptResult, AdaptError | JsonlParseError> {
   const turns: Turn[] = [];
   let id = basename(source.path, ".jsonl");
   let cwd = "";
@@ -92,18 +92,7 @@ const adaptSource = Effect.fnUntraced(function* (
     });
   });
 
-  // See codex.ts for why the visitor captures the first failure as a value
-  // instead of throwing across readJsonLines' synchronous, non-Effect-aware
-  // callback boundary.
-  let failure: AdaptError | undefined;
-  const parsed = yield* Effect.promise(() =>
-    readJsonLines(source.path, (rec, line) => {
-      if (failure) return;
-      const exit = Effect.runSyncExit(processRecord(rec, line));
-      if (Exit.isFailure(exit)) failure = Cause.squash(exit.cause) as AdaptError;
-    }),
-  );
-  if (failure) return yield* Effect.fail(failure);
+  const parsed = yield* readJsonLines(source.path, processRecord);
 
   const [startedAt, endedAt] = finishTimes(turns, fallback);
   return {

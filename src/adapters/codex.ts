@@ -1,6 +1,6 @@
 import { basename } from "node:path";
-import { Cause, Effect, Exit } from "effect";
-import { readJsonLines } from "../jsonl";
+import { Effect } from "effect";
+import { readJsonLines, type JsonlParseError } from "../jsonl";
 import type { AdaptResult, SourceAdapter, SourceFile, TokenUsage, ToolCall, Turn } from "../types";
 import { redact } from "../redact";
 import { AdaptError, assertObject, contentText, discoverJsonl, finishTimes, projectOf } from "./common";
@@ -48,7 +48,7 @@ const BLOCKS = new Set([
 const adaptSource = Effect.fnUntraced(function* (
   harness: "codex",
   source: SourceFile,
-): Effect.fn.Return<AdaptResult, AdaptError> {
+): Effect.fn.Return<AdaptResult, AdaptError | JsonlParseError> {
   const turns: Turn[] = [];
   let id = basename(source.path, ".jsonl");
   let cwd = "";
@@ -147,21 +147,7 @@ const adaptSource = Effect.fnUntraced(function* (
     }
   });
 
-  // readJsonLines' visitor is a synchronous, non-Effect-aware callback (it
-  // lives outside this migration's scope). Run each record's Effect to an
-  // Exit synchronously and capture the first failure as a value instead of
-  // throwing across that boundary; readJsonLines keeps calling the visitor
-  // for the remaining lines, which is harmless since they're skipped once a
-  // failure is captured and the whole adapt() call fails regardless.
-  let failure: AdaptError | undefined;
-  const parsed = yield* Effect.promise(() =>
-    readJsonLines(source.path, (rec, line) => {
-      if (failure) return;
-      const exit = Effect.runSyncExit(processRecord(rec, line));
-      if (Exit.isFailure(exit)) failure = Cause.squash(exit.cause) as AdaptError;
-    }),
-  );
-  if (failure) return yield* Effect.fail(failure);
+  const parsed = yield* readJsonLines(source.path, processRecord);
 
   if (cumulative) {
     const target = [...turns].toReversed().find((t) => t.role === "assistant") ?? turns.at(-1);

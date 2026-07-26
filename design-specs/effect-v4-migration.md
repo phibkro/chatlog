@@ -145,8 +145,12 @@ The PR is conformant iff all of these hold. Each is a command, not a claim.
 3. The no-throw ratchet baseline is **lower** than 112, and
    `scripts/no-throw-baseline.txt` records the new number.
 4. `grep -rn "redact(" src/` shows no call site removed relative to `main`.
-5. `package.json` pins one exact Effect version; `bun.lock` shows no unexpected
-   additional runtime dependency.
+5. `package.json` pins one exact Effect version and names no other direct
+   dependency; the built bundle contains zero occurrences of `msgpackr`,
+   `fast-check`, `kubernetes-types`, `find-my-way`, `toml`, `yaml`; and
+   `trustedDependencies` remains absent. (The lockfile itself WILL list ~21
+   packages — that is the pinned beta's own tree, per constraint 4, and is not
+   a failure.)
 6. The Codex adapter's unknown-item path returns a typed error carrying
    `{ itemType, path, line }` rather than throwing — the specific defect this
    migration exists to make unrepresentable.

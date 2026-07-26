@@ -40,7 +40,7 @@ test("role segmentation is labelled, distinguishable, local, and idempotent", as
     const conversation = fixture(hash, role, sample); const dir = join(root, "corpus", "objects", hash.slice(0, 2)); await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${hash}.json`), JSON.stringify(conversation)); labels.push({ conversationHash: hash, evidenceTurnIndex: 0, expectedRole: role });
   }
-  await mkdir(join(root, "derived"), { recursive: true }); await writeFile(join(root, "derived", "current-hashes.jsonl"), hashes.sort().map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n");
+  await mkdir(join(root, "derived"), { recursive: true }); await writeFile(join(root, "derived", "current-hashes.jsonl"), hashes.toSorted().map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n");
   const labelsPath = join(root, "role-labels.json"); await writeFile(labelsPath, JSON.stringify(labels));
   const first = await deriveRoleSegmentation(root, labelsPath); const second = await deriveRoleSegmentation(root, labelsPath);
   expect(first.processed).toBe(true); expect(second).toMatchObject({ processed: false, contentHash: first.contentHash });

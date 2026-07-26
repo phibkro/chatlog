@@ -52,7 +52,13 @@ export async function withIngestLock<T>(root: string, work: () => Promise<T>): P
       const current = JSON.parse(await readFile(path, "utf8")) as Partial<LockRecord>;
       if (current.runId === record.runId) await unlink(path);
     } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
+      // Never throw from `finally`: it would replace whatever `work()` threw,
+      // and the caller would debug lock cleanup instead of the real failure.
+      // A cleanup problem is still worth seeing, so report it beside the
+      // original rather than instead of it.
+      if (error?.code !== "ENOENT") {
+        console.error(`ingest lock cleanup failed for ${path}:`, error);
+      }
     }
   }
 }

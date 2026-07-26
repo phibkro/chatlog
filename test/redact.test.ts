@@ -19,7 +19,7 @@ test("canonical boundary redacts secrets in nested fields before hashing", () =>
   const conversation = canonicalizeConversation({
     id: "id", provider: "anthropic", harness: "claude-code", project: "/p", cwd: "/p",
     model: "model", startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:00:00Z",
-    sourcePath: "/source", turns: [{ role: "assistant", content: `password=\"${secret}\"`, toolCalls: [{ name: "x", output: secret }] }],
+    sourcePath: "/source", turns: [{ role: "assistant", content: `password="${secret}"`, toolCalls: [{ name: "x", output: secret }] }],
   });
   expect(JSON.stringify(conversation)).not.toContain(secret);
   expect(conversation.turns[0].toolCalls?.[0].output).toBe("[REDACTED_API_KEY]");

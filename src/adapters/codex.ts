@@ -56,7 +56,7 @@ export class CodexAdapter implements SourceAdapter {
       }
     });
     if (cumulative) {
-      const target = [...turns].reverse().find((t) => t.role === "assistant") ?? turns.at(-1);
+      const target = [...turns].toReversed().find((t) => t.role === "assistant") ?? turns.at(-1);
       if (target) target.tokens = cumulative;
     }
     const [startedAt, endedAt] = finishTimes(turns, fallback);

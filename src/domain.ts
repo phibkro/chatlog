@@ -17,7 +17,7 @@ export function normalizeConversationDomains(
     .map((value) => value.trim())
     .filter(Boolean)
     .map(normalizeConversationDomain))]
-    .sort();
+    .toSorted();
   if (!domains.length) return [normalizeConversationDomain(fallback)];
   return domains;
 }

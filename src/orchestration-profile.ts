@@ -86,7 +86,7 @@ function validation(labels: OrchestrationLabel[], byPointer: Map<string, Match[]
 
 export async function buildOrchestrationProfile(root: string, labels: OrchestrationLabel[]): Promise<any> {
   const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8");
-  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).sort();
+  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).toSorted();
   const matches: Match[] = []; const conversationSets = new Map<SignalName, Set<string>>();
   for (const conversationHash of hashes) {
     const conversation = await loadConversation(root, conversationHash);
@@ -111,7 +111,7 @@ export async function buildOrchestrationProfile(root: string, labels: Orchestrat
   const inventories = SIGNALS.map((definition) => {
     const rows = matches.filter((item) => item.signal === definition.name);
     const evidenceEligible = (item: Match) => labelledPointers.has(item.pointer) || /^(?:Great\b|Operator\b|Build\b|Resume\b|Continue\b|New work\b|Assigned task\b|Manager coordination\b|O\d+[a-z]?\b|Implement\b|## (?:GOAL|Objective|Mission)\b)/i.test(item.snippet);
-    const ranked = rows.filter(evidenceEligible).sort((a, b) => Number(labelledPointers.has(b.pointer)) - Number(labelledPointers.has(a.pointer)) || a.snippet.length - b.snippet.length || a.pointer.localeCompare(b.pointer));
+    const ranked = rows.filter(evidenceEligible).toSorted((a, b) => Number(labelledPointers.has(b.pointer)) - Number(labelledPointers.has(a.pointer)) || a.snippet.length - b.snippet.length || a.pointer.localeCompare(b.pointer));
     const diverse: Match[] = []; const seen = new Set<string>();
     for (const row of ranked) { if (seen.has(row.conversationHash)) continue; seen.add(row.conversationHash); diverse.push(row); if (diverse.length === 3) break; }
     return { pole: definition.pole, signal: definition.name, claim: definition.pole === "autonomy-grant" ? `Grants autonomy when ${definition.context}: ${definition.latitudeOrGuardrail}.` : `Imposes a guardrail when ${definition.context}: ${definition.latitudeOrGuardrail}.`, matchingTurns: rows.length, conversations: conversationSets.get(definition.name)?.size ?? 0, evidence: diverse.map(({ pointer, snippet }) => ({ pointer, snippet })) };

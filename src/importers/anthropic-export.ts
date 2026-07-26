@@ -190,7 +190,7 @@ export function adaptAnthropicConversation(
     }
   }
 
-  const timestamps = turns.map((turn) => turn.at).filter((value): value is string => Boolean(value)).sort();
+  const timestamps = turns.map((turn) => turn.at).filter((value): value is string => Boolean(value)).toSorted();
   const fallback = item.created_at ?? item.updated_at ?? new Date(0).toISOString();
   return {
     id: item.uuid,

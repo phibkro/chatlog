@@ -84,7 +84,7 @@ function evidenceLines(label: string, items: Evidence[], limit: number): string[
 
 export function buildHandoffSummary(c: Conversation, d: DerivedConversation): string {
   const firstUser = c.turns.find((turn) => turn.role === "user" && turn.content.trim());
-  const latestUser = [...c.turns].reverse().find((turn) => turn.role === "user" && turn.content.trim());
+  const latestUser = [...c.turns].toReversed().find((turn) => turn.role === "user" && turn.content.trim());
   const tools = d.metrics.toolCalls.slice(0, 8).map((tool) => `${tool.name} (${tool.count})`).join(", ") || "none recorded";
   const lines = [
     "[Cross-harness handoff: distilled context]",

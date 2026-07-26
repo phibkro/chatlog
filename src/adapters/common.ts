@@ -16,7 +16,7 @@ export async function discoverJsonl(root: string, accept: (path: string) => bool
     }
   }
   await walk(root);
-  return found.sort((a, b) => a.path.localeCompare(b.path));
+  return found.toSorted((a, b) => a.path.localeCompare(b.path));
 }
 
 export function assertObject(record: any, path: string, line: number): void {
@@ -52,7 +52,7 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
 }
 
 export function finishTimes(turns: Turn[], fallback: string): [string, string] {
-  const times = turns.map((t) => t.at).filter((x): x is string => Boolean(x)).sort();
+  const times = turns.map((t) => t.at).filter((x): x is string => Boolean(x)).toSorted();
   return [times[0] ?? fallback, times.at(-1) ?? fallback];
 }
 

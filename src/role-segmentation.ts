@@ -77,7 +77,7 @@ export function inferAgentRole(conversation: Conversation): RoleInference {
   if (delegationCalls >= 3) add(scores.get("manager")!, 3, "delegation interaction shape", launch[0]?.turnIndex ?? 0);
   if (mutationCalls >= 3) add(scores.get("worker")!, 2, "mutation interaction shape", launch[0]?.turnIndex ?? 0);
   if (researchCalls >= 3 && mutationCalls === 0) add(scores.get("advisor")!, 2, "read-only research interaction shape", launch[0]?.turnIndex ?? 0);
-  const ranked = [...scores.values()].sort((a, b) => b.score - a.score || ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
+  const ranked = [...scores.values()].toSorted((a, b) => b.score - a.score || ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
   const winner = ranked[0]; const margin = winner.score - ranked[1].score;
   const interaction = { delegationCalls, mutationCalls, researchCalls, harness: conversation.harness, projectPresent: Boolean(conversation.project) };
   if (winner.score < 3) return { role: "unclassified", confidence: "low", score: winner.score, margin, reasons: [], interaction };
@@ -115,7 +115,7 @@ async function atomicWrite(path: string, data: string): Promise<void> {
 
 export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): Promise<any> {
   const projectionText = await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8");
-  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).sort();
+  const hashes = projectionText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).conversationHash as string).toSorted();
   const roles = new Map<string, RoleInference>(); const conversations = new Map<string, Conversation>();
   for (const conversationHash of hashes) { const conversation = await loadConversation(root, conversationHash); conversations.set(conversationHash, conversation); roles.set(conversationHash, inferAgentRole(conversation)); }
 
@@ -170,7 +170,7 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
       role, highConfidenceSessions: data.sessions, classifiedChoices: totalChoices, autonomyChoices, determinismChoices: totalChoices - autonomyChoices,
       autonomyChoiceRate: autonomyRate, autonomyChoiceWilson95: interval,
       claim: `For inferred ${role} sessions, observed autonomy latitude appears through ${autonomyNames}; observed constraints appear through ${guardrailNames}. The measured autonomy-choice rate is ${autonomyChoices}/${totalChoices}; this is a boundary description, not a role quality score.`,
-      signalCounts: [...data.signals].map(([signal, count]) => ({ signal, count })).sort((a, b) => b.count - a.count || a.signal.localeCompare(b.signal)),
+      signalCounts: [...data.signals].map(([signal, count]) => ({ signal, count })).toSorted((a, b) => b.count - a.count || a.signal.localeCompare(b.signal)),
       evidence: selected.map(({ pointer: evidencePointer, snippet, signal, pole }) => ({ pointer: evidencePointer, snippet, signal, pole })),
     };
   });

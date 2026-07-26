@@ -72,7 +72,7 @@ function validate(value: any, candidates: RerankCandidate[]): Array<{ id: string
     seen.add(row.id); rankings.push({ id: row.id, score: Math.max(0, Math.min(100, Number(row.score))), reason: redact(String(row.reason ?? "")).slice(0, 180) });
   }
   for (const candidate of candidates) if (!seen.has(candidate.id)) rankings.push({ id: candidate.id, score: 0, reason: "not ranked" });
-  return rankings.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  return rankings.toSorted((a, b) => b.score - a.score || a.id.localeCompare(b.id));
 }
 
 export async function rerankHosted(root: string, query: string, candidates: RerankCandidate[], config?: RerankConfig, fetchImpl: typeof fetch = fetch): Promise<RerankResult> {

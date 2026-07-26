@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { DerivedConversation, Evidence, Pointer } from "./derive";
+import type { DerivedConversation, Evidence } from "./derive";
 
 export type PromotionType = "skill" | "gotcha-skill" | "memory-or-adr" | "claude-md" | "wiki-page-later";
 export interface PromotionEvidence extends Evidence {
@@ -25,7 +25,6 @@ export interface RefineryArtifact {
 interface RefineryManifest { version: 1; current?: { inputProjectionHash: string; recipeHash: string; threshold: number; artifactPath: string; contentHash: string; processedAt: string } }
 export interface RefinerySummary { inputConversations: number; candidates: number; processed: boolean; artifactPath: string; contentHash: string }
 
-const STOP = new Set("about after again also assistant because before being cannot could current does done each file first from have into issue just last more only other output project result same should some than that their them then there these they this through tool turn turns using want were what when where which while will with would your".split(" "));
 const ACTION_TOOLS = /^(?:bash|exec|edit|write|apply_patch|computer|browser|nix)$/i;
 const THEMES: Array<[string, RegExp]> = [
   ["nix-flake-source-visibility", /(?:nix|flake).{0,120}(?:untracked|invisible|can't see|cannot see|excluded|git add)|(?:untracked|invisible).{0,100}(?:nix|flake)/i],
@@ -42,9 +41,6 @@ const THEMES: Array<[string, RegExp]> = [
 
 function hash(text: string): string { return new Bun.CryptoHasher("sha256").update(text).digest("hex"); }
 function themes(text: string): string[] { return THEMES.filter(([, pattern]) => pattern.test(text)).map(([name]) => name); }
-function keywords(text: string): string[] {
-  return [...new Set((text.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) ?? []).filter((word) => !STOP.has(word)))].slice(0, 6);
-}
 function externalReferences(text: string): string[] {
   const refs = new Set<string>();
   for (const raw of text.match(/https?:\/\/[^\s)\]}>,]+/g) ?? []) try {
@@ -141,7 +137,7 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
       evidence: evidenceRows, curation: route(first.type), evaluation: evaluation(first.type),
     });
   }
-  return candidates.sort((a, b) => b.frequency.sessions - a.frequency.sessions || b.frequency.projects - a.frequency.projects || b.frequency.occurrences - a.frequency.occurrences || a.id.localeCompare(b.id));
+  return candidates.toSorted((a, b) => b.frequency.sessions - a.frequency.sessions || b.frequency.projects - a.frequency.projects || b.frequency.occurrences - a.frequency.occurrences || a.id.localeCompare(b.id));
 }
 
 export async function refineCorpus(root: string, threshold = 3): Promise<RefinerySummary> {

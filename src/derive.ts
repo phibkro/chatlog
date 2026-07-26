@@ -153,18 +153,18 @@ export function deriveConversation(c: Conversation): DerivedConversation {
     }
   });
 
-  const latestSuccess = [...outcomeSignals, ...gates].filter((x) => x.result === "success").sort((a, b) => a.pointer.turnIndex - b.pointer.turnIndex).at(-1);
-  const latestFailure = [...outcomeSignals, ...gates].filter((x) => x.result === "failure").sort((a, b) => a.pointer.turnIndex - b.pointer.turnIndex).at(-1);
+  const latestSuccess = [...outcomeSignals, ...gates].filter((x) => x.result === "success").toSorted((a, b) => a.pointer.turnIndex - b.pointer.turnIndex).at(-1);
+  const latestFailure = [...outcomeSignals, ...gates].filter((x) => x.result === "failure").toSorted((a, b) => a.pointer.turnIndex - b.pointer.turnIndex).at(-1);
   let status: DerivedConversation["outcome"]["status"] = "unknown";
   if (latestSuccess && latestFailure) status = Math.abs(latestSuccess.pointer.turnIndex - latestFailure.pointer.turnIndex) <= 5 ? "mixed" : latestSuccess.pointer.turnIndex > latestFailure.pointer.turnIndex ? "success" : "failure";
   else if (latestSuccess) status = "success";
   else if (latestFailure) status = "failure";
 
   const topics = [...topicMap].map(([term, value]) => ({ term, turns: value.turns.size, pointers: value.pointers }))
-    .sort((a, b) => b.turns - a.turns || a.term.localeCompare(b.term)).slice(0, 24);
+    .toSorted((a, b) => b.turns - a.turns || a.term.localeCompare(b.term)).slice(0, 24);
   const outcomeEvidence: Evidence[] = [];
   const evidenceSeen = new Set<string>();
-  for (const item of [...outcomeSignals, ...gates].sort((a, b) => b.pointer.turnIndex - a.pointer.turnIndex)) {
+  for (const item of [...outcomeSignals, ...gates].toSorted((a, b) => b.pointer.turnIndex - a.pointer.turnIndex)) {
     const key = `${item.pointer.turnIndex}:${item.snippet}`;
     if (evidenceSeen.has(key)) continue;
     evidenceSeen.add(key); outcomeEvidence.push({ pointer: item.pointer, snippet: item.snippet });
@@ -174,7 +174,7 @@ export function deriveConversation(c: Conversation): DerivedConversation {
     schemaVersion: 1, conversationHash: c.contentHash, sessionId: c.id, ...(c.title ? { title: c.title } : {}),
     provider: c.provider, project: c.project, harness: c.harness, ...(c.domain ? { domain: c.domain } : {}),
     ...(c.sourceKind ? { sourceKind: c.sourceKind } : {}), model: c.model, startedAt: c.startedAt, endedAt: c.endedAt,
-    metrics: { turns: c.turns.length, characters, roles, tokens: tokenTotals, toolCalls: [...tools].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count) },
+    metrics: { turns: c.turns.length, characters, roles, tokens: tokenTotals, toolCalls: [...tools].map(([name, count]) => ({ name, count })).toSorted((a, b) => b.count - a.count) },
     topics, problems, decisions, gates, attempts,
     outcome: { status, evidence: outcomeEvidence },
   };
@@ -205,7 +205,7 @@ export async function deriveCorpus(root: string): Promise<DeriveSummary> {
   const recipeHash = hash(await Bun.file(import.meta.path).text());
   const loaded = await loadManifest(manifestPath, recipeHash);
   const hashes = [...new Bun.Glob("objects/*/*.json").scanSync({ cwd: corpusDir, onlyFiles: true })]
-    .map((path) => basename(path, ".json")).sort();
+    .map((path) => basename(path, ".json")).toSorted();
   let processed = 0; let skipped = 0;
   for (const conversationHash of hashes) {
     const artifactRel = `objects/${conversationHash.slice(0, 2)}/${conversationHash}.json`;
@@ -225,7 +225,7 @@ export async function deriveCorpus(root: string): Promise<DeriveSummary> {
     processed++;
   }
   const corpusManifest = JSON.parse(await readFile(join(corpusDir, "manifest.json"), "utf8")) as { sources: Record<string, { contentHash: string }> };
-  const currentHashes = [...new Set(Object.values(corpusManifest.sources).map((entry) => entry.contentHash))].sort();
+  const currentHashes = [...new Set(Object.values(corpusManifest.sources).map((entry) => entry.contentHash))].toSorted();
   const projectionText = currentHashes.map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n";
   const projectionPath = "current-hashes.jsonl";
   await atomicWrite(join(derivedDir, projectionPath), projectionText);

@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Enable once per clone: git config core.hooksPath .githooks
+# Formats, then gates. Skips gracefully where the toolchain is absent.
+command -v oxfmt >/dev/null 2>&1 && oxfmt . >/dev/null 2>&1 && git add -u
+command -v oxlint >/dev/null 2>&1 && { oxlint || exit 1; }
+bash scripts/no-throw-ratchet.sh || exit 1

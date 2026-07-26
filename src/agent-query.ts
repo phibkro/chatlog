@@ -33,7 +33,7 @@ export async function agentSemanticSearch(db: Database, root: string, query: str
   const retrieved = agentSearch(db, expression, Math.min(200, wanted * 4), 80, true);
   const selected: SearchHit[] = []; const perSession = new Map<string, number>(); const seenText = new Set<string>();
   for (const hit of retrieved.hits) {
-    const normalized = hit.snippet.replace(/[\[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 240);
+    const normalized = hit.snippet.replace(/[[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 240);
     if (seenText.has(normalized) || (perSession.get(hit.sessionId) ?? 0) >= 2) continue;
     seenText.add(normalized); perSession.set(hit.sessionId, (perSession.get(hit.sessionId) ?? 0) + 1); selected.push(hit);
     if (selected.length === wanted) break;
@@ -206,7 +206,7 @@ export async function agentProject(db: Database, root: string, project: string):
     for (const decision of artifact.decisions.slice(-2)) decisions.push({ ...decision, sessionId: artifact.sessionId, model: artifact.model, endedAt: artifact.endedAt });
   }
   const recurringProblems = [...recurring].map(([category, item]) => ({ category, occurrences: item.occurrences, sessions: item.sessions.size, examples: item.examples }))
-    .sort((a, b) => b.sessions - a.sessions || b.occurrences - a.occurrences).slice(0, 12);
+    .toSorted((a, b) => b.sessions - a.sessions || b.occurrences - a.occurrences).slice(0, 12);
   decisions.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
   return { project, overview, models, tools, outcomes, recurringProblems, recentDecisionPoints: decisions.slice(0, 10) };
 }

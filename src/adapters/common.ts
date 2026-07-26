@@ -1,5 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { Data, Effect } from "effect";
 import type { SourceFile, TokenUsage, Turn } from "../types";
 import { redact } from "../redact";
 
@@ -22,26 +23,43 @@ export async function discoverJsonl(
   return found.toSorted((a, b) => a.path.localeCompare(b.path));
 }
 
-export function assertObject(record: any, path: string, line: number): void {
-  if (
-    !record ||
-    typeof record !== "object" ||
-    Array.isArray(record) ||
-    typeof record.type !== "string"
-  ) {
-    throw new Error(`${path}:${line}: unknown record shape (object with string type required)`);
+// Replaces the pre-migration parse/validate `Error` raised by every adapter.
+// Carries the fields the Codex tool_search_call incident needed but a bare
+// Error string couldn't: itemType lets a caller pattern-match on the
+// offending record shape instead of grepping a message.
+export class AdaptError extends Data.TaggedError("AdaptError")<{
+  readonly path: string;
+  readonly line: number;
+  readonly reason: string;
+  readonly itemType?: string;
+}> {
+  override get message(): string {
+    return `${this.path}:${this.line}: ${this.reason}`;
   }
 }
 
-export function contentText(
+export function assertObject(
+  record: any,
+  path: string,
+  line: number,
+): Effect.Effect<void, AdaptError> {
+  if (record && typeof record === "object" && !Array.isArray(record) && typeof record.type === "string")
+    return Effect.void;
+  return Effect.fail(
+    new AdaptError({ path, line, reason: "unknown record shape (object with string type required)" }),
+  );
+}
+
+export const contentText = Effect.fnUntraced(function* (
   content: unknown,
   path: string,
   line: number,
   allowed: Set<string>,
-): string {
+): Effect.fn.Return<string, AdaptError> {
   if (typeof content === "string") return redact(content);
   if (content == null) return "";
-  if (!Array.isArray(content)) throw new Error(`${path}:${line}: unknown content shape`);
+  if (!Array.isArray(content))
+    return yield* Effect.fail(new AdaptError({ path, line, reason: "unknown content shape" }));
   const parts: string[] = [];
   for (const block of content) {
     if (typeof block === "string") {
@@ -54,16 +72,23 @@ export function contentText(
       typeof block.type !== "string" ||
       !allowed.has(block.type)
     ) {
-      throw new Error(`${path}:${line}: unknown content block type ${JSON.stringify(block?.type)}`);
+      return yield* Effect.fail(
+        new AdaptError({
+          path,
+          line,
+          reason: `unknown content block type ${JSON.stringify(block?.type)}`,
+          itemType: block?.type,
+        }),
+      );
     }
     if (typeof block.text === "string") parts.push(redact(block.text));
     else if (typeof block.thinking === "string") parts.push(redact(block.thinking));
     else if (typeof block.content === "string") parts.push(redact(block.content));
     else if (Array.isArray(block.content))
-      parts.push(contentText(block.content, path, line, allowed));
+      parts.push(yield* contentText(block.content, path, line, allowed));
   }
   return parts.filter(Boolean).join("\n");
-}
+});
 
 export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   const result: TokenUsage = { ...a };

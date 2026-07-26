@@ -1,8 +1,9 @@
 import { basename } from "node:path";
+import { Cause, Effect, Exit } from "effect";
 import { readJsonLines } from "../jsonl";
 import type { AdaptResult, SourceAdapter, SourceFile, TokenUsage, ToolCall, Turn } from "../types";
 import { redact } from "../redact";
-import { assertObject, contentText, discoverJsonl, finishTimes, projectOf } from "./common";
+import { AdaptError, assertObject, contentText, discoverJsonl, finishTimes, projectOf } from "./common";
 
 const RECORDS = new Set([
   "session_meta",
@@ -15,9 +16,10 @@ const RECORDS = new Set([
 ]);
 // tool_search_call / tool_search_output arrived with Codex's tool-search feature
 // (first seen in the corpus 2026-07-23) and halted ingestion for five days: an
-// unknown item throws, so one upstream addition stops the whole pipeline.
-// Throwing beats silently dropping turns, but the allowlist has to track
-// upstream — see the quarantine note in ingest for the durable fix.
+// unknown item threw a bare Error, so one upstream addition stopped the whole
+// pipeline with no signal. The allowlist still has to track upstream — see the
+// quarantine note in ingest for the durable fix — but the item now missing from
+// this Set fails as a typed AdaptError{itemType, path, line} instead.
 const RESPONSE_ITEMS = new Set([
   "message",
   "agent_message",
@@ -43,112 +45,154 @@ const BLOCKS = new Set([
   "computer_screenshot",
 ]);
 
+const adaptSource = Effect.fnUntraced(function* (
+  harness: "codex",
+  source: SourceFile,
+): Effect.fn.Return<AdaptResult, AdaptError> {
+  const turns: Turn[] = [];
+  let id = basename(source.path, ".jsonl");
+  let cwd = "";
+  let model = "";
+  let provider = "openai";
+  let fallback = new Date(source.mtimeMs).toISOString();
+  let cumulative: TokenUsage | undefined;
+
+  const processRecord = Effect.fnUntraced(function* (
+    rec: any,
+    line: number,
+  ): Effect.fn.Return<void, AdaptError> {
+    yield* assertObject(rec, source.path, line);
+    if (!RECORDS.has(rec.type))
+      return yield* Effect.fail(
+        new AdaptError({
+          path: source.path,
+          line,
+          reason: `unknown Codex record type ${rec.type}`,
+          itemType: rec.type,
+        }),
+      );
+    if (typeof rec.timestamp === "string") fallback = rec.timestamp;
+    const p = rec.payload;
+    if (!p || typeof p !== "object")
+      return yield* Effect.fail(
+        new AdaptError({ path: source.path, line, reason: "Codex payload missing" }),
+      );
+    if (rec.type === "session_meta") {
+      id = String(p.id ?? p.session_id ?? id);
+      cwd = String(p.cwd ?? "");
+      provider = String(p.model_provider ?? provider);
+      return;
+    }
+    if (rec.type === "turn_context") {
+      if (typeof p.cwd === "string") cwd = p.cwd;
+      if (typeof p.model === "string") model = p.model;
+      return;
+    }
+    if (rec.type === "event_msg" && p.type === "token_count" && p.info?.total_token_usage) {
+      const u = p.info.total_token_usage;
+      cumulative = {
+        input: Number(u.input_tokens ?? 0),
+        output: Number(u.output_tokens ?? 0),
+        cachedInput: Number(u.cached_input_tokens ?? 0),
+        reasoning: Number(u.reasoning_output_tokens ?? 0),
+        total: Number(u.total_tokens ?? 0),
+      };
+      return;
+    }
+    if (rec.type !== "response_item") return;
+    if (typeof p.type !== "string" || !RESPONSE_ITEMS.has(p.type))
+      return yield* Effect.fail(
+        new AdaptError({
+          path: source.path,
+          line,
+          reason: `unknown Codex response item ${JSON.stringify(p.type)}`,
+          itemType: typeof p.type === "string" ? p.type : undefined,
+        }),
+      );
+    if (p.type === "message" || p.type === "agent_message") {
+      const role = String(p.role ?? p.author ?? "assistant");
+      turns.push({
+        role,
+        content: yield* contentText(p.content, source.path, line, BLOCKS),
+        at: rec.timestamp,
+      });
+    } else if (
+      p.type === "function_call" ||
+      p.type === "custom_tool_call" ||
+      p.type === "tool_search_call"
+    ) {
+      // function_call carries `arguments` as a JSON *string*; tool_search_call
+      // carries an object, which String() flattens to "[object Object]",
+      // losing the query.
+      const rawArgs = p.arguments ?? p.input ?? "";
+      const call: ToolCall = {
+        id: p.call_id ?? p.id,
+        name: String(p.name ?? p.type),
+        arguments: redact(typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs)),
+      };
+      turns.push({ role: "assistant", content: "", at: rec.timestamp, toolCalls: [call] });
+    } else if (
+      p.type === "function_call_output" ||
+      p.type === "custom_tool_call_output" ||
+      p.type === "tool_search_output"
+    ) {
+      // tool_search_output returns matches under `tools`, not `output`.
+      const rawOut = p.output ?? p.tools ?? "";
+      turns.push({
+        role: "tool",
+        content: redact(typeof rawOut === "string" ? rawOut : JSON.stringify(rawOut)),
+        at: rec.timestamp,
+        toolCalls: [{ id: p.call_id, name: "tool_result" }],
+      });
+    }
+  });
+
+  // readJsonLines' visitor is a synchronous, non-Effect-aware callback (it
+  // lives outside this migration's scope). Run each record's Effect to an
+  // Exit synchronously and capture the first failure as a value instead of
+  // throwing across that boundary; readJsonLines keeps calling the visitor
+  // for the remaining lines, which is harmless since they're skipped once a
+  // failure is captured and the whole adapt() call fails regardless.
+  let failure: AdaptError | undefined;
+  const parsed = yield* Effect.promise(() =>
+    readJsonLines(source.path, (rec, line) => {
+      if (failure) return;
+      const exit = Effect.runSyncExit(processRecord(rec, line));
+      if (Exit.isFailure(exit)) failure = Cause.squash(exit.cause) as AdaptError;
+    }),
+  );
+  if (failure) return yield* Effect.fail(failure);
+
+  if (cumulative) {
+    const target = [...turns].toReversed().find((t) => t.role === "assistant") ?? turns.at(-1);
+    if (target) target.tokens = cumulative;
+  }
+  const [startedAt, endedAt] = finishTimes(turns, fallback);
+  return {
+    partialTail: parsed.partialTail,
+    conversation: {
+      id,
+      provider,
+      harness,
+      project: projectOf(cwd),
+      cwd,
+      model: model || "(unknown)",
+      startedAt,
+      endedAt,
+      turns,
+      resumeId: id,
+      sourcePath: source.path,
+    },
+  };
+});
+
 export class CodexAdapter implements SourceAdapter {
   readonly harness = "codex" as const;
   constructor(private root: string) {}
   discover() {
     return discoverJsonl(this.root, (p) => basename(p).startsWith("rollout-"));
   }
-  async adapt(source: SourceFile): Promise<AdaptResult> {
-    const turns: Turn[] = [];
-    let id = basename(source.path, ".jsonl");
-    let cwd = "";
-    let model = "";
-    let provider = "openai";
-    let fallback = new Date(source.mtimeMs).toISOString();
-    let cumulative: TokenUsage | undefined;
-    const parsed = await readJsonLines(source.path, (rec, line) => {
-      assertObject(rec, source.path, line);
-      if (!RECORDS.has(rec.type))
-        throw new Error(`${source.path}:${line}: unknown Codex record type ${rec.type}`);
-      if (typeof rec.timestamp === "string") fallback = rec.timestamp;
-      const p = rec.payload;
-      if (!p || typeof p !== "object")
-        throw new Error(`${source.path}:${line}: Codex payload missing`);
-      if (rec.type === "session_meta") {
-        id = String(p.id ?? p.session_id ?? id);
-        cwd = String(p.cwd ?? "");
-        provider = String(p.model_provider ?? provider);
-        return;
-      }
-      if (rec.type === "turn_context") {
-        if (typeof p.cwd === "string") cwd = p.cwd;
-        if (typeof p.model === "string") model = p.model;
-        return;
-      }
-      if (rec.type === "event_msg" && p.type === "token_count" && p.info?.total_token_usage) {
-        const u = p.info.total_token_usage;
-        cumulative = {
-          input: Number(u.input_tokens ?? 0),
-          output: Number(u.output_tokens ?? 0),
-          cachedInput: Number(u.cached_input_tokens ?? 0),
-          reasoning: Number(u.reasoning_output_tokens ?? 0),
-          total: Number(u.total_tokens ?? 0),
-        };
-        return;
-      }
-      if (rec.type !== "response_item") return;
-      if (typeof p.type !== "string" || !RESPONSE_ITEMS.has(p.type))
-        throw new Error(
-          `${source.path}:${line}: unknown Codex response item ${JSON.stringify(p.type)}`,
-        );
-      if (p.type === "message" || p.type === "agent_message") {
-        const role = String(p.role ?? p.author ?? "assistant");
-        turns.push({
-          role,
-          content: contentText(p.content, source.path, line, BLOCKS),
-          at: rec.timestamp,
-        });
-      } else if (
-        p.type === "function_call" ||
-        p.type === "custom_tool_call" ||
-        p.type === "tool_search_call"
-      ) {
-        // function_call carries `arguments` as a JSON *string*; tool_search_call
-        // carries an object, which String() flattens to "[object Object]",
-        // losing the query.
-        const rawArgs = p.arguments ?? p.input ?? "";
-        const call: ToolCall = {
-          id: p.call_id ?? p.id,
-          name: String(p.name ?? p.type),
-          arguments: redact(typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs)),
-        };
-        turns.push({ role: "assistant", content: "", at: rec.timestamp, toolCalls: [call] });
-      } else if (
-        p.type === "function_call_output" ||
-        p.type === "custom_tool_call_output" ||
-        p.type === "tool_search_output"
-      ) {
-        // tool_search_output returns matches under `tools`, not `output`.
-        const rawOut = p.output ?? p.tools ?? "";
-        turns.push({
-          role: "tool",
-          content: redact(typeof rawOut === "string" ? rawOut : JSON.stringify(rawOut)),
-          at: rec.timestamp,
-          toolCalls: [{ id: p.call_id, name: "tool_result" }],
-        });
-      }
-    });
-    if (cumulative) {
-      const target = [...turns].toReversed().find((t) => t.role === "assistant") ?? turns.at(-1);
-      if (target) target.tokens = cumulative;
-    }
-    const [startedAt, endedAt] = finishTimes(turns, fallback);
-    return {
-      partialTail: parsed.partialTail,
-      conversation: {
-        id,
-        provider,
-        harness: this.harness,
-        project: projectOf(cwd),
-        cwd,
-        model: model || "(unknown)",
-        startedAt,
-        endedAt,
-        turns,
-        resumeId: id,
-        sourcePath: source.path,
-      },
-    };
+  adapt(source: SourceFile): Promise<AdaptResult> {
+    return Effect.runPromise(adaptSource(this.harness, source));
   }
 }

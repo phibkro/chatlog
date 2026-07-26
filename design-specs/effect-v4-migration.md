@@ -186,5 +186,43 @@ Findings worth carrying into later slices:
   crossing a foreign synchronous boundary all matched the pinned reference
   exactly. Trust `/srv/share/projects/.reference/effect-smol` over recall.
 
-**Next: slice 2.** Pick the next slice deliberately; `src/jsonl.ts` is the
-natural candidate precisely because it is the seam slice 1 had to work around.
+**Slice 2 — `src/jsonl.ts` — LANDED 2026-07-27** (`93f86dc`).
+
+`readJsonLines` now takes an Effect-returning visitor
+(`(record, line) => Effect.Effect<void, E>`) and is itself an
+`Effect.fnUntraced`-built function generic over `E`, returning
+`Effect<{partialTail, lines}, JsonlParseError | E>`. The seam slice 1 flagged
+is gone: all three adapters now `yield* readJsonLines(source.path, processRecord)`
+directly. The `Cause`/`Exit`/`Effect.runSyncExit` closure-capture workaround is
+deleted from `claude.ts`, `codex.ts`, `pi.ts` — net diff is negative (61 lines
+removed, 51 added). A `JsonlParseError` (`Data.TaggedError`, carrying
+`{path, line, cause}`) replaces the plain `throw` for malformed JSON on a
+non-tail line; each adapter's `adaptSource` return type widened from
+`AdaptError` to `AdaptError | JsonlParseError`. `Effect.promise` still wraps
+the one genuine JS-Promise boundary (`reader.read()`), consistent with slice
+1's finding that a rejecting promise there is treated as a defect, not
+something callers pattern-match on — appropriate since stream read failures
+were never a modeled case, before or after.
+
+One behavioural refinement, verified not to change observable output: a visit
+failure now stops the read loop immediately (`yield*` short-circuits) instead
+of finishing the file with a captured failure. Discarded either way once
+`adapt()` rejects, so corpus/manifest/hash output is identical — confirmed by
+the frozen-snapshot A/B below — but it does mean adapters no longer need "skip
+once failed" dead-man's-switch logic, which is exactly the win.
+
+Zero `throw` remains in `src/jsonl.ts`; ratchet 102 → 101. Behavioural identity
+proven the same way as slice 1: a reflink-copied frozen snapshot (2679 source
+files: 2265 claude-code + 383 codex + 31 pi) under a scratch `HOME`, ingested
+with pre-slice-2 code into root A and slice-2 code into root B, both fresh and
+incremental (second run into an already-populated root, all 2679 sources
+skipped as unchanged in both). `diff -rq` on `corpus/` and `derived/refinery/`
+clean in both modes; `conversations`/`turns`/`tool_calls` SQL tables
+byte-identical (excluding the per-row `ingested_at` wall-clock column);
+`manifest.json` / `refinery-manifest.json` byte-identical modulo the
+`processedAt` wall-clock field; refinery `contentHash` identical
+(`97a6022d…9877d`) in both fresh runs. `redact()` call sites unchanged at 11
+within `src/adapters/`.
+
+**Next: slice 3.** Pick deliberately from the remaining in-scope surface
+(ingest, derive, refinery, lock, importers, query paths — see § Scope).

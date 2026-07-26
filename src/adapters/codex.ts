@@ -5,7 +5,12 @@ import { redact } from "../redact";
 import { assertObject, contentText, discoverJsonl, finishTimes, projectOf } from "./common";
 
 const RECORDS = new Set(["session_meta", "turn_context", "response_item", "event_msg", "compacted", "world_state", "inter_agent_communication_metadata"]);
-const RESPONSE_ITEMS = new Set(["message", "agent_message", "reasoning", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "web_search_call", "local_shell_call", "computer_call"]);
+// tool_search_call / tool_search_output arrived with Codex's tool-search feature
+// (first seen in the corpus 2026-07-23) and halted ingestion for five days: an
+// unknown item throws, so one upstream addition stops the whole pipeline.
+// Throwing beats silently dropping turns, but the allowlist has to track
+// upstream — see the quarantine note in ingest for the durable fix.
+const RESPONSE_ITEMS = new Set(["message", "agent_message", "reasoning", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "tool_search_call", "tool_search_output", "web_search_call", "local_shell_call", "computer_call"]);
 const BLOCKS = new Set(["input_text", "output_text", "text", "encrypted_content", "input_image", "image", "computer_initialize_state", "computer_screenshot"]);
 
 export class CodexAdapter implements SourceAdapter {
@@ -37,11 +42,17 @@ export class CodexAdapter implements SourceAdapter {
       if (p.type === "message" || p.type === "agent_message") {
         const role = String(p.role ?? p.author ?? "assistant");
         turns.push({ role, content: contentText(p.content, source.path, line, BLOCKS), at: rec.timestamp });
-      } else if (p.type === "function_call" || p.type === "custom_tool_call") {
-        const call: ToolCall = { id: p.call_id ?? p.id, name: String(p.name ?? p.type), arguments: redact(String(p.arguments ?? p.input ?? "")) };
+      } else if (p.type === "function_call" || p.type === "custom_tool_call" || p.type === "tool_search_call") {
+        // function_call carries `arguments` as a JSON *string*; tool_search_call
+        // carries an object, which String() flattens to "[object Object]",
+        // losing the query.
+        const rawArgs = p.arguments ?? p.input ?? "";
+        const call: ToolCall = { id: p.call_id ?? p.id, name: String(p.name ?? p.type), arguments: redact(typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs)) };
         turns.push({ role: "assistant", content: "", at: rec.timestamp, toolCalls: [call] });
-      } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
-        turns.push({ role: "tool", content: redact(typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? "")), at: rec.timestamp, toolCalls: [{ id: p.call_id, name: "tool_result" }] });
+      } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output" || p.type === "tool_search_output") {
+        // tool_search_output returns matches under `tools`, not `output`.
+        const rawOut = p.output ?? p.tools ?? "";
+        turns.push({ role: "tool", content: redact(typeof rawOut === "string" ? rawOut : JSON.stringify(rawOut)), at: rec.timestamp, toolCalls: [{ id: p.call_id, name: "tool_result" }] });
       }
     });
     if (cumulative) {

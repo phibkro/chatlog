@@ -2,11 +2,14 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { agentAskLexical } from "../agent-query";
+import { loadDerived } from "../derive";
 import { parseEvidenceUri } from "../evidence-uri";
 import { sourceCatalog } from "../source-catalog";
 import type { Conversation } from "../types";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
+  if (value == null || !value.trim()) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.trunc(parsed))) : fallback;
 }
@@ -22,6 +25,10 @@ function searchExpression(query: string): string {
 
 const INSIGHT_EVIDENCE_LIMIT = 3;
 const CANDIDATE_EVIDENCE_LIMIT = 2;
+const PRIOR_ATTEMPT_LIMIT = 10;
+const PROJECT_DERIVED_SAMPLE_LIMIT = 40;
+const PROJECT_SESSION_LIMIT = 100;
+const SUMMARY_SNIPPET_LIMIT = 360;
 
 interface CurrentArtifact {
   artifact: any;
@@ -156,6 +163,50 @@ function boundedDecisionBoundary(value: unknown): unknown {
     grantsAutonomy: shape(boundary.grantsAutonomy),
     imposesGuardrail: shape(boundary.imposesGuardrail),
   };
+}
+
+function evidenceUri(value: unknown): string | null {
+  const uri =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object" && typeof (value as any).uri === "string"
+        ? (value as any).uri
+        : null;
+  if (!uri) return null;
+  try {
+    return parseEvidenceUri(uri).uri;
+  } catch {
+    return null;
+  }
+}
+
+function boundedSnippet(value: unknown): string {
+  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  return text.length <= SUMMARY_SNIPPET_LIMIT
+    ? text
+    : `${text.slice(0, SUMMARY_SNIPPET_LIMIT - 1)}…`;
+}
+
+function boundedEvidenceDetails(
+  evidence: unknown,
+  limit: number,
+): Array<{ uri: string; snippet: string }> {
+  if (!Array.isArray(evidence)) return [];
+  const found: Array<{ uri: string; snippet: string }> = [];
+  const seen = new Set<string>();
+  for (const item of evidence) {
+    const pointer =
+      item && typeof item === "object" && "pointer" in item ? (item as any).pointer : item;
+    const uri = evidenceUri(pointer);
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    found.push({
+      uri,
+      snippet: boundedSnippet(item && typeof item === "object" ? (item as any).snippet : ""),
+    });
+    if (found.length >= limit) break;
+  }
+  return found;
 }
 
 export class WorkbenchData {
@@ -306,6 +357,275 @@ export class WorkbenchData {
         ...hit,
         evidenceUri: `chatlog://conversation/${hit.contentHash}/turn/${hit.turnIndex}`,
       })),
+    };
+  }
+
+  async priorAttempts(url: URL): Promise<unknown> {
+    const db = this.requireDb();
+    const question = url.searchParams.get("q")?.trim() ?? "";
+    const limit = boundedInteger(url.searchParams.get("limit"), 6, PRIOR_ATTEMPT_LIMIT);
+    const candidateLimit = Math.min(PRIOR_ATTEMPT_LIMIT * 4, Math.max(limit * 4, 20));
+    const lexical = (await agentAskLexical(
+      db,
+      this.root,
+      question,
+      candidateLimit,
+      {
+        contentRolesOnly: true,
+        groupedSessionLoadLimit: candidateLimit,
+      },
+    )) as any;
+    const candidates = [];
+    for (const session of lexical.sessions ?? []) {
+      candidates.push({
+        sessionId: session.sessionId,
+        conversationHash: session.conversationHash,
+        project: session.project,
+        harness: session.harness,
+        model: session.model,
+        endedAt: session.endedAt,
+        matchedEvidence: boundedEvidenceDetails(session.matchedEvidence, 2),
+        problems: boundedEvidenceDetails(session.priorProblems, 2),
+        attempts: (Array.isArray(session.attempts) ? session.attempts : [])
+          .slice(-4)
+          .flatMap((attempt: any) => {
+            const uri = evidenceUri(attempt.pointer);
+            if (!uri) return [];
+            return [
+              {
+                uri,
+                snippet: boundedSnippet(attempt.snippet),
+                tools: Array.isArray(attempt.tools)
+                  ? attempt.tools.filter((tool: unknown) => typeof tool === "string").slice(0, 6)
+                  : [],
+                outcome: attempt.outcome,
+                resultUri: evidenceUri(attempt.resultPointer),
+              },
+            ];
+          }),
+        decisions: boundedEvidenceDetails(session.decisions, 3),
+        outcome: session.outcome?.status ?? "unknown",
+        resolutions: boundedEvidenceDetails(session.resolutionPointers, 2),
+      });
+    }
+    const sessions = candidates
+      .toSorted((a, b) => b.endedAt.localeCompare(a.endedAt))
+      .slice(0, limit)
+      .toSorted((a, b) => a.endedAt.localeCompare(b.endedAt));
+    const outcomes = Object.fromEntries(
+      ["success", "failure", "mixed", "unknown"].map((status) => [
+        status,
+        sessions.filter((session) => session.outcome === status).length,
+      ]),
+    );
+    return {
+      mode: "lexical",
+      question: lexical.question,
+      interpretedTopic: lexical.interpretedTopic,
+      searchExpression: lexical.searchExpression,
+      candidateSessions: lexical.matchedSessions,
+      matchedSessions: sessions.length,
+      outcomes,
+      sessions,
+      bounds: {
+        requestedSessionLimit: limit,
+        candidateSessionLimit: candidateLimit,
+        derivedArtifactReadLimit: candidateLimit,
+        derivedArtifactsRead: lexical.bounds.loadedSessions,
+        sessionLimit: PRIOR_ATTEMPT_LIMIT,
+        returnedSessions: sessions.length,
+        matchedEvidencePerSession: 2,
+        problemsPerSession: 2,
+        attemptsPerSession: 4,
+        decisionsPerSession: 3,
+        resolutionsPerSession: 2,
+        snippetCharacters: SUMMARY_SNIPPET_LIMIT,
+      },
+      egress: { performed: false, surface: "none" },
+    };
+  }
+
+  async projectIntelligence(url: URL): Promise<unknown> {
+    const db = this.requireDb();
+    const project = url.searchParams.get("project")?.trim();
+    if (!project) return Promise.reject(new Error("project must be an exact non-empty path"));
+    const sampleLimit = boundedInteger(
+      url.searchParams.get("sampleLimit"),
+      24,
+      PROJECT_DERIVED_SAMPLE_LIMIT,
+    );
+    const sessionLimit = boundedInteger(
+      url.searchParams.get("sessionLimit"),
+      40,
+      PROJECT_SESSION_LIMIT,
+    );
+    const overview = db
+      .query(`SELECT count(*) sessions, sum(c.turn_count) turns,
+      min(c.started_at) firstSeen, max(c.ended_at) lastSeen
+      FROM current_conversations c WHERE c.project = ?`)
+      .get(project) as any;
+    if (!Number(overview?.sessions))
+      return Promise.reject(new Error(`project not found: ${project}`));
+    const harnesses = db
+      .query(`SELECT c.harness, count(*) sessions, sum(c.turn_count) turns
+      FROM current_conversations c WHERE c.project = ?
+      GROUP BY c.harness ORDER BY sessions DESC LIMIT 8`)
+      .all(project);
+    const models = db
+      .query(`SELECT c.model, c.harness, count(*) sessions, sum(c.turn_count) turns
+      FROM current_conversations c WHERE c.project = ?
+      GROUP BY c.model, c.harness ORDER BY sessions DESC, turns DESC LIMIT 8`)
+      .all(project);
+    const tools = db
+      .query(`SELECT tc.name tool, count(*) calls, count(DISTINCT tc.content_hash) sessions
+      FROM tool_calls tc JOIN current_conversations c USING(content_hash)
+      JOIN turns t ON t.content_hash=tc.content_hash AND t.turn_index=tc.turn_index
+      WHERE c.project = ? AND t.role='assistant'
+      GROUP BY tc.name ORDER BY calls DESC, sessions DESC LIMIT 10`)
+      .all(project);
+    const hashes = db
+      .query(`SELECT c.content_hash contentHash, c.ended_at endedAt
+      FROM current_conversations c WHERE c.project = ?
+      ORDER BY c.ended_at DESC LIMIT ?`)
+      .all(project, sampleLimit) as Array<{ contentHash: string; endedAt: string }>;
+    const outcomes: Record<string, number> = {
+      success: 0,
+      failure: 0,
+      mixed: 0,
+      unknown: 0,
+    };
+    const recurring = new Map<
+      string,
+      {
+        occurrences: number;
+        sessions: Set<string>;
+        examples: Array<{
+          sessionId: string;
+          harness: string;
+          model: string;
+          outcome: string;
+          evidence: { uri: string; snippet: string };
+          resolution: { uri: string; snippet: string } | null;
+        }>;
+      }
+    >();
+    const decisions: Array<{
+      sessionId: string;
+      model: string;
+      harness: string;
+      endedAt: string;
+      evidence: { uri: string; snippet: string };
+    }> = [];
+    const sampledArtifacts = await Promise.all(
+      hashes.map(async ({ contentHash }) => {
+        try {
+          return { contentHash, artifact: await loadDerived(this.root, contentHash) };
+        } catch {
+          return { contentHash, artifact: null };
+        }
+      }),
+    );
+    let derivedMissing = 0;
+    let derivedSessions = 0;
+    for (const { contentHash, artifact } of sampledArtifacts) {
+      if (!artifact) {
+        derivedMissing++;
+        continue;
+      }
+      if (artifact.conversationHash !== contentHash || artifact.project !== project) {
+        derivedMissing++;
+        continue;
+      }
+      derivedSessions++;
+      outcomes[artifact.outcome.status] = (outcomes[artifact.outcome.status] ?? 0) + 1;
+      const categoriesSeen = new Set<string>();
+      for (const problem of artifact.problems)
+        for (const category of problem.categories) {
+          const item = recurring.get(category) ?? {
+            occurrences: 0,
+            sessions: new Set<string>(),
+            examples: [],
+          };
+          item.occurrences++;
+          item.sessions.add(contentHash);
+          if (!categoriesSeen.has(category) && item.examples.length < 2) {
+            const [evidence] = boundedEvidenceDetails([problem], 1);
+            const [resolution] = boundedEvidenceDetails(artifact.outcome.evidence, 1);
+            if (evidence)
+              item.examples.push({
+                sessionId: artifact.sessionId,
+                harness: artifact.harness,
+                model: artifact.model,
+                outcome: artifact.outcome.status,
+                evidence,
+                resolution: resolution ?? null,
+              });
+          }
+          categoriesSeen.add(category);
+          recurring.set(category, item);
+        }
+      for (const decision of artifact.decisions.slice(-2)) {
+        const [evidence] = boundedEvidenceDetails([decision], 1);
+        if (evidence)
+          decisions.push({
+            sessionId: artifact.sessionId,
+            model: artifact.model,
+            harness: artifact.harness,
+            endedAt: artifact.endedAt,
+            evidence,
+          });
+      }
+    }
+    const recurringProblems = [...recurring]
+      .map(([category, item]) => ({
+        category,
+        occurrences: item.occurrences,
+        sessions: item.sessions.size,
+        examples: item.examples,
+      }))
+      .toSorted((a, b) => b.sessions - a.sessions || b.occurrences - a.occurrences)
+      .slice(0, 10);
+    const recentDecisions = decisions
+      .toSorted((a, b) => b.endedAt.localeCompare(a.endedAt))
+      .slice(0, 10);
+    const sessionUrl = new URL("http://localhost/api/sessions");
+    sessionUrl.searchParams.set("project", project);
+    sessionUrl.searchParams.set("limit", String(sessionLimit));
+    const sessions = this.sessions(sessionUrl);
+    return {
+      project,
+      scope: {
+        source: "current_conversations",
+        totalCurrentSessions: Number(overview?.sessions ?? 0),
+        derivedSampleLimit: sampleLimit,
+        sampledCurrentSessions: hashes.length,
+        derivedSessions,
+        derivedMissing,
+      },
+      overview: {
+        sessions: Number(overview?.sessions ?? 0),
+        turns: Number(overview?.turns ?? 0),
+        firstSeen: overview?.firstSeen ?? null,
+        lastSeen: overview?.lastSeen ?? null,
+      },
+      harnesses,
+      outcomes,
+      recurringProblems,
+      recentDecisions,
+      models,
+      tools,
+      sessions,
+      bounds: {
+        requestedDerivedSampleLimit: sampleLimit,
+        requestedSessionLimit: sessionLimit,
+        maximumDerivedSample: PROJECT_DERIVED_SAMPLE_LIMIT,
+        maximumSessions: PROJECT_SESSION_LIMIT,
+        maximumProblemCategories: 10,
+        examplesPerProblemCategory: 2,
+        maximumDecisions: 10,
+        snippetCharacters: SUMMARY_SNIPPET_LIMIT,
+      },
+      egress: { performed: false, surface: "none" },
     };
   }
 

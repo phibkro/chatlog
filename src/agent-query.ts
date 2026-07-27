@@ -233,21 +233,31 @@ function askTerms(question: string): string[] {
     ),
   ].slice(0, 8);
 }
+
+export interface AgentAskLexicalOptions {
+  contentRolesOnly?: boolean;
+  groupedSessionLoadLimit?: number;
+  loadDerived?: (root: string, hash: string) => Promise<DerivedConversation>;
+}
+
 export async function agentAskLexical(
   db: Database,
   root: string,
   question: string,
   limit = 10,
+  options: AgentAskLexicalOptions = {},
 ): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
   const quoted = words.map((word) => `"${word.replaceAll('"', '""')}"`);
   const primaryExpression = quoted.join(" AND ");
-  let searched = agentSearch(db, primaryExpression, Math.max(limit * 8, 50));
+  const searchLimit = Math.max(limit * 8, 50);
+  const contentRolesOnly = options.contentRolesOnly === true;
+  let searched = agentSearch(db, primaryExpression, searchLimit, 28, contentRolesOnly);
   let expression = primaryExpression;
   if (searched.hits.length < limit) {
     expression = quoted.join(" OR ");
-    searched = agentSearch(db, expression, Math.max(limit * 8, 50));
+    searched = agentSearch(db, expression, searchLimit, 28, contentRolesOnly);
   }
   const grouped = new Map<string, SearchHit[]>();
   for (const hit of searched.hits) {
@@ -255,31 +265,44 @@ export async function agentAskLexical(
     if (hits.length < 3) hits.push(hit);
     grouped.set(hit.conversationHash, hits);
   }
-  const candidates: any[] = [];
-  for (const [hash, matches] of grouped) {
-    const artifact = await loadDerived(root, hash);
-    candidates.push({
-      sessionId: artifact.sessionId,
-      conversationHash: hash,
-      project: artifact.project,
-      harness: artifact.harness,
-      model: artifact.model,
-      endedAt: artifact.endedAt,
-      matchedPointers: matches.map((x) => x.pointer),
-      priorProblems: artifact.problems
-        .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
-        .slice(-2)
-        .map(({ pointer, snippet }) => ({ pointer, snippet })),
-      attempts: artifact.attempts
-        .filter((attempt) => words.some((word) => attempt.snippet.toLowerCase().includes(word)))
-        .slice(-5),
-      decisions: artifact.decisions
-        .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
-        .slice(-3),
-      outcome: { status: artifact.outcome.status },
-      resolutionPointers: artifact.outcome.evidence.slice(0, 2),
-    });
-  }
+  const groupedSessionLoadLimit =
+    typeof options.groupedSessionLoadLimit === "number" &&
+    Number.isFinite(options.groupedSessionLoadLimit)
+      ? Math.max(1, Math.trunc(options.groupedSessionLoadLimit))
+      : searchLimit;
+  const derivedLoader = options.loadDerived ?? loadDerived;
+  const groupedToLoad = [...grouped].slice(0, groupedSessionLoadLimit);
+  const candidates: any[] = await Promise.all(
+    groupedToLoad.map(async ([hash, matches]) => {
+      const artifact = await derivedLoader(root, hash);
+      return {
+        sessionId: artifact.sessionId,
+        conversationHash: hash,
+        project: artifact.project,
+        harness: artifact.harness,
+        model: artifact.model,
+        endedAt: artifact.endedAt,
+        matchedPointers: matches.map((x) => x.pointer),
+        matchedEvidence: matches.map(({ score, snippet, pointer }) => ({
+          score,
+          snippet,
+          pointer,
+        })),
+        priorProblems: artifact.problems
+          .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
+          .slice(-2)
+          .map(({ pointer, snippet }) => ({ pointer, snippet })),
+        attempts: artifact.attempts
+          .filter((attempt) => words.some((word) => attempt.snippet.toLowerCase().includes(word)))
+          .slice(-5),
+        decisions: artifact.decisions
+          .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
+          .slice(-3),
+        outcome: { status: artifact.outcome.status },
+        resolutionPointers: artifact.outcome.evidence.slice(0, 2),
+      };
+    }),
+  );
   candidates.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
   const sessions = candidates.slice(0, limit);
   const outcomes = Object.fromEntries(
@@ -295,6 +318,12 @@ export async function agentAskLexical(
     matchedSessions: grouped.size,
     outcomes,
     sessions,
+    bounds: {
+      contentRolesOnly,
+      groupedSessions: grouped.size,
+      groupedSessionLoadLimit,
+      loadedSessions: candidates.length,
+    },
   };
 }
 

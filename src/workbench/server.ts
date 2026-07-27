@@ -52,6 +52,9 @@ export function workbenchHandler(
         return json(data.projects(url.searchParams.get("limit")));
       if (url.pathname === "/api/sessions") return json(data.sessions(url));
       if (url.pathname === "/api/search") return json(data.search(url));
+      if (url.pathname === "/api/prior-attempts") return json(await data.priorAttempts(url));
+      if (url.pathname === "/api/project-intelligence")
+        return json(await data.projectIntelligence(url));
       if (url.pathname === "/api/insights") return json(await data.insights());
       if (url.pathname === "/api/sources") return json(await data.sources());
       if (url.pathname === "/api/evidence") {

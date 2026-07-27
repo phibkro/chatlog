@@ -9,11 +9,14 @@ hosted telemetry product.
 
 - **Today** — corpus health, recent work, active projects, and the latest
   evidence-backed orchestration finding.
-- **Projects** — project-level activity with a drill-down into individual
-  sessions.
+- **Projects** — project-level activity with current-session totals, a bounded
+  recent derived sample of outcomes/problems/decisions, model and tool mix, then
+  individual sessions.
 - **Recall** — local SQLite FTS5 search. Results carry
   `chatlog://conversation/<hash>/turn/<index>` pointers, and the evidence viewer
-  resolves the canonical redacted turn on demand.
+  resolves the canonical redacted turn on demand. Prior Attempts mode builds a
+  chronological structural timeline through the existing zero-egress lexical
+  query path.
 - **Patterns** — inferred role boundaries, measured agent experiments, and
   knowledge-refinery candidates. A candidate is a prompt for review, never an
   automatic configuration change. Every artifact is marked fresh or stale
@@ -47,6 +50,49 @@ three `chatlog://` pointers per orchestration, role, or effectiveness finding,
 and two per refinery candidate. Opening a pointer uses the existing explicit
 one-turn evidence dialog; `/api/insights` does not embed derived snippets or
 complete turns.
+
+### Prior Attempts
+
+Prior Attempts calls the existing local `agentAskLexical` computation and makes
+no model or network request. Workbench enables its optional content-role filter,
+so only matching current `user` or `assistant` turns are grouped, and applies a
+grouped-session cap before any derived artifact is read. Tool-only FTS matches
+therefore cannot drive artifact reads or enter the timeline, and superseded
+conversation hashes cannot enter it either. Existing four-argument
+`agentAskLexical` callers retain the original all-role behavior.
+
+The response returns at most ten recent qualifying sessions, ordered
+chronologically for reading. Each session bounds lexical matches to two,
+problems to two, attempts to four, decisions to three, and resolution evidence
+to two. Snippets are capped at 360 characters and each item retains an explicit
+`chatlog://` pointer. Attempt rows also retain their derived outcome, tool names,
+and result pointer when present. Full content still requires the evidence
+dialog's current-object check.
+
+The endpoint defaults to six returned sessions and at most 24 derived artifact
+reads. The current UI requests eight sessions and therefore permits at most 32
+reads. The endpoint clamps requests to ten sessions, making 40 derived artifact
+reads the hard per-request maximum. Omitted or blank `limit` parameters use the
+six-session default; response bounds report both the requested session limit
+and the actual number of derived artifacts read.
+
+### Project Intelligence
+
+Opening a project now returns a bounded brief before its session list:
+
+- exact overview plus bounded top-eight model and top-ten assistant-tool rows
+  computed from `current_conversations`;
+- outcome mix, recurring problem categories, and recent decisions from at most
+  40 recent current-session derived artifacts;
+- explicit sampled/loaded/missing-derived counts, so sampled outcomes are never
+  presented as whole-project totals;
+- at most 100 current sessions, newest first.
+
+The default UI uses a 24-session derived sample and shows 40 sessions. Omitted
+or blank `sampleLimit` and `sessionLimit` parameters use those same defaults,
+which are reported in the response bounds. Missing projects fail explicitly. No
+project page runs DuckDB, scans every project artifact, invokes a model, or
+starts background work.
 
 ## Run it
 
@@ -159,6 +205,8 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/projects`                 | Project activity and harness mix                                                          |
 | `/api/sessions?project=…`       | Session metadata for a project                                                            |
 | `/api/search?q=…&limit=…`       | Ranked local FTS results and evidence pointers                                            |
+| `/api/prior-attempts?q=…`       | Zero-egress chronological attempts from current content-role matches                      |
+| `/api/project-intelligence?project=…` | Exact current totals, bounded derived sample, then current sessions                |
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn                                                               |
 | `/api/insights`                 | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
 | `/api/sources`                  | Connector state and import actions                                                        |

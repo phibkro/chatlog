@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
+import { deriveCorpus } from "../src/derive";
 import { WorkbenchData } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import type { Conversation } from "../src/types";
@@ -43,6 +44,141 @@ async function writeInsightArtifact(
       current: { inputProjectionHash, artifactPath, contentHash },
     }),
   );
+}
+
+async function slice2Fixture(): Promise<{
+  root: string;
+  current: Conversation;
+  second: Conversation;
+  superseded: Conversation;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-slice2-"));
+  const base = {
+    provider: "openai",
+    harness: "codex",
+    domain: "coding",
+    sourceKind: "session-log",
+    project: "/project",
+    cwd: "/project",
+  };
+  const superseded: Conversation = {
+    ...base,
+    id: "superseded-session",
+    title: "Old projection repair",
+    model: "old-model",
+    startedAt: "2026-06-30T10:00:00Z",
+    endedAt: "2026-06-30T10:01:00Z",
+    sourcePath: "/shared-source",
+    contentHash: "1".repeat(64),
+    turns: [
+      { role: "user", content: "Projection repair failed in a superseded session." },
+      { role: "assistant", content: "The old repair was fixed." },
+    ],
+  };
+  const current: Conversation = {
+    ...base,
+    id: "current-one",
+    title: "Current projection repair",
+    model: "model-a",
+    startedAt: "2026-07-01T10:00:00Z",
+    endedAt: "2026-07-01T10:01:00Z",
+    sourcePath: "/shared-source",
+    contentHash: "2".repeat(64),
+    turns: [
+      {
+        role: "user",
+        content: "Projection repair failed because the Nix flake input is untracked.",
+      },
+      {
+        role: "assistant",
+        content: "For projection repair, we decided to track the file before rebuilding.",
+        toolCalls: [{ name: "Bash", arguments: "git add fixture" }],
+      },
+      { role: "tool", content: "Tests passed with exit code 0." },
+      { role: "assistant", content: "The projection repair is resolved and checks passed." },
+    ],
+  };
+  const second: Conversation = {
+    ...base,
+    id: "current-two",
+    title: "Projection drift follow-up",
+    model: "model-b",
+    startedAt: "2026-07-02T10:00:00Z",
+    endedAt: "2026-07-02T10:01:00Z",
+    sourcePath: "/second-source",
+    contentHash: "3".repeat(64),
+    turns: [
+      { role: "user", content: "Projection repair failed with stale drifted state." },
+      {
+        role: "assistant",
+        content: "For projection repair, we decided to rebuild the current index instead.",
+        toolCalls: [{ name: "Edit", arguments: "fixture" }],
+      },
+      { role: "tool", content: "Build failed on the first attempt." },
+      { role: "assistant", content: "The repair was fixed after retry; all checks passed." },
+    ],
+  };
+  const toolOnly: Conversation[] = Array.from({ length: 40 }, (_, index) => {
+    const endedAt = new Date(Date.UTC(2026, 5, 1, 0, index + 1)).toISOString();
+    return {
+      ...base,
+      id: `tool-only-${index}`,
+      title: `Tool-only fixture ${index}`,
+      model: "tool-model",
+      startedAt: new Date(Date.UTC(2026, 5, 1, 0, index)).toISOString(),
+      endedAt,
+      sourcePath: `/tool-only-${index}`,
+      contentHash: (index + 16).toString(16).padStart(64, "0"),
+      turns: [
+        { role: "user", content: "Routine maintenance request." },
+        {
+          role: "assistant",
+          content: "Inspecting the routine state.",
+          toolCalls: [{ name: "Bash", arguments: "fixture" }],
+        },
+        { role: "tool", content: "Projection repair failed inside tool output only." },
+        { role: "assistant", content: "Routine maintenance done." },
+      ],
+    };
+  });
+  const conversations = [superseded, current, second, ...toolOnly];
+  const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+  indexConversation(db, superseded, 1, 1);
+  indexConversation(db, current, 2, 1);
+  indexConversation(db, second, 1, 1);
+  for (const conversation of toolOnly) indexConversation(db, conversation, 1, 1);
+  db.close();
+  await Promise.all(
+    conversations.map(async (conversation) => {
+      const directory = join(
+        root,
+        "corpus",
+        "objects",
+        conversation.contentHash.slice(0, 2),
+      );
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, `${conversation.contentHash}.json`),
+        JSON.stringify(conversation),
+      );
+    }),
+  );
+  await writeFile(
+    join(root, "corpus", "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      sources: Object.fromEntries([
+        [current.sourcePath, { contentHash: current.contentHash }],
+        [second.sourcePath, { contentHash: second.contentHash }],
+        ...toolOnly.map((conversation) => [
+          conversation.sourcePath,
+          { contentHash: conversation.contentHash },
+        ]),
+      ]),
+    }),
+  );
+  await deriveCorpus(root);
+  return { root, current, second, superseded };
 }
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
@@ -118,6 +254,162 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(staticResponse.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(await staticResponse.text()).toContain("Chatlog Workbench");
   data.close();
+});
+
+test("Prior Attempts is zero-egress, chronological, current-only, and excludes dense tool-only discovery", async () => {
+  const { root, current, second, superseded } = await slice2Fixture();
+  const data = new WorkbenchData(root);
+  const originalFetch = globalThis.fetch;
+  let networkCalls = 0;
+  globalThis.fetch = (async () => {
+    networkCalls++;
+    return new Response("unexpected");
+  }) as unknown as typeof fetch;
+  try {
+    const result = (await data.priorAttempts(
+      new URL("http://localhost/api/prior-attempts?q=projection+repair&limit=8"),
+    )) as any;
+    expect(networkCalls).toBe(0);
+    expect(result).toMatchObject({
+      mode: "lexical",
+      matchedSessions: 2,
+      egress: { performed: false, surface: "none" },
+    });
+    expect(result.sessions.map((session: any) => session.sessionId)).toEqual([
+      current.id,
+      second.id,
+    ]);
+    expect(JSON.stringify(result)).not.toContain(superseded.id);
+    expect(JSON.stringify(result)).not.toContain("tool-only-");
+    expect(result.sessions.every((session: any) => session.matchedEvidence.length <= 2)).toBe(
+      true,
+    );
+    expect(result.sessions[0].attempts[0]).toMatchObject({
+      outcome: "success",
+      tools: ["Bash"],
+      resultUri: `chatlog://conversation/${current.contentHash}/turn/2`,
+    });
+    expect(result.sessions[0].endedAt < result.sessions[1].endedAt).toBe(true);
+    expect(result.bounds).toMatchObject({
+      requestedSessionLimit: 8,
+      candidateSessionLimit: 32,
+      derivedArtifactReadLimit: 32,
+      derivedArtifactsRead: 2,
+    });
+    expect(JSON.stringify(result).includes("Projection repair")).toBe(true);
+    expect(
+      Math.max(
+        ...result.sessions.flatMap((session: any) =>
+          [
+            ...session.matchedEvidence,
+            ...session.problems,
+            ...session.attempts,
+            ...session.decisions,
+            ...session.resolutions,
+          ].map((item: any) => item.snippet.length),
+        ),
+      ),
+    ).toBeLessThanOrEqual(360);
+    const matchedEvidence = (await data.evidence(
+      result.sessions[0].matchedEvidence[0].uri,
+    )) as any;
+    expect(matchedEvidence.sessionId).toBe(current.id);
+    expect(["user", "assistant"]).toContain(matchedEvidence.turn.role);
+    const response = await workbenchHandler(data)(
+      new Request("http://localhost/api/prior-attempts?q=projection+repair&limit=8"),
+    );
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as any).sessions).toHaveLength(2);
+    const omittedResponse = await workbenchHandler(data)(
+      new Request("http://localhost/api/prior-attempts?q=projection+repair"),
+    );
+    expect(omittedResponse.status).toBe(200);
+    expect(((await omittedResponse.json()) as any).bounds).toMatchObject({
+      requestedSessionLimit: 6,
+      candidateSessionLimit: 24,
+      derivedArtifactReadLimit: 24,
+    });
+    const blankResponse = await workbenchHandler(data)(
+      new Request("http://localhost/api/prior-attempts?q=projection+repair&limit="),
+    );
+    expect(blankResponse.status).toBe(200);
+    expect(((await blankResponse.json()) as any).bounds.requestedSessionLimit).toBe(6);
+    expect(networkCalls).toBe(0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    data.close();
+  }
+});
+
+test("Project Intelligence uses exact current totals and a bounded recent derived sample", async () => {
+  const { root, superseded } = await slice2Fixture();
+  const data = new WorkbenchData(root);
+  try {
+    const result = (await data.projectIntelligence(
+      new URL(
+        "http://localhost/api/project-intelligence?project=%2Fproject&sampleLimit=24&sessionLimit=10",
+      ),
+    )) as any;
+    expect(result.overview.sessions).toBe(42);
+    expect(result.scope).toEqual({
+      source: "current_conversations",
+      totalCurrentSessions: 42,
+      derivedSampleLimit: 24,
+      sampledCurrentSessions: 24,
+      derivedSessions: 24,
+      derivedMissing: 0,
+    });
+    expect(result.sessions).toHaveLength(10);
+    expect(JSON.stringify(result)).not.toContain(superseded.id);
+    expect(JSON.stringify(result.models)).not.toContain("old-model");
+    expect(result.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tool: "Bash", calls: 41 }),
+        expect.objectContaining({ tool: "Edit", calls: 1 }),
+      ]),
+    );
+    expect(result.recurringProblems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: "nix-dirty-or-untracked-input", sessions: 1 }),
+        expect.objectContaining({ category: "stale-or-drifted-state", sessions: 1 }),
+      ]),
+    );
+    expect(result.recentDecisions).toHaveLength(2);
+    expect(Object.values(result.outcomes).reduce((sum: number, count: any) => sum + count, 0)).toBe(
+      24,
+    );
+    expect(result.egress).toEqual({ performed: false, surface: "none" });
+
+    const handler = workbenchHandler(data);
+    const omittedResponse = await handler(
+      new Request("http://localhost/api/project-intelligence?project=%2Fproject"),
+    );
+    expect(omittedResponse.status).toBe(200);
+    const omitted = (await omittedResponse.json()) as any;
+    expect(omitted.scope.derivedSampleLimit).toBe(24);
+    expect(omitted.sessions).toHaveLength(40);
+    expect(omitted.bounds).toMatchObject({
+      requestedDerivedSampleLimit: 24,
+      requestedSessionLimit: 40,
+    });
+    const blankResponse = await handler(
+      new Request(
+        "http://localhost/api/project-intelligence?project=%2Fproject&sampleLimit=&sessionLimit=",
+      ),
+    );
+    expect(blankResponse.status).toBe(200);
+    expect(((await blankResponse.json()) as any).bounds).toMatchObject({
+      requestedDerivedSampleLimit: 24,
+      requestedSessionLimit: 40,
+    });
+    const response = await handler(
+      new Request("http://localhost/api/project-intelligence?project=%2Fmissing"),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "project not found: /missing" });
+  } finally {
+    data.close();
+  }
 });
 
 test("insights report matched projection provenance and expose only bounded evidence pointers", async () => {

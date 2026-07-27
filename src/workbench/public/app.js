@@ -4,6 +4,7 @@ const state = {
   insights: null,
   sources: [],
   candidateFilter: "all",
+  recallMode: "search",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -74,6 +75,35 @@ function evidenceLinks(evidence, label = "Evidence") {
     )
     .join("")}</div>`;
 }
+
+function evidenceRows(evidence, label) {
+  const items = Array.isArray(evidence) ? evidence : [];
+  if (!items.length) return "";
+  return `<div class="evidence-group">
+    <span class="evidence-group-label">${escapeHtml(label)}</span>
+    ${items
+      .map(
+        (item) => `<div class="evidence-item">
+          <button type="button" class="evidence-row" data-evidence-uri="${escapeHtml(item.uri)}">
+            <span>${escapeHtml(item.snippet || "Open evidence turn")}</span><i>↗</i>
+          </button>
+          ${
+            item.outcome || item.tools?.length
+              ? `<span class="evidence-item-meta">${item.outcome ? escapeHtml(item.outcome) : ""}${item.tools?.length ? ` · ${escapeHtml(item.tools.join(", "))}` : ""}</span>`
+              : ""
+          }
+          ${
+            item.resultUri
+              ? `<button type="button" class="result-evidence-link" data-evidence-uri="${escapeHtml(item.resultUri)}">Result ↗</button>`
+              : ""
+          }
+        </div>`,
+      )
+      .join("")}
+  </div>`;
+}
+
+const readableCategory = (value = "") => value.replaceAll("-", " ");
 
 async function api(path) {
   const response = await fetch(path);
@@ -181,13 +211,60 @@ function renderProjects(filter = "") {
 async function openProject(project) {
   const drawer = $("#project-drawer");
   $("#project-drawer-title").textContent = shortProject(project);
-  $("#project-sessions").innerHTML = `<div class="empty">Loading sessions…</div>`;
+  $("#project-intelligence").innerHTML =
+    `<div class="empty">Loading current project intelligence…</div>`;
   drawer.classList.remove("hidden");
   drawer.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const sessions = await api(`/api/sessions?project=${encodeURIComponent(project)}&limit=100`);
-    $("#project-sessions").innerHTML =
-      sessions
+    const result = await api(
+      `/api/project-intelligence?project=${encodeURIComponent(project)}&sampleLimit=24&sessionLimit=40`,
+    );
+    const outcomeTotal = Object.values(result.outcomes).reduce(
+      (total, count) => total + Number(count),
+      0,
+    );
+    const outcomes = ["success", "failure", "mixed", "unknown"]
+      .map(
+        (status) => `<div class="project-stat outcome-${status}">
+          <span>${escapeHtml(status)}</span><strong>${formatNumber(result.outcomes[status])}</strong>
+        </div>`,
+      )
+      .join("");
+    const problemRows =
+      result.recurringProblems
+        .map(
+          (problem) => `<article class="project-finding">
+            <div><strong>${escapeHtml(readableCategory(problem.category))}</strong>
+            <span>${formatNumber(problem.sessions)} sampled sessions · ${formatNumber(problem.occurrences)} occurrences</span></div>
+            ${problem.examples
+              .map((example) => evidenceRows([example.evidence], example.outcome))
+              .join("")}
+          </article>`,
+        )
+        .join("") || `<div class="empty">No categorized problems in the derived sample.</div>`;
+    const decisions =
+      result.recentDecisions
+        .map(
+          (decision) => `<article class="project-decision">
+            <span>${formatDate(decision.endedAt)} · ${escapeHtml(decision.harness)} · ${escapeHtml(decision.model)}</span>
+            ${evidenceRows([decision.evidence], "Decision")}
+          </article>`,
+        )
+        .join("") || `<div class="empty">No recent decision evidence in the sample.</div>`;
+    const models =
+      result.models
+        .map(
+          (model) => `<div class="mix-row"><strong>${escapeHtml(model.model)}</strong><span>${escapeHtml(model.harness)} · ${formatNumber(model.sessions)} sessions</span></div>`,
+        )
+        .join("") || `<div class="empty">No model activity.</div>`;
+    const tools =
+      result.tools
+        .map(
+          (tool) => `<div class="mix-row"><strong>${escapeHtml(tool.tool)}</strong><span>${formatNumber(tool.calls)} calls · ${formatNumber(tool.sessions)} sessions</span></div>`,
+        )
+        .join("") || `<div class="empty">No assistant tool calls.</div>`;
+    const sessions =
+      result.sessions
         .map(
           (session) => `
       <div class="session-row">
@@ -197,9 +274,31 @@ async function openProject(project) {
         <span>${relativeTime(session.endedAt)}</span>
       </div>`,
         )
-        .join("") || `<div class="empty">No sessions found.</div>`;
+        .join("") || `<div class="empty">No current sessions found.</div>`;
+    $("#project-intelligence").innerHTML = `
+      <div class="project-scope">Current projection · ${formatNumber(result.overview.sessions)} sessions total · derived sample ${formatNumber(result.scope.derivedSessions)}/${formatNumber(result.scope.sampledCurrentSessions)}${result.scope.derivedMissing ? ` · ${formatNumber(result.scope.derivedMissing)} missing derived` : ""} · no egress</div>
+      <section class="project-section">
+        <div class="project-section-heading"><div><p class="eyebrow">Recent derived sample</p><h3>Outcome mix</h3></div><span>${formatNumber(outcomeTotal)} classified sessions</span></div>
+        <div class="project-outcomes">${outcomes}</div>
+      </section>
+      <section class="project-section">
+        <div class="project-section-heading"><div><p class="eyebrow">Recurring friction</p><h3>Problem categories</h3></div><span>maximum 10</span></div>
+        <div class="project-findings">${problemRows}</div>
+      </section>
+      <section class="project-section">
+        <div class="project-section-heading"><div><p class="eyebrow">Evidence-backed choices</p><h3>Recent decisions</h3></div><span>maximum 10</span></div>
+        <div class="project-decisions">${decisions}</div>
+      </section>
+      <div class="project-mix-grid">
+        <section class="project-section"><div class="project-section-heading"><div><p class="eyebrow">Top models · exact current counts</p><h3>Model mix</h3></div><span>maximum 8</span></div>${models}</section>
+        <section class="project-section"><div class="project-section-heading"><div><p class="eyebrow">Top tools · exact current counts</p><h3>Tool mix</h3></div><span>maximum 10</span></div>${tools}</section>
+      </div>
+      <section class="project-section">
+        <div class="project-section-heading"><div><p class="eyebrow">Current projection</p><h3>Sessions</h3></div><span>showing ${formatNumber(result.sessions.length)}</span></div>
+        <div class="session-table">${sessions}</div>
+      </section>`;
   } catch (error) {
-    $("#project-sessions").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    $("#project-intelligence").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -240,6 +339,62 @@ async function runSearch(query) {
     $("#search-results").innerHTML =
       `<div class="empty spacious">${escapeHtml(error.message)}</div>`;
   }
+}
+
+async function runPriorAttempts(question) {
+  const input = question.trim();
+  if (!input) return;
+  showView("recall");
+  $("#recall-input").value = input;
+  $("#result-meta").textContent = "Finding prior attempts in current local sessions…";
+  $("#search-results").innerHTML = `<div class="empty spacious">Building the attempt timeline…</div>`;
+  try {
+    const result = await api(`/api/prior-attempts?q=${encodeURIComponent(input)}&limit=8`);
+    $("#result-meta").textContent =
+      `${result.sessions.length} current sessions · chronological · local lexical analysis · no egress`;
+    $("#search-results").innerHTML =
+      result.sessions
+        .map(
+          (session) => `<article class="attempt-card">
+            <div class="attempt-head">
+              <div><span>${formatDate(session.endedAt)}</span><h3>${escapeHtml(shortProject(session.project))}</h3></div>
+              <div><span class="badge">${escapeHtml(session.harness)}</span><span class="badge">${escapeHtml(session.model)}</span><span class="outcome-badge ${escapeHtml(session.outcome)}">${escapeHtml(session.outcome)}</span></div>
+            </div>
+            ${evidenceRows(session.matchedEvidence, "Lexical match")}
+            ${evidenceRows(session.problems, "Problem")}
+            ${evidenceRows(session.attempts, "Attempt")}
+            ${evidenceRows(session.decisions, "Decision")}
+            ${evidenceRows(session.resolutions, "Resolution")}
+          </article>`,
+        )
+        .join("") ||
+      `<div class="empty spacious">No current user or assistant session matched this topic.</div>`;
+  } catch (error) {
+    $("#result-meta").textContent = "Prior Attempts failed";
+    $("#search-results").innerHTML =
+      `<div class="empty spacious">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function runRecall(query) {
+  return state.recallMode === "attempts" ? runPriorAttempts(query) : runSearch(query);
+}
+
+function setRecallMode(mode) {
+  state.recallMode = mode;
+  $$("#recall-mode button").forEach((button) =>
+    button.classList.toggle("active", button.dataset.mode === mode),
+  );
+  const attempts = mode === "attempts";
+  $("#recall-label").textContent = attempts
+    ? "What did we try last time?"
+    : "What are you trying to remember?";
+  $("#recall-input").placeholder = attempts
+    ? "What did we try last time for projection drift?"
+    : "What did we learn about Nix flake source visibility?";
+  $("#recall-submit").innerHTML = attempts
+    ? "Build attempt timeline <span>→</span>"
+    : "Search history <span>→</span>";
 }
 
 async function openEvidence(uri) {
@@ -400,11 +555,15 @@ $("#global-search").addEventListener("submit", (event) => {
 });
 $("#recall-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  runSearch($("#recall-input").value);
+  runRecall($("#recall-input").value);
 });
 $$(".query-suggestions button").forEach((button) =>
-  button.addEventListener("click", () => runSearch(button.textContent)),
+  button.addEventListener("click", () => runRecall(button.textContent)),
 );
+$("#recall-mode").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-mode]");
+  if (button) setRecallMode(button.dataset.mode);
+});
 $("#project-filter").addEventListener("input", (event) => renderProjects(event.target.value));
 $("#close-project").addEventListener("click", () => $("#project-drawer").classList.add("hidden"));
 $("#close-evidence").addEventListener("click", () => $("#evidence-dialog").close());

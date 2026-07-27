@@ -144,7 +144,7 @@
               </div>
               <button class="icon-button" id="close-project">×</button>
             </div>
-            <div id="project-sessions" class="session-table"></div>
+            <div id="project-intelligence" class="project-intelligence"></div>
           </article>
         </section>
 
@@ -157,15 +157,19 @@
             </div>
           </div>
           <article class="recall-hero panel">
+            <div class="segmented recall-mode" id="recall-mode" aria-label="Recall mode">
+              <button class="active" type="button" data-mode="search">Search turns</button>
+              <button type="button" data-mode="attempts">Prior attempts</button>
+            </div>
             <form id="recall-form">
-              <label for="recall-input">What are you trying to remember?</label>
+              <label for="recall-input" id="recall-label">What are you trying to remember?</label>
               <div class="recall-input">
                 <textarea
                   id="recall-input"
                   rows="2"
                   placeholder="What did we learn about Nix flake source visibility?"
                 ></textarea>
-                <button type="submit">Search history <span>→</span></button>
+                <button type="submit" id="recall-submit">Search history <span>→</span></button>
               </div>
             </form>
             <div class="query-suggestions">

@@ -23,8 +23,9 @@ they remain usable when embedded in either layout.
 ## Contract
 
 - When a recorded working directory exists inside Git, use the repository's
-  common Git directory as identity and present the main checkout root as its
-  canonical project path.
+  common Git directory as identity. Present the main checkout root when it is
+  structurally derivable from a standard `.git` directory; otherwise present
+  the shared common Git directory itself rather than guessing a checkout.
 - A normal checkout, its subdirectories, and linked worktrees that share that
   common Git directory resolve to one project.
 - Resolution uses filesystem metadata, not a Git subprocess. Missing,

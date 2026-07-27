@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
-export const PROJECT_IDENTITY_RECIPE = "git-common-dir-v1";
+export const PROJECT_IDENTITY_RECIPE = "git-common-dir-v2";
 
 const CACHE_LIMIT = 512;
 const commonDirectoryCache = new Map<string, string>();
@@ -109,8 +109,10 @@ function cacheCommonDirectory(commonGitDir: string): string | undefined {
     return cached;
   }
 
-  if (basename(commonGitDir) !== ".git") return undefined;
-  const mainRoot = existingDirectory(dirname(commonGitDir));
+  const mainRoot =
+    basename(commonGitDir) === ".git"
+      ? existingDirectory(dirname(commonGitDir))
+      : existingDirectory(commonGitDir);
   if (!mainRoot) return undefined;
 
   commonDirectoryCache.set(commonGitDir, mainRoot);

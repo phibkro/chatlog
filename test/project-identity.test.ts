@@ -28,7 +28,7 @@ async function gitFixture(): Promise<{
 }
 
 test("exports a stable, versioned project identity recipe", () => {
-  expect(PROJECT_IDENTITY_RECIPE).toBe("git-common-dir-v1");
+  expect(PROJECT_IDENTITY_RECIPE).toBe("git-common-dir-v2");
 });
 
 test("groups a checkout, nested path, and linked worktree under the main checkout", async () => {
@@ -51,6 +51,24 @@ test("resolves relative gitdir metadata through the common Git directory", async
   await writeFile(join(linkedGitDir, "commondir"), "../..\n");
 
   expect(projectOf(relative)).toBe(await realpath(main));
+});
+
+test("groups linked worktrees when the common Git directory is external", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-external-git-dir-"));
+  const checkout = join(base, "checkout");
+  const linked = join(base, "linked");
+  const commonGitDir = join(base, "repository.git");
+  const linkedGitDir = join(commonGitDir, "worktrees", "linked");
+  await mkdir(checkout, { recursive: true });
+  await mkdir(linked, { recursive: true });
+  await mkdir(linkedGitDir, { recursive: true });
+  await writeFile(join(checkout, ".git"), `gitdir: ${commonGitDir}\n`);
+  await writeFile(join(linked, ".git"), `gitdir: ${linkedGitDir}\n`);
+  await writeFile(join(linkedGitDir, "commondir"), "../..\n");
+
+  const identity = await realpath(commonGitDir);
+  expect(projectOf(checkout)).toBe(identity);
+  expect(projectOf(linked)).toBe(identity);
 });
 
 test("retains normalized paths for non-Git, missing, and malformed metadata", async () => {

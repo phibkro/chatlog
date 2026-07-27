@@ -86,7 +86,7 @@ export function workbenchHandler(
         new Response(request.method === "HEAD" ? null : file, {
           headers: {
             "Content-Type": MIME[extension] ?? "application/octet-stream",
-            "Cache-Control": asset === "index.html" ? "no-cache" : "public, max-age=3600",
+            "Cache-Control": "no-cache",
           },
         }),
       );

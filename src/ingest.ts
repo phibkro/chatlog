@@ -4,6 +4,7 @@ import type { Conversation, SourceAdapter } from "./types";
 import { backfillCacheWrite, indexConversation, openAnalysis } from "./analysis";
 import { withIngestLock } from "./lock";
 import { deriveCorpus, type DeriveSummary } from "./derive";
+import { PROJECT_IDENTITY_RECIPE } from "./project-identity";
 import { redact, REDACTION_RECIPE } from "./redact";
 import { refineCorpus, type RefinerySummary } from "./refinery";
 
@@ -15,6 +16,7 @@ interface ManifestEntry {
 interface Manifest {
   version: 1;
   redactionRecipe?: string;
+  projectIdentityRecipe?: string;
   sources: Record<string, ManifestEntry>;
 }
 
@@ -76,6 +78,7 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
   await chmod(corpusDir, 0o700);
   const manifest = await loadManifest(manifestPath);
   const redactionChanged = manifest.redactionRecipe !== REDACTION_RECIPE;
+  const projectIdentityChanged = manifest.projectIdentityRecipe !== PROJECT_IDENTITY_RECIPE;
   const db = openAnalysis(dbPath);
   const summary: IngestSummary = {
     discovered: {},
@@ -96,7 +99,12 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
       summary.skipped[adapter.harness] = 0;
       for (const [index, source] of files.entries()) {
         const old = manifest.sources[source.path];
-        if (!redactionChanged && old?.size === source.size && old?.mtimeMs === source.mtimeMs) {
+        if (
+          !redactionChanged &&
+          !projectIdentityChanged &&
+          old?.size === source.size &&
+          old?.mtimeMs === source.mtimeMs
+        ) {
           summary.skipped[adapter.harness]++;
           continue;
         }
@@ -130,6 +138,7 @@ async function ingestUnlocked(adapters: SourceAdapter[], root: string): Promise<
       }
     }
     manifest.redactionRecipe = REDACTION_RECIPE;
+    manifest.projectIdentityRecipe = PROJECT_IDENTITY_RECIPE;
     await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   } finally {
     db.close();

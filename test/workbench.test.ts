@@ -1049,6 +1049,7 @@ test("experimental Themes explorer reports exact current completed-cache coverag
     expect(await postResponse.json()).toEqual({ error: "read-only workbench" });
 
     const appResponse = await handler(new Request("http://localhost/app.js"));
+    expect(appResponse.headers.get("Cache-Control")).toBe("no-cache");
     const appSource = await appResponse.text();
     expect(appSource).toContain('api("/api/themes?limit=20")');
     const bootstrap = appSource.slice(

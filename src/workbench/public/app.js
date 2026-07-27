@@ -116,14 +116,17 @@ const desktopNavigation = window.matchMedia("(min-width: 70rem)");
 function setNavigationOpen(open, { restoreFocus = false } = {}) {
   const sidebar = $("#primary-sidebar");
   const menu = $("#mobile-menu");
+  const page = $("main");
+  const wasOpen = sidebar.classList.contains("open");
   const mobileOpen = !desktopNavigation.matches && open;
   sidebar.classList.toggle("open", mobileOpen);
   sidebar.inert = !desktopNavigation.matches && !mobileOpen;
+  page.inert = mobileOpen;
   sidebar.setAttribute("aria-hidden", String(!desktopNavigation.matches && !mobileOpen));
   menu.setAttribute("aria-expanded", String(mobileOpen));
   menu.setAttribute("aria-label", mobileOpen ? "Close navigation" : "Open navigation");
   if (mobileOpen) requestAnimationFrame(() => $(".nav-item", sidebar)?.focus());
-  else if (restoreFocus && !desktopNavigation.matches) menu.focus();
+  else if (restoreFocus && wasOpen && !desktopNavigation.matches) menu.focus();
 }
 
 function syncNavigationMode() {

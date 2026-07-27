@@ -28,6 +28,39 @@ Workbench is intentionally not a transcript-first chat viewer. It starts with
 projects, evidence, and reusable findings; full turn content stays behind an
 explicit evidence action.
 
+### Repository identity
+
+Harness records still preserve their exact working directory as `cwd`, but
+adapters no longer use that path directly as project identity when Git metadata
+is available. Chatlog walks to the nearest `.git` marker, follows linked
+worktree `gitdir` and `commondir` metadata without invoking Git, and uses the
+shared common Git directory to resolve the main checkout root. A normal
+checkout, its nested directories, and live `/tmp` worktrees therefore ingest as
+one project. If a valid repository keeps its common metadata in a nonstandard
+external directory, that shared directory becomes the canonical project path
+because no unique main checkout can be derived safely without invoking Git.
+
+Resolution is deliberately conservative. Missing, deleted, inaccessible,
+malformed, and non-Git layouts keep their normalized recorded path rather than
+being guessed into another repository. Existing-path successful and fallback
+lookups use bounded process-local caches.
+
+The corpus manifest records `projectIdentityRecipe`. A changed or missing
+recipe invalidates unchanged-source skips on the next `bun run ingest`, so
+stored project grouping cannot silently remain on an older identity rule.
+Re-ingestion preserves the source logs and produces new content-addressed
+canonical objects where project identity changed.
+
+### Universal layout
+
+Workbench starts from one top-to-bottom column with touch-sized actions and an
+off-canvas, stateful navigation menu. Component grids expand through container
+queries based on their own available width. A wider viewport adds the persistent
+sidebar and desktop page geometry; tablet widths receive a separate final
+refinement. Keyboard focus, Escape and outside-tap navigation dismissal, visible
+focus rings, reduced-motion preferences, and narrow-width overflow handling are
+part of the same layout contract.
+
 ### Insight freshness and evidence
 
 Workbench hashes the exact bytes of `derived/current-hashes.jsonl` and compares

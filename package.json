@@ -12,13 +12,17 @@
     "mcp": "bun run src/mcp/server.ts",
     "workbench": "bun run src/workbench/server.ts",
     "test": "bun test",
-    "check": "oxlint && bash scripts/no-throw-ratchet.sh && bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/mcp/server.ts --target=bun --outfile=/tmp/chatlog-mcp && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js",
+    "check": "oxlint && bash scripts/no-throw-ratchet.sh && tsc --noEmit && bun test && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/mcp/server.ts --target=bun --outfile=/tmp/chatlog-mcp && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt .",
-    "no-throw": "bash scripts/no-throw-ratchet.sh"
+    "no-throw": "bash scripts/no-throw-ratchet.sh",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "effect": "4.0.0-beta.98"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.14"
   }
 }

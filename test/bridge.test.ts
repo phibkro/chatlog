@@ -76,7 +76,13 @@ describe("Pi bridge", () => {
     const first = serializePiBridge(conversation, "history");
     const second = serializePiBridge(conversation, "history");
     expect(first.text).toBe(second.text);
-    const lines = first.text.trim().split("\n").map(JSON.parse);
+    // NOT `.map(JSON.parse)` — map passes (value, index, array), so the index
+    // arrives as JSON.parse's `reviver`. It happens to work because a non-function
+    // reviver is ignored, but it is the classic footgun.
+    const lines = first.text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
     expect(lines[0]).toMatchObject({ type: "session", version: 3, cwd: "/work/project" });
     expect(
       lines

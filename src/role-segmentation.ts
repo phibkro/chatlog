@@ -388,7 +388,15 @@ export async function buildRoleSegmentation(root: string, labels: RoleLabel[]): 
       data.choices.push(dominantPole(matches));
       for (const match of matches) {
         data.signals.set(match.signal, (data.signals.get(match.signal) ?? 0) + 1);
-        if (data.evidence.length < 200 && roleEvidenceEligible(inference.role, turn.content))
+        // `roleEvidenceEligible` excludes "unclassified" in its signature, and
+        // the guard was missing: an unclassified turn fell through every branch
+        // to the fallback. Semantically there is nothing to judge — evidence is
+        // only meaningful once a role is known — so skip rather than default.
+        if (
+          data.evidence.length < 200 &&
+          inference.role !== "unclassified" &&
+          roleEvidenceEligible(inference.role, turn.content)
+        )
           data.evidence.push({
             pointer: pointer(conversationHash, turnIndex),
             snippet: short(turn.content),

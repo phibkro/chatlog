@@ -111,6 +111,24 @@ function evidenceRows(evidence, label) {
 }
 
 const readableCategory = (value = "") => value.replaceAll("-", " ");
+const desktopNavigation = window.matchMedia("(min-width: 70rem)");
+
+function setNavigationOpen(open, { restoreFocus = false } = {}) {
+  const sidebar = $("#primary-sidebar");
+  const menu = $("#mobile-menu");
+  const mobileOpen = !desktopNavigation.matches && open;
+  sidebar.classList.toggle("open", mobileOpen);
+  sidebar.inert = !desktopNavigation.matches && !mobileOpen;
+  sidebar.setAttribute("aria-hidden", String(!desktopNavigation.matches && !mobileOpen));
+  menu.setAttribute("aria-expanded", String(mobileOpen));
+  menu.setAttribute("aria-label", mobileOpen ? "Close navigation" : "Open navigation");
+  if (mobileOpen) requestAnimationFrame(() => $(".nav-item", sidebar)?.focus());
+  else if (restoreFocus && !desktopNavigation.matches) menu.focus();
+}
+
+function syncNavigationMode() {
+  setNavigationOpen(false);
+}
 
 async function api(path) {
   const response = await fetch(path);
@@ -121,10 +139,13 @@ async function api(path) {
 
 function showView(name) {
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${name}`));
-  $$(".nav-item").forEach((button) =>
-    button.classList.toggle("active", button.dataset.view === name),
-  );
-  $(".sidebar").classList.remove("open");
+  $$(".nav-item").forEach((button) => {
+    const active = button.dataset.view === name;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  setNavigationOpen(false, { restoreFocus: true });
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 
@@ -738,7 +759,9 @@ $$(".nav-item").forEach((button) =>
 $$("[data-view-jump]").forEach((button) =>
   button.addEventListener("click", () => showView(button.dataset.viewJump)),
 );
-$("#mobile-menu").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#mobile-menu").addEventListener("click", () =>
+  setNavigationOpen(!$("#primary-sidebar").classList.contains("open"), { restoreFocus: true }),
+);
 $("#refresh").addEventListener("click", load);
 $("#global-search").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -768,7 +791,20 @@ $("#evidence-dialog").addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   const link = event.target.closest("[data-evidence-uri]");
   if (link) openEvidence(link.dataset.evidenceUri);
+  if (
+    $("#primary-sidebar").classList.contains("open") &&
+    !event.target.closest("#primary-sidebar") &&
+    !event.target.closest("#mobile-menu")
+  )
+    setNavigationOpen(false, { restoreFocus: true });
 });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("#primary-sidebar").classList.contains("open")) {
+    event.preventDefault();
+    setNavigationOpen(false, { restoreFocus: true });
+  }
+});
+desktopNavigation.addEventListener("change", syncNavigationMode);
 $("#candidate-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]");
   if (!button) return;
@@ -800,4 +836,5 @@ $("#candidate-list").addEventListener("click", (event) => {
   if (row) openCandidate(row.dataset.candidateId);
 });
 
+syncNavigationMode();
 load();

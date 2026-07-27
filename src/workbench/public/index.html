@@ -12,14 +12,16 @@
     <div class="ambient ambient-one"></div>
     <div class="ambient ambient-two"></div>
     <div class="shell">
-      <aside class="sidebar">
+      <aside class="sidebar" id="primary-sidebar">
         <a class="brand" href="/" aria-label="Chatlog Workbench">
           <span class="brand-mark">C</span>
           <span><strong>Chatlog</strong><small>Workbench</small></span>
         </a>
 
         <nav aria-label="Primary">
-          <button class="nav-item active" data-view="overview"><span>⌁</span> Today</button>
+          <button class="nav-item active" data-view="overview" aria-current="page">
+            <span>⌁</span> Today
+          </button>
           <button class="nav-item" data-view="projects"><span>◇</span> Projects</button>
           <button class="nav-item" data-view="recall"><span>⌕</span> Recall</button>
           <button class="nav-item" data-view="patterns"><span>✦</span> Patterns</button>
@@ -39,7 +41,15 @@
 
       <main>
         <header class="topbar">
-          <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
+          <button
+            class="mobile-menu"
+            id="mobile-menu"
+            aria-label="Open navigation"
+            aria-controls="primary-sidebar"
+            aria-expanded="false"
+          >
+            ☰
+          </button>
           <form class="global-search" id="global-search">
             <span>⌕</span>
             <input

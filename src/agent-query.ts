@@ -5,7 +5,7 @@ import type { Conversation } from "./types";
 import type { DerivedConversation, Evidence, Pointer } from "./derive";
 import { loadDerived } from "./derive";
 import { duckProjectAnalytics } from "./duckdb";
-import { rerankHosted } from "./hosted-rerank";
+import { rerank as rerankDefault } from "./hosted-rerank";
 
 export interface SearchHit {
   sessionId: string;
@@ -53,14 +53,14 @@ export interface SemanticHit extends SearchHit {
   reason: string;
   lexicalScore: number;
 }
-type RerankFn = typeof rerankHosted;
+type RerankFn = typeof rerankDefault;
 export async function agentSemanticSearch(
   db: Database,
   root: string,
   query: string,
   limit = 10,
   candidateLimit = 40,
-  rerank: RerankFn = rerankHosted,
+  rerank: RerankFn = rerankDefault,
 ): Promise<unknown> {
   const words = askTerms(query);
   if (!words.length) throw new Error("semantic search needs a concrete topic");
@@ -95,7 +95,7 @@ export async function agentSemanticSearch(
     };
   });
   return {
-    mode: "hosted-llm-rerank",
+    mode: "llm-rerank",
     query,
     candidateExpression: expression,
     retrievedCandidateCount: retrieved.hits.length,
@@ -303,7 +303,7 @@ export async function agentAsk(
   root: string,
   question: string,
   limit = 10,
-  rerank: RerankFn = rerankHosted,
+  rerank: RerankFn = rerankDefault,
 ): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
@@ -364,7 +364,7 @@ export async function agentAsk(
     ]),
   );
   return {
-    mode: "hosted-llm-rerank",
+    mode: "llm-rerank",
     question,
     interpretedTopic: words,
     relevanceThreshold: qualified.length ? relevanceThreshold : null,

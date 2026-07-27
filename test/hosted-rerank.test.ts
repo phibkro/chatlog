@@ -2,7 +2,26 @@ import { expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rerankHosted, type RerankConfig } from "../src/hosted-rerank";
+import { rerank, resolveRerankConfig, type RerankConfig } from "../src/hosted-rerank";
+
+async function withEnv<T>(
+  overrides: Record<string, string | undefined>,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const prior = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 test("hosted rerank redacts and bounds egress, then serves a content-addressed cache hit", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-rerank-"));
@@ -42,7 +61,7 @@ test("hosted rerank redacts and bounds egress, then serves a content-addressed c
     { id: "c0", text: `irrelevant ${secret}` },
     { id: "c1", text: "Nix ignored a file absent from the git index" },
   ];
-  const first = await rerankHosted(
+  const first = await rerank(
     root,
     "why was my flake input invisible?",
     candidates,
@@ -54,7 +73,7 @@ test("hosted rerank redacts and bounds egress, then serves a content-addressed c
   expect(sent).not.toContain(secret);
   expect(sent).toContain("[REDACTED_API_KEY]");
   expect(sent).not.toContain("conversationHash");
-  const second = await rerankHosted(
+  const second = await rerank(
     root,
     "why was my flake input invisible?",
     candidates,
@@ -88,7 +107,7 @@ test("hosted rerank supports the Anthropic messages shape", async () => {
       { status: 200 },
     );
   }) as typeof fetch;
-  const result = await rerankHosted(
+  const result = await rerank(
     root,
     "same issue",
     [{ id: "c0", text: "same underlying problem" }],
@@ -98,4 +117,70 @@ test("hosted rerank supports the Anthropic messages shape", async () => {
   expect(sent.headers["x-api-key"]).toBe("secret");
   expect(sent.body.messages[0].content).toContain("same underlying problem");
   expect(result.rankings[0].score).toBe(88);
+});
+
+test("resolveRerankConfig defaults to local ollama and ignores ambient hosted credentials", async () => {
+  await withEnv(
+    {
+      CHATLOG_RERANK_PROVIDER: undefined,
+      CHATLOG_RERANK_MODEL: undefined,
+      CHATLOG_RERANK_ENDPOINT: undefined,
+      ANTHROPIC_API_KEY: "ambient-anthropic-key",
+      OPENAI_API_KEY: "ambient-openai-key",
+      OPENROUTER_API_KEY: "ambient-openrouter-key",
+    },
+    async () => {
+      const config = await resolveRerankConfig();
+      expect(config.provider).toBe("ollama");
+      expect(config.model).toBe("gemma4:12b");
+      expect(config.endpoint).toBe("http://127.0.0.1:11434/api/chat");
+      expect(config.apiKey).toBe("");
+      expect(config.credentialSource).toBe("local-ollama");
+    },
+  );
+});
+
+test("resolveRerankConfig only activates a hosted provider when named explicitly", async () => {
+  await withEnv(
+    { CHATLOG_RERANK_PROVIDER: "anthropic", ANTHROPIC_API_KEY: undefined },
+    async () => {
+      await expect(resolveRerankConfig()).rejects.toThrow(
+        "CHATLOG_RERANK_PROVIDER=anthropic requires ANTHROPIC_API_KEY",
+      );
+    },
+  );
+});
+
+test("ollama rerank uses native /api/chat with a JSON schema and honors CHATLOG_RERANK_MODEL/ENDPOINT overrides", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-rerank-ollama-"));
+  await withEnv(
+    { CHATLOG_RERANK_PROVIDER: "ollama", CHATLOG_RERANK_MODEL: "gemma4:26b" },
+    async () => {
+      const config = await resolveRerankConfig();
+      expect(config.model).toBe("gemma4:26b");
+      let sent: any;
+      const mockFetch = (async (_url: any, init: any) => {
+        sent = { headers: init.headers, body: JSON.parse(init.body) };
+        return new Response(
+          JSON.stringify({
+            model: "gemma4:26b",
+            message: { content: '{"rankings":[{"id":"c0","score":70,"reason":"related"}]}' },
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+      const result = await rerank(
+        root,
+        "local rerank",
+        [{ id: "c0", text: "same underlying task" }],
+        config,
+        mockFetch,
+      );
+      expect(sent.headers.authorization).toBeUndefined();
+      expect(sent.body.format).toMatchObject({ type: "object" });
+      expect(sent.body.stream).toBe(false);
+      expect(result.provider).toBe("ollama");
+      expect(result.rankings[0].score).toBe(70);
+    },
+  );
 });

@@ -4,7 +4,34 @@ import { dirname, join } from "node:path";
 import { redact } from "./redact";
 
 const RECIPE = "semantic-rerank-v2";
-const DEFAULT_MODEL = "openai/gpt-oss-20b:free";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-20b:free";
+const DEFAULT_OLLAMA_MODEL = "gemma4:12b";
+// Native /api/chat, not the OpenAI-compat /v1/chat/completions: measured on
+// real candidate text, response_format:"json_object" over the compat layer
+// let the model drift into a prose summary instead of the ranking JSON once
+// candidates stopped being toy strings. Native `format` is grammar-constrained
+// decoding — invalid JSON becomes structurally unrepresentable rather than
+// merely instructed against.
+const DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434/api/chat";
+const OLLAMA_NUM_CTX = 32768;
+const RERANK_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    rankings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          score: { type: "number" },
+          reason: { type: "string" },
+        },
+        required: ["id", "score", "reason"],
+      },
+    },
+  },
+  required: ["rankings"],
+};
 const MAX_CANDIDATE_CHARS = 600;
 
 export interface RerankCandidate {
@@ -12,7 +39,7 @@ export interface RerankCandidate {
   text: string;
 }
 export interface RerankConfig {
-  provider: "openrouter" | "openai" | "anthropic";
+  provider: "openrouter" | "openai" | "anthropic" | "ollama";
   model: string;
   apiKey: string;
   endpoint: string;
@@ -55,10 +82,15 @@ async function piOpenRouterKey(): Promise<string | undefined> {
   }
 }
 
+// Hosted providers (anthropic/openai/openrouter) fire ONLY when named
+// explicitly via CHATLOG_RERANK_PROVIDER. The corpus is the operator's
+// complete agent history; an ambient hosted credential in the environment
+// must never silently pull it off the box. Default (unset, unrecognized, or
+// "ollama") stays fully local.
 export async function resolveRerankConfig(): Promise<RerankConfig> {
   const selected = process.env.CHATLOG_RERANK_PROVIDER?.toLowerCase();
   const model = process.env.CHATLOG_RERANK_MODEL;
-  if (selected === "anthropic" || (!selected && process.env.ANTHROPIC_API_KEY)) {
+  if (selected === "anthropic") {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("CHATLOG_RERANK_PROVIDER=anthropic requires ANTHROPIC_API_KEY");
     if (!model) throw new Error("Anthropic reranking requires CHATLOG_RERANK_MODEL");
@@ -70,7 +102,7 @@ export async function resolveRerankConfig(): Promise<RerankConfig> {
       credentialSource: "environment",
     };
   }
-  if (selected === "openai" || (!selected && process.env.OPENAI_API_KEY)) {
+  if (selected === "openai") {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("CHATLOG_RERANK_PROVIDER=openai requires OPENAI_API_KEY");
     return {
@@ -81,18 +113,27 @@ export async function resolveRerankConfig(): Promise<RerankConfig> {
       credentialSource: "environment",
     };
   }
-  const apiKey = process.env.OPENROUTER_API_KEY ?? (await piOpenRouterKey());
-  if (!apiKey)
-    throw new Error(
-      "No hosted rerank credential: set OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY",
-    );
+  if (selected === "openrouter") {
+    const apiKey = process.env.OPENROUTER_API_KEY ?? (await piOpenRouterKey());
+    if (!apiKey)
+      throw new Error(
+        "CHATLOG_RERANK_PROVIDER=openrouter requires OPENROUTER_API_KEY (or a pi openrouter credential)",
+      );
+    return {
+      provider: "openrouter",
+      model: model ?? DEFAULT_OPENROUTER_MODEL,
+      apiKey,
+      endpoint:
+        process.env.CHATLOG_RERANK_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions",
+      credentialSource: process.env.OPENROUTER_API_KEY ? "environment" : "pi-openrouter",
+    };
+  }
   return {
-    provider: "openrouter",
-    model: model ?? DEFAULT_MODEL,
-    apiKey,
-    endpoint:
-      process.env.CHATLOG_RERANK_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions",
-    credentialSource: process.env.OPENROUTER_API_KEY ? "environment" : "pi-openrouter",
+    provider: "ollama",
+    model: model ?? DEFAULT_OLLAMA_MODEL,
+    apiKey: "",
+    endpoint: process.env.CHATLOG_RERANK_ENDPOINT ?? DEFAULT_OLLAMA_ENDPOINT,
+    credentialSource: "local-ollama",
   };
 }
 
@@ -129,7 +170,7 @@ function validate(
   return rankings.toSorted((a, b) => b.score - a.score || a.id.localeCompare(b.id));
 }
 
-export async function rerankHosted(
+export async function rerank(
   root: string,
   query: string,
   candidates: RerankCandidate[],
@@ -204,8 +245,27 @@ export async function rerankHosted(
       system: instruction,
       messages: [{ role: "user", content: payload }],
     };
+  } else if (resolved.provider === "ollama") {
+    headers = { "content-type": "application/json" };
+    body = {
+      model: resolved.model,
+      stream: false,
+      // num_ctx: ollama's default runtime context (4096) truncates mid-JSON
+      // once ~40 candidates are on the wire, even though the models
+      // themselves support far larger context — num_ctx is the runtime
+      // override, not a model property.
+      options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: 4000 },
+      format: RERANK_JSON_SCHEMA,
+      messages: [
+        { role: "system", content: instruction },
+        { role: "user", content: payload },
+      ],
+    };
   } else {
-    headers = { "content-type": "application/json", authorization: `Bearer ${resolved.apiKey}` };
+    headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${resolved.apiKey}`,
+    };
     body = {
       model: resolved.model,
       temperature: 0,
@@ -221,19 +281,23 @@ export async function rerankHosted(
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    // Local inference on a 12-26B model is legitimately slower than a
+    // hosted API; a 40-candidate rerank has been measured over 2 minutes.
+    signal: AbortSignal.timeout(resolved.provider === "ollama" ? 240_000 : 120_000),
   });
   const responseText = await response.text();
   if (!response.ok)
     throw new Error(
-      `hosted reranker ${resolved.provider} failed (${response.status}): ${redact(responseText).slice(0, 500)}`,
+      `reranker ${resolved.provider} failed (${response.status}): ${redact(responseText).slice(0, 500)}`,
     );
   const envelope = JSON.parse(responseText);
   const content =
     resolved.provider === "anthropic"
       ? envelope?.content?.find((item: any) => item?.type === "text")?.text
-      : envelope?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("hosted reranker returned no text content");
+      : resolved.provider === "ollama"
+        ? envelope?.message?.content
+        : envelope?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") throw new Error("reranker returned no text content");
   const result = {
     rankings: validate(extractJson(content), cleanCandidates),
     provider: resolved.provider,

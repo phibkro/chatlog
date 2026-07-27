@@ -84,7 +84,7 @@ test("agent queries return bounded structure and dereference pointers on demand"
         },
       };
     }) as any)) as any;
-    expect(semantic.mode).toBe("hosted-llm-rerank");
+    expect(semantic.mode).toBe("llm-rerank");
     expect(semantic.hits[0].semanticScore).toBe(90);
     expect(JSON.stringify(semanticCandidates)).not.toContain("forbiddenpayload");
     const ask = (await agentAsk(db, root, "what did I try last time for DuckDB failure", 1, (async (
@@ -112,7 +112,7 @@ test("agent queries return bounded structure and dereference pointers on demand"
         excluded: [],
       },
     })) as any)) as any;
-    expect(ask.mode).toBe("hosted-llm-rerank");
+    expect(ask.mode).toBe("llm-rerank");
     expect(ask.sessions[0].semanticMatches[0].reason).toBe("same failure");
   } finally {
     db.close();

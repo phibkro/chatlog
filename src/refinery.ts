@@ -23,6 +23,13 @@ export interface PromotionCandidate {
   status: "curation-required" | "deferred-follow-up";
   frequency: {
     occurrences: number;
+    /*
+      Distinct normalised wordings behind `occurrences`. When it is far below
+      `occurrences`, the candidate is repetition of one text rather than
+      recurrence of a problem — the operator should read the evidence before
+      trusting the count.
+    */
+    distinctSnippets: number;
     conversations: number;
     sessions: number;
     projects: number;
@@ -273,6 +280,30 @@ function observe(artifact: DerivedConversation): Observation[] {
   return rows;
 }
 
+/*
+  Templated text repeats by design and must not read as recurrence.
+
+  The corpus is not operator prose — it is saturated with agent-directed and
+  agent-generated text, including subagent system prompts reused verbatim across
+  many sessions. Counting rows conflates "the operator kept hitting this" with
+  "a template said this 95 times".
+
+  Measured 2026-07-27: `nix-dirty-or-untracked-input` nominated at 117
+  occurrences / 95 conversations / 19 sessions. Every sampled evidence turn was
+  the same subagent prompt — "The worktree is DIRTY … NEVER run git add" — which
+  is a different sense of both "dirty" and "git add" than the Nix flake gotcha
+  the signature names. Sessions alone could not tell them apart, because the
+  template genuinely appeared in 19 sessions.
+
+  Normalisation is deliberately shallow — case and whitespace only. It catches
+  verbatim reuse, which is the observed failure. Near-duplicate templates that
+  differ by an interpolated path still slip through; that is a known limit, not
+  an oversight, and wants a similarity measure rather than a hash if it shows up.
+*/
+function snippetKey(snippet: string): string {
+  return hash(snippet.toLowerCase().replace(/\s+/g, " ").trim());
+}
+
 function aggregate(observations: Observation[], threshold: number): PromotionCandidate[] {
   const groups = new Map<string, Observation[]>();
   for (const row of observations) {
@@ -285,15 +316,27 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
   for (const [key, rows] of groups) {
     const conversations = new Set(rows.map((row) => row.conversationHash));
     const sessions = new Set(rows.map((row) => `${row.project}:${row.sessionId}`));
-    if (sessions.size < threshold) continue;
+    const distinctSnippets = new Set(rows.map((row) => snippetKey(row.snippet)));
+    // Both gates, not either: a template clears the session gate trivially by
+    // appearing once per session, and a genuine landmine hit repeatedly inside
+    // one session clears the snippet gate. Nomination needs distinct sessions
+    // AND distinct wording.
+    if (sessions.size < threshold || distinctSnippets.size < threshold) continue;
     const first = rows[0];
     const projects = new Set(rows.map((row) => row.project));
     const harnesses = new Set(rows.map((row) => row.harness));
     const evidenceRows: PromotionEvidence[] = [];
     const evidenceSessions = new Set<string>();
+    // Distinct WORDING as well as distinct session, so the operator reviewing a
+    // candidate sees variety rather than six copies of one sentence. Identical
+    // evidence is what made the 2026-07-27 false positive look convincing.
+    const evidenceSnippets = new Set<string>();
     for (const row of rows) {
       const session = `${row.project}:${row.sessionId}`;
       if (evidenceSessions.has(session)) continue;
+      const snippet = snippetKey(row.snippet);
+      if (evidenceSnippets.has(snippet)) continue;
+      evidenceSnippets.add(snippet);
       evidenceSessions.add(session);
       evidenceRows.push({
         conversationHash: row.conversationHash,
@@ -314,6 +357,7 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
       status: first.type === "wiki-page-later" ? "deferred-follow-up" : "curation-required",
       frequency: {
         occurrences: rows.length,
+        distinctSnippets: distinctSnippets.size,
         conversations: conversations.size,
         sessions: sessions.size,
         projects: projects.size,

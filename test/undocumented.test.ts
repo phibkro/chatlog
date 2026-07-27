@@ -30,6 +30,7 @@ function candidate(overrides: Partial<PromotionCandidate>): PromotionCandidate {
     status: "curation-required",
     frequency: {
       occurrences: 10,
+      distinctSnippets: 10,
       conversations: 8,
       sessions: 5,
       projects: 1,
@@ -58,7 +59,11 @@ async function seedRefinery(root: string, candidates: PromotionCandidate[]): Pro
     inputProjectionHash: "hash",
     recipeHash: "hash",
     threshold: 3,
-    policy: { autoPromotion: false, frequencyIsSignalNotDecision: true, referenceWikiDeferred: true },
+    policy: {
+      autoPromotion: false,
+      frequencyIsSignalNotDecision: true,
+      referenceWikiDeferred: true,
+    },
     candidates,
   };
   const derivedDir = join(root, "derived");
@@ -140,16 +145,14 @@ test("queryUndocumented excludes a candidate whose topic is covered by project d
     candidate({
       id: "documented",
       signature: `${project}:release-deploy-and-publish-gate`,
-      evidence: [
-        evidenceRow(project, "session-a", 1),
-        evidenceRow(project, "session-b", 2),
-      ],
+      evidence: [evidenceRow(project, "session-a", 1), evidenceRow(project, "session-b", 2)],
     }),
     candidate({
       id: "undocumented",
       signature: `${project}:nix-flake-source-visibility`,
       frequency: {
         occurrences: 20,
+        distinctSnippets: 20,
         conversations: 12,
         sessions: 6,
         projects: 1,
@@ -199,13 +202,29 @@ test("queryUndocumented ranks by re-derivation cost (occurrences x sessions)", a
     candidate({
       id: "small",
       signature: `${project}:nix-flake-source-visibility`,
-      frequency: { occurrences: 5, conversations: 5, sessions: 2, projects: 1, harnesses: 1, threshold: 3 },
+      frequency: {
+        occurrences: 5,
+        distinctSnippets: 5,
+        conversations: 5,
+        sessions: 2,
+        projects: 1,
+        harnesses: 1,
+        threshold: 3,
+      },
       evidence: [evidenceRow(project, "s1", 1), evidenceRow(project, "s2", 2)],
     }),
     candidate({
       id: "big",
       signature: `${project}:git-worktree-and-index-hygiene`,
-      frequency: { occurrences: 100, conversations: 40, sessions: 10, projects: 1, harnesses: 1, threshold: 3 },
+      frequency: {
+        occurrences: 100,
+        distinctSnippets: 100,
+        conversations: 40,
+        sessions: 10,
+        projects: 1,
+        harnesses: 1,
+        threshold: 3,
+      },
       evidence: [evidenceRow(project, "s3", 1), evidenceRow(project, "s4", 2)],
     }),
   ]);

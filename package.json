@@ -9,6 +9,7 @@
     "derive": "bun run src/cli.ts derive",
     "refine": "bun run src/cli.ts refine",
     "query": "bun run src/cli.ts query",
+    "vault": "bun run src/cli.ts vault",
     "mcp": "bun run src/mcp/server.ts",
     "workbench": "bun run src/workbench/server.ts",
     "test": "bun test",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
 import { PiAdapter } from "./adapters/pi";
@@ -28,6 +28,7 @@ import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentatio
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { normalizeConversationDomain } from "./domain";
+import { emitVault } from "./vault";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolve(process.env.CHATLOG_DATA_ROOT ?? resolve(import.meta.dir, ".."));
@@ -219,6 +220,19 @@ if (command === "ingest") {
   if (mode !== "history" && mode !== "summary")
     throw new Error("bridge mode must be history or summary");
   console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
+} else if (command === "vault") {
+  const outputDir = resolve(
+    subcommand && !subcommand.startsWith("--")
+      ? subcommand
+      : join(homedir(), "obsidian-vaults", "chatlog"),
+  );
+  const limitIdx = args.indexOf("--limit");
+  const limit = limitIdx === -1 ? undefined : Number(args[limitIdx + 1]);
+  const sinceIdx = args.indexOf("--since");
+  const since = sinceIdx === -1 ? undefined : args[sinceIdx + 1];
+  console.log(JSON.stringify(await emitVault(root, outputDir, { limit, since }), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|derive|refine|query|bridge>");
+  throw new Error(
+    "usage: bun run src/cli.ts <ingest|preview|import|derive|refine|query|bridge|vault>",
+  );
 }

@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { deriveCorpus } from "../src/derive";
-import { loadRefinery, refineCorpus } from "../src/refinery";
+import {
+  frequencyFromPromotionEvidence,
+  loadRefinery,
+  refineCorpus,
+  type PromotionEvidence,
+} from "../src/refinery";
 import { agentRefinery, agentRefineryEvalPlan } from "../src/refinery-query";
 import type { Conversation } from "../src/types";
 
@@ -147,4 +152,45 @@ test("refinery refuses to nominate byte-identical templated text as recurrence",
   await refineCorpus(root, 3);
   const artifact = await loadRefinery(root);
   expect(artifact.candidates).toEqual([]);
+});
+
+test("promotion evidence frequency uses project-qualified sessions and distinct wording", () => {
+  const rows: PromotionEvidence[] = [
+    {
+      conversationHash: "a".repeat(64),
+      sessionId: "same",
+      project: "/one",
+      harness: "codex",
+      model: "model",
+      pointer: { turnIndex: 0, uri: "chatlog://one" },
+      snippet: "First wording",
+    },
+    {
+      conversationHash: "b".repeat(64),
+      sessionId: "same",
+      project: "/two",
+      harness: "claude-code",
+      model: "model",
+      pointer: { turnIndex: 1, uri: "chatlog://two" },
+      snippet: " first   wording ",
+    },
+    {
+      conversationHash: "b".repeat(64),
+      sessionId: "other",
+      project: "/two",
+      harness: "claude-code",
+      model: "model",
+      pointer: { turnIndex: 2, uri: "chatlog://three" },
+      snippet: "Second wording",
+    },
+  ];
+  expect(frequencyFromPromotionEvidence(rows, 3)).toEqual({
+    occurrences: 3,
+    distinctSnippets: 2,
+    conversations: 2,
+    sessions: 3,
+    projects: 2,
+    harnesses: 2,
+    threshold: 3,
+  });
 });

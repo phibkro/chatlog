@@ -79,6 +79,10 @@ into conversations implicitly.
 bun run ingest
 bun run derive
 bun run refine
+bun run adjudication:packet
+bun run adjudication:verify -- <packet.json> <completed-answers.json>
+# Resource-gated local Ollama job; do not run concurrently with other GPU work:
+bun run judge:refinery
 bun run query search 'phrase AND another' 20
 bun run query semantic 'meaning of the problem' 10 40
 bun run query get <session-id-or-hash> [turn-index]
@@ -201,6 +205,23 @@ re-derivation. Keep what measurably helps; revise or remove what does not.
 The refinery has no accept, install, or promote command. It does not write
 skills, memory, ADRs, `CLAUDE.md`, or wiki pages. See
 `docs/knowledge-refinery.md` for the curation and measurement contract.
+
+The optional semantic judge fails closed on malformed output and emits separate
+`promotionReview`, `manualReview`, `rejected`, and `unjudged` buckets. `mixed`
+always requires a human; `genuine` reaches promotion review only when the
+selected evidence itself spans the refinery session threshold. Judged rows
+contain support derived from selected evidence only—never the lexical miner's
+frequency and never a fallback to unselected pointers.
+
+`bun run adjudication:packet` builds a deterministic, local-only 30-candidate
+human review packet beneath ignored `derived/adjudication/refinery/`. The
+trusted-local-only public bundle uses shuffled
+candidate/evidence/session/project/harness aliases and contains no model
+answers or structural source IDs. The reversible mode-0600 manifest lives in
+the separate `derived/adjudication/refinery-private/` tree; do not open or copy
+it into the adjudicator's bundle. Validate completed labels with
+`bun run adjudication:verify -- <packet.json> <answers.json>` before treating
+them as gold.
 
 ## Cross-harness handoff spike
 

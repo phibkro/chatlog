@@ -304,6 +304,21 @@ function snippetKey(snippet: string): string {
   return hash(snippet.toLowerCase().replace(/\s+/g, " ").trim());
 }
 
+export function frequencyFromPromotionEvidence(
+  rows: readonly PromotionEvidence[],
+  threshold: number,
+): PromotionCandidate["frequency"] {
+  return {
+    occurrences: rows.length,
+    distinctSnippets: new Set(rows.map((row) => snippetKey(row.snippet))).size,
+    conversations: new Set(rows.map((row) => row.conversationHash)).size,
+    sessions: new Set(rows.map((row) => `${row.project}:${row.sessionId}`)).size,
+    projects: new Set(rows.map((row) => row.project)).size,
+    harnesses: new Set(rows.map((row) => row.harness)).size,
+    threshold,
+  };
+}
+
 function aggregate(observations: Observation[], threshold: number): PromotionCandidate[] {
   const groups = new Map<string, Observation[]>();
   for (const row of observations) {
@@ -314,17 +329,13 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
   }
   const candidates: PromotionCandidate[] = [];
   for (const [key, rows] of groups) {
-    const conversations = new Set(rows.map((row) => row.conversationHash));
-    const sessions = new Set(rows.map((row) => `${row.project}:${row.sessionId}`));
-    const distinctSnippets = new Set(rows.map((row) => snippetKey(row.snippet)));
+    const frequency = frequencyFromPromotionEvidence(rows, threshold);
     // Both gates, not either: a template clears the session gate trivially by
     // appearing once per session, and a genuine landmine hit repeatedly inside
     // one session clears the snippet gate. Nomination needs distinct sessions
     // AND distinct wording.
-    if (sessions.size < threshold || distinctSnippets.size < threshold) continue;
+    if (frequency.sessions < threshold || frequency.distinctSnippets < threshold) continue;
     const first = rows[0];
-    const projects = new Set(rows.map((row) => row.project));
-    const harnesses = new Set(rows.map((row) => row.harness));
     const evidenceRows: PromotionEvidence[] = [];
     const evidenceSessions = new Set<string>();
     // Distinct WORDING as well as distinct session, so the operator reviewing a
@@ -355,15 +366,7 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
       signature: first.signature,
       title: first.title,
       status: first.type === "wiki-page-later" ? "deferred-follow-up" : "curation-required",
-      frequency: {
-        occurrences: rows.length,
-        distinctSnippets: distinctSnippets.size,
-        conversations: conversations.size,
-        sessions: sessions.size,
-        projects: projects.size,
-        harnesses: harnesses.size,
-        threshold,
-      },
+      frequency,
       evidence: evidenceRows,
       curation: route(first.type),
       evaluation: evaluation(first.type),

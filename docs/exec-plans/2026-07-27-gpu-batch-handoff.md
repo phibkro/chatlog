@@ -113,11 +113,21 @@ ingest, not anonymised.
 | unset (default) | **local ollama** — never leaves the box |
 | `openai` / `anthropic` / `openrouter` | a hosted API |
 
-Local is the default *by design* and hosted is now explicit opt-in. If you run
-this on other hardware or against a hosted model, **the corpus leaves the
-machine.** That is a legitimate trade for speed and judge quality, but it is the
-operator's call, not an implementation detail. State clearly in your report
-which provider you used.
+Local is the default *by design* and hosted is now explicit opt-in.
+
+**Operator decision, 2026-07-27: hosted is acceptable.** 3,866 of the 4,246
+conversations are claude-code or claude-web — Anthropic already holds them, so
+routing them back through an Anthropic model is not a new disclosure. Use
+whatever provider is fastest.
+
+One residual caveat, worth a moment's thought rather than a policy: **484
+conversations are NOT Anthropic's** (codex 452, pi 32). Sending those to
+Anthropic is a first disclosure to a party that never had them, and the mirror
+applies to routing Claude conversations through OpenAI. If that matters for a
+given run, `harness` is a field on every corpus object and is trivial to filter
+on. If it does not, proceed.
+
+State clearly in your report which provider you used.
 
 Local model options on the workstation: `gemma4:26b` (16GB), `gemma4:12b`,
 `gemma4:12b-32k`, `gemma3:12b`, `qwen3.5:9b`.

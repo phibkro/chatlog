@@ -3,7 +3,11 @@ const state = {
   projects: [],
   insights: null,
   sources: [],
+  candidateResult: null,
   candidateFilter: "all",
+  candidateQuery: "",
+  candidatePage: 1,
+  candidatePageSize: 20,
   recallMode: "search",
 };
 
@@ -26,10 +30,13 @@ const formatNumber = (value) =>
     notation: value > 99999 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(value || 0);
-const formatDate = (value) =>
-  value
-    ? new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value))
-    : "Unknown";
+const formatDate = (value) => {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(date);
+};
 const relativeTime = (value) => {
   if (!value) return "unknown";
   const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
@@ -465,29 +472,140 @@ function renderInsights() {
     </div>
     ${evidenceLinks(effectiveness.evidence)}`
     : `<div class="empty">No measured experiment loaded.</div>`;
-  $("#refinery-provenance").innerHTML = provenanceContext(insights.refinery?.provenance);
+  $("#refinery-provenance").innerHTML = provenanceContext(
+    state.candidateResult?.provenance ?? insights.refinery?.provenance,
+  );
   renderCandidates();
 }
 
+function precisionGateContext(gate) {
+  if (!gate)
+    return `<strong>Documentation-gap classification unavailable</strong><span>No recorded operator-judged precision result is available. Candidates are possible review leads only.</span>`;
+  return `<strong>Documentation-gap classification unavailable</strong><span>${escapeHtml(gate.message)}</span><small>Required precision: ${formatNumber(gate.minimumOperatorJudgedPrecisionPercent)}% · recorded: none</small>`;
+}
+
 function renderCandidates() {
-  const candidates = state.insights?.refinery?.candidates || [];
-  const refineryFresh = state.insights?.refinery?.provenance?.fresh;
-  const filtered =
-    state.candidateFilter === "all"
-      ? candidates
-      : candidates.filter((candidate) => candidate.type === state.candidateFilter);
+  const result = state.candidateResult;
+  const candidates = result?.items || [];
+  const refineryFresh = result?.provenance?.fresh;
+  $("#knowledge-precision-gate").innerHTML = precisionGateContext(result?.precisionGate);
+  $("#refinery-provenance").innerHTML = provenanceContext(result?.provenance);
+  $("#candidate-result-meta").textContent = result
+    ? `${formatNumber(result.pagination.total)} possible review leads · server-filtered · no egress`
+    : "Loading bounded candidate index…";
   $("#candidate-list").innerHTML =
-    filtered
-      .slice(0, 40)
+    candidates
       .map(
         (candidate) => `
-    <div class="candidate-row ${refineryFresh ? "" : "stale-insight"}">
-      <div><strong>${refineryFresh ? "" : "Historical · "}${escapeHtml(candidate.title)}</strong><p>${escapeHtml(candidate.signature)}</p>${evidenceLinks(candidate.evidence)}</div>
+    <button type="button" class="candidate-row ${refineryFresh ? "" : "stale-insight"}" data-candidate-id="${escapeHtml(candidate.id)}">
+      <div><strong>${refineryFresh ? "" : "Historical · "}${escapeHtml(candidate.title)}</strong><p>${escapeHtml(candidate.signature)}</p><small>${escapeHtml(candidate.reviewNotice)}</small></div>
       <span class="badge">${escapeHtml(candidate.type)}</span>
       <span class="candidate-frequency">${formatNumber(candidate.frequency?.sessions)} sessions · ${formatNumber(candidate.frequency?.projects)} projects</span>
-    </div>`,
+    </button>`,
       )
-      .join("") || `<div class="empty">No candidates in this category.</div>`;
+      .join("") || `<div class="empty">No possible review leads match these filters.</div>`;
+  const pagination = result?.pagination;
+  $("#candidate-page").textContent = pagination
+    ? `Page ${formatNumber(pagination.page)} of ${formatNumber(pagination.totalPages || 1)}`
+    : "Page 1";
+  $("#candidate-previous").disabled = !pagination || pagination.page <= 1;
+  $("#candidate-next").disabled =
+    !pagination || pagination.totalPages === 0 || pagination.page >= pagination.totalPages;
+}
+
+async function loadCandidates() {
+  $("#candidate-result-meta").textContent = "Loading bounded candidate index…";
+  const params = new URLSearchParams({
+    q: state.candidateQuery,
+    type: state.candidateFilter,
+    page: String(state.candidatePage),
+    pageSize: String(state.candidatePageSize),
+  });
+  try {
+    state.candidateResult = await api(`/api/knowledge-candidates?${params}`);
+    renderCandidates();
+  } catch (error) {
+    $("#candidate-result-meta").textContent = "Candidate review failed";
+    $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function detailField(label, value) {
+  if (value == null || value === "") return "";
+  return `<div class="candidate-detail-field"><span>${escapeHtml(label)}</span><p>${escapeHtml(value)}</p></div>`;
+}
+
+async function openCandidate(id) {
+  const drawer = $("#candidate-drawer");
+  $("#candidate-drawer-title").textContent = "Review candidate";
+  $("#candidate-detail").innerHTML = `<div class="empty">Loading read-only detail…</div>`;
+  drawer.classList.remove("hidden");
+  drawer.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const detail = await api(`/api/knowledge-candidate?id=${encodeURIComponent(id)}`);
+    const candidate = detail.candidate;
+    const frequency = candidate.frequency || {};
+    const artifact = detail.artifact || {};
+    $("#candidate-drawer-title").textContent = candidate.title;
+    $("#candidate-detail").innerHTML = `
+      <div class="candidate-review-notice">${escapeHtml(detail.reviewNotice)}</div>
+      <div class="provenance">${provenanceContext(detail.provenance)}</div>
+      <div class="precision-gate">${precisionGateContext(detail.precisionGate)}</div>
+      <div class="candidate-detail-meta">
+        <span class="badge">${escapeHtml(candidate.type)}</span>
+        <span class="badge">${escapeHtml(candidate.status)}</span>
+        <span>Auto-promotion disabled · no write actions</span>
+      </div>
+      ${detailField("Signature", candidate.signature)}
+      <section class="candidate-detail-section">
+        <p class="eyebrow">Observed frequency · signal, not decision</p>
+        <div class="candidate-frequency-grid">
+          ${[
+            ["Occurrences", frequency.occurrences],
+            ["Distinct wording", frequency.distinctSnippets],
+            ["Conversations", frequency.conversations],
+            ["Sessions", frequency.sessions],
+            ["Projects", frequency.projects],
+            ["Harnesses", frequency.harnesses],
+            ["Threshold", frequency.threshold],
+          ]
+            .map(
+              ([label, value]) =>
+                `<div><span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong></div>`,
+            )
+            .join("")}
+        </div>
+      </section>
+      <section class="candidate-detail-section">
+        <p class="eyebrow">Artifact provenance · opaque metadata</p>
+        ${detailField("Artifact content hash", artifact.contentHash || "Unavailable")}
+        ${detailField("Input projection hash", artifact.inputProjectionHash || "Unavailable")}
+        ${detailField("Recipe hash", artifact.recipeHash || "Unavailable")}
+        ${detailField("Processed at", formatDate(artifact.processedAt))}
+      </section>
+      <section class="candidate-detail-section">
+        <p class="eyebrow">Curation route · not executed</p>
+        ${detailField("Principle", candidate.curation?.principle)}
+        ${detailField("Route", candidate.curation?.route)}
+        <ul>${(candidate.curation?.checks || []).map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul>
+      </section>
+      <section class="candidate-detail-section">
+        <p class="eyebrow">Evaluation metadata · ${escapeHtml(candidate.evaluation?.status || "unmeasured")}</p>
+        ${detailField("Contract", candidate.evaluation?.contract)}
+        ${detailField("Minimum runs per arm", candidate.evaluation?.minimumRunsPerArm)}
+        ${detailField("Control", candidate.evaluation?.control)}
+        ${detailField("Treatment", candidate.evaluation?.treatment)}
+        ${detailField("Metrics", (candidate.evaluation?.metrics || []).join(", "))}
+        ${detailField("Keep rule", candidate.evaluation?.keepRule)}
+        ${detailField("Cut rule", candidate.evaluation?.cutRule)}
+      </section>
+      <section class="candidate-detail-section">
+        <p class="eyebrow">Canonical evidence pointers · maximum ${formatNumber(detail.bounds.evidencePointers)}</p>
+        ${evidenceLinks(candidate.evidence, "Open canonical turn")}
+      </section>`;
+  } catch (error) {
+    $("#candidate-detail").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function renderSources() {
@@ -525,12 +643,17 @@ async function load() {
   $("#day-part").textContent =
     new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening";
   try {
-    [state.overview, state.projects, state.insights, state.sources] = await Promise.all([
-      api("/api/overview"),
-      api("/api/projects?limit=200"),
-      api("/api/insights"),
-      api("/api/sources"),
-    ]);
+    [state.overview, state.projects, state.insights, state.sources, state.candidateResult] =
+      await Promise.all([
+        api("/api/overview"),
+        api("/api/projects?limit=200"),
+        api("/api/insights?candidateLimit=0"),
+        api("/api/sources"),
+        api(
+          `/api/knowledge-candidates?type=${encodeURIComponent(state.candidateFilter)}&page=1&pageSize=${state.candidatePageSize}`,
+        ),
+      ]);
+    state.candidatePage = 1;
     renderOverview();
     renderProjects();
     renderInsights();
@@ -566,6 +689,9 @@ $("#recall-mode").addEventListener("click", (event) => {
 });
 $("#project-filter").addEventListener("input", (event) => renderProjects(event.target.value));
 $("#close-project").addEventListener("click", () => $("#project-drawer").classList.add("hidden"));
+$("#close-candidate").addEventListener("click", () =>
+  $("#candidate-drawer").classList.add("hidden"),
+);
 $("#close-evidence").addEventListener("click", () => $("#evidence-dialog").close());
 $("#evidence-dialog").addEventListener("click", (event) => {
   if (event.target === $("#evidence-dialog")) $("#evidence-dialog").close();
@@ -578,10 +704,31 @@ $("#candidate-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]");
   if (!button) return;
   state.candidateFilter = button.dataset.filter;
+  state.candidatePage = 1;
   $$("#candidate-filters button").forEach((candidate) =>
     candidate.classList.toggle("active", candidate === button),
   );
-  renderCandidates();
+  loadCandidates();
+});
+$("#candidate-search-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.candidateQuery = $("#candidate-search").value.trim();
+  state.candidatePage = 1;
+  loadCandidates();
+});
+$("#candidate-previous").addEventListener("click", () => {
+  if (state.candidatePage <= 1) return;
+  state.candidatePage--;
+  loadCandidates();
+});
+$("#candidate-next").addEventListener("click", () => {
+  if (state.candidatePage >= (state.candidateResult?.pagination?.totalPages || 0)) return;
+  state.candidatePage++;
+  loadCandidates();
+});
+$("#candidate-list").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-candidate-id]");
+  if (row) openCandidate(row.dataset.candidateId);
 });
 
 load();

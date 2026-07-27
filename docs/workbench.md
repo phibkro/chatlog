@@ -94,6 +94,42 @@ which are reported in the response bounds. Missing projects fail explicitly. No
 project page runs DuckDB, scans every project artifact, invokes a model, or
 starts background work.
 
+### Knowledge Gaps review
+
+Knowledge Gaps review is a read-only curation inbox over the currently selected
+refinery artifact. Its rows are possible review leads, not findings: no row is
+accepted, promoted, or classified as a project documentation gap. Frequency is
+shown as a nomination signal only.
+
+The server searches candidate IDs, titles, signatures, types, and statuses, then
+applies an exact type filter before pagination. Query text is capped at 160
+characters, pages at 10,000, and page size at 50 (default 20). The canonical
+list endpoint can therefore reach every candidate without sending the entire
+artifact to the browser.
+
+Opening a row loads a separate read-only detail with:
+
+- the refinery projection freshness and artifact provenance;
+- status and full frequency dimensions;
+- the artifact's curation principle, route, and at most 12 checks;
+- the artifact's evaluation contract, status, paired-run plan, metrics, and
+  keep/cut rules;
+- at most six pointer-only evidence items, each opened through the existing
+  canonical one-turn evidence dialog.
+
+The refinery schema contains no recorded operator-judged documentation
+precision result. The Workbench therefore exposes the precision gate as
+`unavailable` and candidate interpretation as `possible-only`. Project
+documentation-gap classification remains unavailable until a recorded
+operator-judged result reaches at least 70% precision. This view does not run a
+documentation-coverage query, scan project documentation, invoke a model, send
+egress, or expose mutation controls.
+
+For compatibility, `/api/insights` still includes its existing refinery
+candidate projection when called without parameters. The Workbench bootstrap
+uses `/api/insights?candidateLimit=0` and loads candidates through the bounded
+list/detail endpoints instead.
+
 ## Run it
 
 ```sh
@@ -207,6 +243,8 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/search?q=…&limit=…`       | Ranked local FTS results and evidence pointers                                            |
 | `/api/prior-attempts?q=…`       | Zero-egress chronological attempts from current content-role matches                      |
 | `/api/project-intelligence?project=…` | Exact current totals, bounded derived sample, then current sessions                |
+| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads        |
+| `/api/knowledge-candidate?id=…` | Read-only curation/evaluation detail with bounded evidence pointers                       |
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn                                                               |
 | `/api/insights`                 | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
 | `/api/sources`                  | Connector state and import actions                                                        |

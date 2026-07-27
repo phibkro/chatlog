@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, openAnalysis } from "../src/analysis";
@@ -41,9 +41,58 @@ async function writeInsightArtifact(
     join(root, "derived", manifestName),
     JSON.stringify({
       version: 1,
-      current: { inputProjectionHash, artifactPath, contentHash },
+      current: {
+        inputProjectionHash,
+        artifactPath,
+        contentHash,
+        processedAt: "2026-07-27T12:34:56Z",
+      },
     }),
   );
+}
+
+const knowledgeCandidateTypes = [
+  "skill",
+  "gotcha-skill",
+  "memory-or-adr",
+  "claude-md",
+  "wiki-page-later",
+] as const;
+
+function knowledgeCandidateFixture(index: number): any {
+  const type = knowledgeCandidateTypes[index % knowledgeCandidateTypes.length];
+  return {
+    id: `candidate-${String(index).padStart(3, "0")}`,
+    type,
+    signature: `${index % 7 === 0 ? "needle-" : ""}signature-${index}`,
+    title: `${index % 11 === 0 ? "Needle " : ""}Review lead ${index}`,
+    status: type === "wiki-page-later" ? "deferred-follow-up" : "curation-required",
+    frequency: {
+      occurrences: index + 20,
+      distinctSnippets: index + 3,
+      conversations: index + 2,
+      sessions: index + 1,
+      projects: (index % 4) + 1,
+      harnesses: 2,
+      threshold: 3,
+    },
+    evidence: evidencePointers(9),
+    curation: {
+      principle: `Review principle ${index}`,
+      route: `Read-only curation route ${index}`,
+      checks: Array.from({ length: 15 }, (_, check) => `Check ${check}`),
+    },
+    evaluation: {
+      contract: "agent-eval/promotion-v1",
+      status: "unmeasured",
+      minimumRunsPerArm: 3,
+      control: "Replay without the candidate.",
+      treatment: "Replay with a separately curated candidate.",
+      metrics: ["gatePassRate", "tokensToGate"],
+      keepRule: "Keep only after a non-regressing measured result.",
+      cutRule: "Cut on regression or no measured benefit.",
+    },
+  };
 }
 
 async function slice2Fixture(): Promise<{
@@ -253,6 +302,20 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   expect(staticResponse.status).toBe(200);
   expect(staticResponse.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(await staticResponse.text()).toContain("Chatlog Workbench");
+  const missingEvidenceResponse = await handler(
+    new Request(
+      `http://localhost/api/evidence?uri=${encodeURIComponent(`chatlog://conversation/${staleHash}/turn/0`)}`,
+    ),
+  );
+  expect(missingEvidenceResponse.status).toBe(404);
+  expect(await missingEvidenceResponse.json()).toEqual({ error: "Evidence not found" });
+  const missingKnowledgeArtifactResponse = await handler(
+    new Request("http://localhost/api/knowledge-candidate?id=missing"),
+  );
+  expect(missingKnowledgeArtifactResponse.status).toBe(404);
+  expect(await missingKnowledgeArtifactResponse.json()).toEqual({
+    error: "knowledge candidate artifact not found",
+  });
   data.close();
 });
 
@@ -529,6 +592,246 @@ test("insights report matched projection provenance and expose only bounded evid
   expect(insights.orchestration.evidence[0]).toEqual({ uri: evidence[0].pointer });
   expect(JSON.stringify(insights)).not.toContain("derived snippet");
   data.close();
+});
+
+test("Knowledge Gaps review pages and searches every candidate without promoting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-knowledge-"));
+  const projectionText = '{"contentHash":"current"}\n';
+  const projectionHash = sha256(projectionText);
+  const candidates = Array.from({ length: 57 }, (_, index) => knowledgeCandidateFixture(index));
+  await mkdir(join(root, "derived"), { recursive: true });
+  await writeFile(join(root, "derived", "current-hashes.jsonl"), projectionText);
+  await writeInsightArtifact(
+    root,
+    "refinery",
+    "refinery-manifest.json",
+    {
+      schemaVersion: 1,
+      inputProjectionHash: projectionHash,
+      recipeHash: "recipe",
+      threshold: 3,
+      policy: {
+        autoPromotion: false,
+        frequencyIsSignalNotDecision: true,
+        referenceWikiDeferred: true,
+      },
+      candidates,
+    },
+    projectionHash,
+    "c".repeat(64),
+  );
+  const artifactPath = join(root, "derived", "refinery", "artifact.json");
+  const before = await readFile(artifactPath, "utf8");
+  const data = new WorkbenchData(root);
+  const handler = workbenchHandler(data);
+  try {
+    const secondPageResponse = await handler(
+      new Request(
+        "http://localhost/api/knowledge-candidates?page=2&pageSize=10&type=all",
+      ),
+    );
+    expect(secondPageResponse.status).toBe(200);
+    const secondPage = (await secondPageResponse.json()) as any;
+    expect(secondPage.provenance).toMatchObject({
+      fresh: true,
+      status: "fresh",
+      reason: "projection-match",
+    });
+    expect(secondPage.pagination).toEqual({
+      page: 2,
+      pageSize: 10,
+      total: 57,
+      totalPages: 6,
+    });
+    expect(secondPage.items).toHaveLength(10);
+    expect(secondPage.precisionGate).toMatchObject({
+      status: "unavailable",
+      classification: "possible-only",
+      minimumOperatorJudgedPrecisionPercent: 70,
+      recordedOperatorJudgedPrecisionPercent: null,
+    });
+    expect(secondPage.reviewNotice).toContain("not accepted");
+    expect(secondPage.reviewNotice).toContain("not promoted");
+
+    const boundedResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidates?pageSize=999&page=999999"),
+    );
+    const bounded = (await boundedResponse.json()) as any;
+    expect(bounded.pagination.page).toBe(10_000);
+    expect(bounded.pagination.pageSize).toBe(50);
+    expect(bounded.bounds).toMatchObject({
+      queryCharacters: 160,
+      maximumPage: 10_000,
+      maximumPageSize: 50,
+    });
+
+    const typeResponse = await handler(
+      new Request(
+        "http://localhost/api/knowledge-candidates?type=claude-md&pageSize=50",
+      ),
+    );
+    const typed = (await typeResponse.json()) as any;
+    expect(typed.pagination.total).toBe(11);
+    expect(typed.items.every((candidate: any) => candidate.type === "claude-md")).toBe(true);
+
+    const searchResponse = await handler(
+      new Request(
+        "http://localhost/api/knowledge-candidates?q=candidate-042&pageSize=50",
+      ),
+    );
+    const searched = (await searchResponse.json()) as any;
+    expect(searched.items.map((candidate: any) => candidate.id)).toEqual(["candidate-042"]);
+    const needleResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidates?q=needle&pageSize=50"),
+    );
+    expect(((await needleResponse.json()) as any).pagination.total).toBeGreaterThan(1);
+    const longQueryResponse = await handler(
+      new Request(`http://localhost/api/knowledge-candidates?q=${"x".repeat(300)}`),
+    );
+    expect(((await longQueryResponse.json()) as any).filters.q).toHaveLength(160);
+    const unsupportedResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidates?type=confirmed-gap"),
+    );
+    expect(unsupportedResponse.status).toBe(400);
+    const userControlledNotFoundResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidates?type=not%20found"),
+    );
+    expect(userControlledNotFoundResponse.status).toBe(400);
+    expect(await userControlledNotFoundResponse.json()).toEqual({
+      error: "unsupported knowledge candidate type: not found",
+    });
+    const missingCandidateResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidate?id=missing"),
+    );
+    expect(missingCandidateResponse.status).toBe(404);
+    expect(await missingCandidateResponse.json()).toEqual({
+      error: "knowledge candidate not found: missing",
+    });
+
+    const detailResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidate?id=candidate-042"),
+    );
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json()) as any;
+    expect(detail.provenance.fresh).toBe(true);
+    expect(detail.policy).toEqual({ autoPromotion: false, mutationAvailable: false });
+    expect(detail.artifact).toEqual({
+      contentHash: "c".repeat(64),
+      inputProjectionHash: projectionHash,
+      recipeHash: "recipe",
+      processedAt: "2026-07-27T12:34:56Z",
+    });
+    expect(detail.candidate).toMatchObject({
+      id: "candidate-042",
+      status: "curation-required",
+      curation: {
+        principle: "Review principle 42",
+        route: "Read-only curation route 42",
+      },
+      evaluation: {
+        contract: "agent-eval/promotion-v1",
+        status: "unmeasured",
+        minimumRunsPerArm: 3,
+      },
+    });
+    expect(detail.candidate.curation.checks).toHaveLength(12);
+    expect(detail.candidate.evidence).toHaveLength(6);
+    expect(detail.candidate.evidence[0]).toEqual({ uri: candidates[42].evidence[0].pointer });
+    expect(JSON.stringify(detail)).not.toContain("derived snippet");
+    expect(JSON.stringify(detail).toLowerCase()).not.toContain("confirmed documentation gap");
+    expect(JSON.stringify(detail).toLowerCase()).not.toContain("is undocumented");
+
+    const defaultInsights = (await data.insights()) as any;
+    expect(defaultInsights.refinery.candidates).toHaveLength(57);
+    const boundedInsights = (await data.insights(
+      new URL("http://localhost/api/insights?candidateLimit=0"),
+    )) as any;
+    expect(boundedInsights.refinery).toMatchObject({ candidateCount: 57, candidates: [] });
+
+    const mutationResponse = await handler(
+      new Request("http://localhost/api/knowledge-candidate?id=candidate-042", {
+        method: "POST",
+      }),
+    );
+    expect(mutationResponse.status).toBe(405);
+    expect(await mutationResponse.json()).toEqual({ error: "read-only workbench" });
+    expect(await readFile(artifactPath, "utf8")).toBe(before);
+
+    const pageSource = await handler(new Request("http://localhost/"));
+    const pageText = await pageSource.text();
+    expect(pageText).toContain("Knowledge gaps review");
+    expect(pageText).toContain("not accepted, not promoted");
+    const appSource = await handler(new Request("http://localhost/app.js"));
+    const appText = await appSource.text();
+    expect(appText).toContain("/api/knowledge-candidates");
+    expect(appText.toLowerCase()).not.toContain("is undocumented");
+    for (const renderedContract of [
+      "frequency.occurrences",
+      "frequency.distinctSnippets",
+      "frequency.conversations",
+      "frequency.sessions",
+      "frequency.projects",
+      "frequency.harnesses",
+      "frequency.threshold",
+      "artifact.contentHash",
+      "artifact.inputProjectionHash",
+      "artifact.recipeHash",
+      "formatDate(artifact.processedAt)",
+      "Artifact provenance · opaque metadata",
+      "Number.isNaN(date.getTime())",
+    ])
+      expect(appText).toContain(renderedContract);
+  } finally {
+    data.close();
+  }
+});
+
+test("Knowledge Gaps review marks stale refinery candidates as historical", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-knowledge-stale-"));
+  const projectionText = '{"contentHash":"current"}\n';
+  const currentHash = sha256(projectionText);
+  const staleHash = "d".repeat(64);
+  await mkdir(join(root, "derived"), { recursive: true });
+  await writeFile(join(root, "derived", "current-hashes.jsonl"), projectionText);
+  await writeInsightArtifact(
+    root,
+    "refinery",
+    "refinery-manifest.json",
+    {
+      schemaVersion: 1,
+      inputProjectionHash: staleHash,
+      recipeHash: "old-recipe",
+      threshold: 3,
+      policy: { autoPromotion: false },
+      candidates: [knowledgeCandidateFixture(0)],
+    },
+    staleHash,
+    "c".repeat(64),
+  );
+  const data = new WorkbenchData(root);
+  try {
+    const list = (await data.knowledgeCandidates(
+      new URL("http://localhost/api/knowledge-candidates"),
+    )) as any;
+    expect(list.provenance).toMatchObject({
+      fresh: false,
+      status: "stale",
+      reason: "projection-mismatch",
+      currentProjectionHash: currentHash,
+      artifactProjectionHash: staleHash,
+    });
+    const detail = (await data.knowledgeCandidate(
+      new URL("http://localhost/api/knowledge-candidate?id=candidate-000"),
+    )) as any;
+    expect(detail.provenance).toMatchObject({
+      fresh: false,
+      status: "stale",
+      reason: "projection-mismatch",
+    });
+    expect(detail.reviewNotice).toContain("not classified as a project documentation gap");
+  } finally {
+    data.close();
+  }
 });
 
 test("insights mark mismatched projections stale and effectiveness inherits role staleness", async () => {

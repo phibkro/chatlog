@@ -220,19 +220,51 @@
           <article class="panel candidates-panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">Curation inbox</p>
-                <h2>Knowledge candidates</h2>
-              </div>
-              <div class="segmented" id="candidate-filters">
-                <button class="active" data-filter="all">All</button>
-                <button data-filter="skill">Skills</button>
-                <button data-filter="gotcha-skill">Gotchas</button>
-                <button data-filter="memory-or-adr">Memory</button>
-                <button data-filter="claude-md">Context</button>
+                <p class="eyebrow">Possible-only review inbox</p>
+                <h2>Knowledge gaps review</h2>
               </div>
             </div>
+            <div id="knowledge-precision-gate" class="precision-gate"></div>
+            <form id="candidate-search-form" class="candidate-toolbar">
+              <label for="candidate-search">Search all candidates</label>
+              <input
+                id="candidate-search"
+                type="search"
+                maxlength="160"
+                placeholder="Title or signature…"
+              />
+              <div class="segmented" id="candidate-filters" aria-label="Candidate type">
+                <button type="button" class="active" data-filter="all">All</button>
+                <button type="button" data-filter="skill">Skills</button>
+                <button type="button" data-filter="gotcha-skill">Gotchas</button>
+                <button type="button" data-filter="memory-or-adr">Memory</button>
+                <button type="button" data-filter="claude-md">Context</button>
+                <button type="button" data-filter="wiki-page-later">Wiki later</button>
+              </div>
+            </form>
             <div id="refinery-provenance" class="provenance"></div>
+            <div id="candidate-result-meta" class="candidate-result-meta"></div>
             <div id="candidate-list" class="candidate-list"></div>
+            <div class="candidate-pagination">
+              <button type="button" id="candidate-previous">← Previous</button>
+              <span id="candidate-page">Page 1</span>
+              <button type="button" id="candidate-next">Next →</button>
+            </div>
+          </article>
+          <article class="panel candidate-drawer hidden" id="candidate-drawer">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Read-only candidate detail</p>
+                <h2 id="candidate-drawer-title">Review candidate</h2>
+              </div>
+              <button type="button" class="icon-button" id="close-candidate">×</button>
+            </div>
+            <div id="candidate-detail">
+              <div class="candidate-review-notice">
+                Review candidate only — not accepted, not promoted, and not classified as a project
+                documentation gap.
+              </div>
+            </div>
           </article>
         </section>
 

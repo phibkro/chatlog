@@ -22,6 +22,14 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+function errorStatus(message: string): number {
+  if (message === "Evidence not found" || message === "Evidence turn not found") return 404;
+  if (message === "knowledge candidate artifact not found") return 404;
+  if (message.startsWith("knowledge candidate not found: ")) return 404;
+  if (message.startsWith("project not found: ")) return 404;
+  return 400;
+}
+
 function securityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set(
@@ -55,7 +63,11 @@ export function workbenchHandler(
       if (url.pathname === "/api/prior-attempts") return json(await data.priorAttempts(url));
       if (url.pathname === "/api/project-intelligence")
         return json(await data.projectIntelligence(url));
-      if (url.pathname === "/api/insights") return json(await data.insights());
+      if (url.pathname === "/api/knowledge-candidates")
+        return json(await data.knowledgeCandidates(url));
+      if (url.pathname === "/api/knowledge-candidate")
+        return json(await data.knowledgeCandidate(url));
+      if (url.pathname === "/api/insights") return json(await data.insights(url));
       if (url.pathname === "/api/sources") return json(await data.sources());
       if (url.pathname === "/api/evidence") {
         const uri = url.searchParams.get("uri");
@@ -79,7 +91,7 @@ export function workbenchHandler(
       );
     } catch (error: any) {
       const message = redact(String(error?.message ?? error));
-      return json({ error: message }, message.includes("not found") ? 404 : 400);
+      return json({ error: message }, errorStatus(message));
     }
   };
 }

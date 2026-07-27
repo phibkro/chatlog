@@ -25,6 +25,12 @@ function searchExpression(query: string): string {
 
 const INSIGHT_EVIDENCE_LIMIT = 3;
 const CANDIDATE_EVIDENCE_LIMIT = 2;
+const KNOWLEDGE_CANDIDATE_PAGE_SIZE = 20;
+const KNOWLEDGE_CANDIDATE_PAGE_SIZE_MAX = 50;
+const KNOWLEDGE_CANDIDATE_PAGE_MAX = 10_000;
+const KNOWLEDGE_CANDIDATE_QUERY_MAX = 160;
+const KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX = 6;
+const KNOWLEDGE_CANDIDATE_CHECKS_MAX = 12;
 const PRIOR_ATTEMPT_LIMIT = 10;
 const PROJECT_DERIVED_SAMPLE_LIMIT = 40;
 const PROJECT_SESSION_LIMIT = 100;
@@ -48,6 +54,26 @@ interface InsightFreshness {
   artifactProjectionHash: string | null;
   manifestProjectionHash: string | null;
 }
+
+const KNOWLEDGE_CANDIDATE_TYPES = [
+  "skill",
+  "gotcha-skill",
+  "memory-or-adr",
+  "claude-md",
+  "wiki-page-later",
+] as const;
+
+const KNOWLEDGE_PRECISION_GATE = {
+  status: "unavailable",
+  classification: "possible-only",
+  minimumOperatorJudgedPrecisionPercent: 70,
+  recordedOperatorJudgedPrecisionPercent: null,
+  message:
+    "Project documentation gap classification is unavailable. Candidates are possible review leads only until a recorded operator-judged precision result of at least 70% exists.",
+} as const;
+
+const KNOWLEDGE_REVIEW_NOTICE =
+  "Review candidate only — not accepted, not promoted, and not classified as a project documentation gap.";
 
 function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -207,6 +233,68 @@ function boundedEvidenceDetails(
     if (found.length >= limit) break;
   }
   return found;
+}
+
+function boundedText(value: unknown, limit: number): string {
+  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function candidateFrequency(value: any): Record<string, number> {
+  return Object.fromEntries(
+    [
+      "occurrences",
+      "distinctSnippets",
+      "conversations",
+      "sessions",
+      "projects",
+      "harnesses",
+      "threshold",
+    ].map((key) => [key, Number(value?.[key] ?? 0)]),
+  );
+}
+
+function candidateSummary(candidate: any): Record<string, unknown> {
+  return {
+    id: boundedText(candidate.id, 200),
+    type: candidate.type,
+    signature: boundedText(candidate.signature, 320),
+    title: boundedText(candidate.title, 320),
+    status: candidate.status,
+    frequency: candidateFrequency(candidate.frequency),
+    reviewNotice: KNOWLEDGE_REVIEW_NOTICE,
+  };
+}
+
+function candidateDetail(candidate: any): Record<string, unknown> {
+  const curation = candidate.curation ?? {};
+  const evaluation = candidate.evaluation ?? {};
+  return {
+    ...candidateSummary(candidate),
+    curation: {
+      principle: boundedText(curation.principle, 1_200),
+      route: boundedText(curation.route, 1_200),
+      checks: (Array.isArray(curation.checks) ? curation.checks : [])
+        .slice(0, KNOWLEDGE_CANDIDATE_CHECKS_MAX)
+        .map((check: unknown) => boundedText(check, 500)),
+    },
+    evaluation: {
+      contract: boundedText(evaluation.contract, 160),
+      status: boundedText(evaluation.status, 80),
+      minimumRunsPerArm: Number(evaluation.minimumRunsPerArm ?? 0),
+      control: boundedText(evaluation.control, 1_200),
+      treatment: boundedText(evaluation.treatment, 1_200),
+      metrics: (Array.isArray(evaluation.metrics) ? evaluation.metrics : [])
+        .slice(0, KNOWLEDGE_CANDIDATE_CHECKS_MAX)
+        .map((metric: unknown) => boundedText(metric, 160)),
+      keepRule: boundedText(evaluation.keepRule, 1_200),
+      cutRule: boundedText(evaluation.cutRule, 1_200),
+    },
+    evidence: boundedEvidence(
+      candidate.evidence,
+      KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX,
+    ),
+  };
 }
 
 export class WorkbenchData {
@@ -629,6 +717,126 @@ export class WorkbenchData {
     };
   }
 
+  async knowledgeCandidates(url: URL): Promise<unknown> {
+    const query = boundedText(url.searchParams.get("q"), KNOWLEDGE_CANDIDATE_QUERY_MAX);
+    const requestedType = url.searchParams.get("type")?.trim() ?? "";
+    if (
+      requestedType &&
+      requestedType !== "all" &&
+      !KNOWLEDGE_CANDIDATE_TYPES.includes(requestedType as any)
+    )
+      return Promise.reject(new Error(`unsupported knowledge candidate type: ${requestedType}`));
+    const type = requestedType && requestedType !== "all" ? requestedType : null;
+    const page = boundedInteger(
+      url.searchParams.get("page"),
+      1,
+      KNOWLEDGE_CANDIDATE_PAGE_MAX,
+    );
+    const pageSize = boundedInteger(
+      url.searchParams.get("pageSize"),
+      KNOWLEDGE_CANDIDATE_PAGE_SIZE,
+      KNOWLEDGE_CANDIDATE_PAGE_SIZE_MAX,
+    );
+    const [projectionHash, refinery] = await Promise.all([
+      currentProjectionHash(this.root),
+      currentArtifact(this.root, "refinery-manifest.json"),
+    ]);
+    const provenance = refinery ? artifactFreshness(projectionHash, refinery) : null;
+    const normalizedQuery = query.toLowerCase();
+    const candidates = (Array.isArray(refinery?.artifact.candidates)
+      ? refinery.artifact.candidates
+      : []
+    ).filter((candidate: any) => {
+      if (type && candidate.type !== type) return false;
+      if (!normalizedQuery) return true;
+      return [candidate.id, candidate.title, candidate.signature, candidate.type, candidate.status]
+        .some((value) => String(value ?? "").toLowerCase().includes(normalizedQuery));
+    });
+    const total = candidates.length;
+    const offset = (page - 1) * pageSize;
+    return {
+      available: Boolean(refinery),
+      provenance,
+      threshold: Number(refinery?.artifact.threshold ?? 0),
+      policy: {
+        autoPromotion: false,
+        frequencyIsSignalNotDecision:
+          refinery?.artifact.policy?.frequencyIsSignalNotDecision === true,
+      },
+      precisionGate: KNOWLEDGE_PRECISION_GATE,
+      reviewNotice: KNOWLEDGE_REVIEW_NOTICE,
+      filters: {
+        q: query,
+        type,
+        supportedTypes: KNOWLEDGE_CANDIDATE_TYPES,
+      },
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: total ? Math.ceil(total / pageSize) : 0,
+      },
+      items: candidates.slice(offset, offset + pageSize).map(candidateSummary),
+      bounds: {
+        queryCharacters: KNOWLEDGE_CANDIDATE_QUERY_MAX,
+        maximumPage: KNOWLEDGE_CANDIDATE_PAGE_MAX,
+        maximumPageSize: KNOWLEDGE_CANDIDATE_PAGE_SIZE_MAX,
+        detailEvidencePointers: KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX,
+        curationChecks: KNOWLEDGE_CANDIDATE_CHECKS_MAX,
+      },
+      egress: { performed: false, surface: "none" },
+    };
+  }
+
+  async knowledgeCandidate(url: URL): Promise<unknown> {
+    const id = url.searchParams.get("id")?.trim() ?? "";
+    if (!id) return Promise.reject(new Error("knowledge candidate id is required"));
+    if (id.length > 200)
+      return Promise.reject(new Error("knowledge candidate id exceeds 200 characters"));
+    const [projectionHash, refinery] = await Promise.all([
+      currentProjectionHash(this.root),
+      currentArtifact(this.root, "refinery-manifest.json"),
+    ]);
+    if (!refinery) return Promise.reject(new Error("knowledge candidate artifact not found"));
+    const candidate = (refinery.artifact.candidates ?? []).find(
+      (item: any) => item.id === id,
+    );
+    if (!candidate) return Promise.reject(new Error(`knowledge candidate not found: ${id}`));
+    return {
+      candidate: candidateDetail(candidate),
+      provenance: artifactFreshness(projectionHash, refinery),
+      artifact: {
+        contentHash:
+          typeof refinery.manifest.current?.contentHash === "string"
+            ? refinery.manifest.current.contentHash
+            : null,
+        inputProjectionHash:
+          typeof refinery.artifact.inputProjectionHash === "string"
+            ? refinery.artifact.inputProjectionHash
+            : null,
+        recipeHash:
+          typeof refinery.artifact.recipeHash === "string"
+            ? refinery.artifact.recipeHash
+            : null,
+        processedAt:
+          typeof refinery.manifest.current?.processedAt === "string"
+            ? refinery.manifest.current.processedAt
+            : null,
+      },
+      policy: {
+        autoPromotion: false,
+        mutationAvailable: false,
+      },
+      precisionGate: KNOWLEDGE_PRECISION_GATE,
+      reviewNotice: KNOWLEDGE_REVIEW_NOTICE,
+      bounds: {
+        evidencePointers: KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX,
+        curationChecks: KNOWLEDGE_CANDIDATE_CHECKS_MAX,
+      },
+      egress: { performed: false, surface: "none" },
+    };
+  }
+
   async evidence(uri: string): Promise<unknown> {
     const pointer = parseEvidenceUri(uri);
     const current = this.requireDb()
@@ -661,7 +869,7 @@ export class WorkbenchData {
     };
   }
 
-  async insights(): Promise<unknown> {
+  async insights(url?: URL): Promise<unknown> {
     const [projectionHash, lean, roles, effectiveness, refinery] = await Promise.all([
       currentProjectionHash(this.root),
       currentArtifact(this.root, "orchestration-lean-manifest.json"),
@@ -753,15 +961,24 @@ export class WorkbenchData {
             provenance: refineryFreshness,
             threshold: refinery.artifact.threshold,
             policy: refinery.artifact.policy,
-            candidates: (refinery.artifact.candidates ?? []).map((candidate: any) => ({
-              id: candidate.id,
-              type: candidate.type,
-              signature: candidate.signature,
-              title: candidate.title,
-              status: candidate.status,
-              frequency: candidate.frequency,
-              evidence: boundedEvidence(candidate.evidence, CANDIDATE_EVIDENCE_LIMIT),
-            })),
+            candidateCount: Array.isArray(refinery.artifact.candidates)
+              ? refinery.artifact.candidates.length
+              : 0,
+            candidates:
+              url?.searchParams.get("candidateLimit") === "0"
+                ? []
+                : (refinery.artifact.candidates ?? []).map((candidate: any) => ({
+                    id: candidate.id,
+                    type: candidate.type,
+                    signature: candidate.signature,
+                    title: candidate.title,
+                    status: candidate.status,
+                    frequency: candidate.frequency,
+                    evidence: boundedEvidence(
+                      candidate.evidence,
+                      CANDIDATE_EVIDENCE_LIMIT,
+                    ),
+                  })),
           }
         : null,
     };

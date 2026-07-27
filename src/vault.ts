@@ -5,7 +5,7 @@ import { redact } from "./redact";
 
 // Bump when the extraction prompt or expected output shape changes so stale
 // cache entries are re-inferred instead of silently reused.
-const TOPIC_RECIPE = "vault-topic-extraction-v2";
+export const VAULT_TOPIC_RECIPE = "vault-topic-extraction-v2";
 const DEFAULT_MODEL = process.env.CHATLOG_VAULT_TOPIC_MODEL ?? "gemma3:12b";
 const DEFAULT_ENDPOINT =
   process.env.CHATLOG_VAULT_OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434/api/generate";
@@ -219,9 +219,13 @@ export function buildExtractionPrompt(conversation: Conversation): string {
   ].join("\n");
 }
 
-function cacheKey(conversationHash: string, model: string): string {
+export function topicCacheKey(
+  conversationHash: string,
+  model: string,
+  recipe = VAULT_TOPIC_RECIPE,
+): string {
   return new Bun.CryptoHasher("sha256")
-    .update(`${TOPIC_RECIPE}\0${model}\0${conversationHash}`)
+    .update(`${recipe}\0${model}\0${conversationHash}`)
     .digest("hex");
 }
 
@@ -244,7 +248,7 @@ export async function extractTopics(
   const model = opts.model ?? DEFAULT_MODEL;
   const endpoint = opts.endpoint ?? DEFAULT_ENDPOINT;
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const key = cacheKey(conversation.contentHash, model);
+  const key = topicCacheKey(conversation.contentHash, model);
   const path = cachePath(root, key);
   try {
     const cached = JSON.parse(await readFile(path, "utf8"));
@@ -324,7 +328,13 @@ export async function extractTopics(
   await atomicWrite(
     path,
     JSON.stringify(
-      { topics, model, recipe: TOPIC_RECIPE, extractedAt: new Date().toISOString(), latencyMs },
+      {
+        topics,
+        model,
+        recipe: VAULT_TOPIC_RECIPE,
+        extractedAt: new Date().toISOString(),
+        latencyMs,
+      },
       null,
       2,
     ) + "\n",

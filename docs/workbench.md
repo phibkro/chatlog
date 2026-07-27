@@ -130,6 +130,44 @@ candidate projection when called without parameters. The Workbench bootstrap
 uses `/api/insights?candidateLimit=0` and loads candidates through the bounded
 list/detail endpoints instead.
 
+### Experimental Themes explorer
+
+Themes is an explicitly experimental, partial cached-sample view. It is not
+loaded during Workbench bootstrap: the operator must press **Load cached
+themes**. That GET reads only completed
+`analysis/vault-topic-cache/<prefix>/<key>.json` files and
+`derived/current-hashes.jsonl`. It never invokes topic extraction, Ollama, a
+network request, or a cache write.
+
+Coverage is exact only when the current projection and the bounded cache scan
+are both complete. For every observed model and extraction-recipe variant, the
+server recomputes the canonical vault cache key for every current conversation
+hash. A cache file counts toward current coverage only when its filename exactly
+matches one of those keys. Valid completed entries that do not match are
+reported as stale/other; malformed entries are counted separately and neither
+can inflate current theme counts.
+
+Topics from matching variants are unioned per covered current conversation,
+then clustered with the deterministic
+`vault-topic-token-set-jaccard-current-conversation-v1` recipe. Each canonical
+cluster counts at most once per covered conversation. The response bounds the
+top cluster list to 50, cluster members to 10, cache scanning to 10,000 files,
+projection input to 16 MiB, individual cache files to 64 KiB, and
+current-hash × variant key computations to 1,000,000. Before the pairwise
+clustering function runs, the server also caps normalized topics at 1,000 and
+pairwise comparisons at 500,000. The default display shows 20 clusters.
+
+The view reports the exact current denominator, covered conversations and
+percentage, completed cache entries, stale/other and invalid counts,
+model/recipe variants, and shared versus singleton-long-tail clusters. If the
+projection is missing or malformed, or either safety bound is exceeded,
+`coverage.exact` is false, clusters are withheld, and the response explicitly
+declines a whole-corpus claim. `scanLimit` may lower the scan bound for an
+operator audit but can never raise the hard maximum. `topicLimit` similarly
+lowers the normalized-topic bound; exceeding either the applied topic limit or
+the pairwise comparison limit returns `topic-clustering-bound-exceeded` before
+clustering begins.
+
 ## Run it
 
 ```sh
@@ -245,6 +283,7 @@ Workbench's JSON endpoints expose the same bounded views used by the UI:
 | `/api/project-intelligence?project=…` | Exact current totals, bounded derived sample, then current sessions                |
 | `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads        |
 | `/api/knowledge-candidate?id=…` | Read-only curation/evaluation detail with bounded evidence pointers                       |
+| `/api/themes?limit=…&scanLimit=…&topicLimit=…` | On-demand completed-cache clustering with exact-or-fail-closed bounds          |
 | `/api/evidence?uri=chatlog://…` | One canonical redacted turn                                                               |
 | `/api/insights`                 | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
 | `/api/sources`                  | Connector state and import actions                                                        |

@@ -608,6 +608,74 @@ async function openCandidate(id) {
   }
 }
 
+async function loadThemes() {
+  const button = $("#load-themes");
+  button.disabled = true;
+  button.textContent = "Reading completed cache…";
+  $("#themes-content").innerHTML =
+    `<div class="empty">Computing exact current-key coverage without extraction…</div>`;
+  try {
+    const result = await api("/api/themes?limit=20");
+    const coverage = result.coverage || {};
+    const cache = result.cache || {};
+    const distribution = result.distribution;
+    const coverageCopy = coverage.exact
+      ? `${formatNumber(coverage.currentCovered)} of ${formatNumber(coverage.currentDenominator)} current conversations · ${formatNumber(coverage.percent)}%`
+      : `Coverage is not exact (${escapeHtml(coverage.reason || "unavailable")}); no corpus-wide conclusion is shown.`;
+    const variants =
+      (result.variants || [])
+        .map(
+          (variant) => `<div class="theme-variant">
+            <strong>${escapeHtml(variant.model)}</strong>
+            <code>${escapeHtml(variant.recipe)}</code>
+            <span>${variant.currentCovered == null ? "current coverage unavailable" : `${formatNumber(variant.currentCovered)}/${formatNumber(coverage.currentDenominator)} current · ${formatNumber(variant.coveragePercent)}%`}</span>
+          </div>`,
+        )
+        .join("") || `<div class="empty">No completed cache variants found.</div>`;
+    const clusters =
+      (result.clusters || [])
+        .map(
+          (cluster) => `<div class="theme-cluster">
+            <div><strong>${escapeHtml(readableCategory(cluster.topic))}</strong><span>${formatNumber(cluster.conversations)} covered conversations</span></div>
+            <small>${escapeHtml((cluster.members || []).join(" · "))}</small>
+          </div>`,
+        )
+        .join("") ||
+      (coverage.exact
+        ? `<div class="empty">No clusters are available for the current completed-cache sample.</div>`
+        : `<div class="empty">Clusters are withheld because coverage or clustering is not exact.</div>`);
+    $("#themes-content").innerHTML = `
+      <div class="themes-warning">
+        <strong>${escapeHtml(result.label)}</strong>
+        <span>Cached sample only. No extraction, network request, or cache write was performed.</span>
+      </div>
+      <div class="themes-coverage ${coverage.exact ? "" : "not-exact"}">
+        <span>${coverage.exact ? "Exact current cache-key coverage" : "Coverage unavailable"}</span>
+        <strong>${coverageCopy}</strong>
+      </div>
+      <div class="themes-stats">
+        <div><span>Completed cache entries</span><strong>${cache.totalCompletedEntries == null ? "Unknown" : formatNumber(cache.totalCompletedEntries)}</strong></div>
+        <div><span>Stale / other</span><strong>${cache.staleOtherEntries == null ? "Unknown" : formatNumber(cache.staleOtherEntries)}</strong></div>
+        <div><span>Invalid</span><strong>${cache.invalidEntries == null ? "Unknown" : formatNumber(cache.invalidEntries)}</strong></div>
+        <div><span>Shared clusters</span><strong>${distribution ? formatNumber(distribution.sharedClusters) : "Unknown"}</strong></div>
+        <div><span>Singleton long tail</span><strong>${distribution ? formatNumber(distribution.singletonLongTailClusters) : "Unknown"}</strong></div>
+      </div>
+      <section class="themes-section">
+        <div class="themes-section-head"><div><p class="eyebrow">Observed model + recipe variants</p><h3>Cache provenance</h3></div><code>${escapeHtml(result.clusterRecipe)}</code></div>
+        <div class="theme-variants">${variants}</div>
+      </section>
+      <section class="themes-section">
+        <div class="themes-section-head"><div><p class="eyebrow">Bounded deterministic clusters</p><h3>Top cached themes</h3></div><span>maximum ${formatNumber(result.bounds.requestedClusterLimit)}</span></div>
+        <div class="theme-clusters">${clusters}</div>
+      </section>`;
+  } catch (error) {
+    $("#themes-content").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Reload cached themes →";
+  }
+}
+
 function renderSources() {
   const initials = {
     "claude-code": "A",
@@ -692,6 +760,7 @@ $("#close-project").addEventListener("click", () => $("#project-drawer").classLi
 $("#close-candidate").addEventListener("click", () =>
   $("#candidate-drawer").classList.add("hidden"),
 );
+$("#load-themes").addEventListener("click", loadThemes);
 $("#close-evidence").addEventListener("click", () => $("#evidence-dialog").close());
 $("#evidence-dialog").addEventListener("click", (event) => {
   if (event.target === $("#evidence-dialog")) $("#evidence-dialog").close();

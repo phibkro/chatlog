@@ -12,6 +12,8 @@ import {
   parseTopicResponse,
   renderNote,
   renderTopicHub,
+  topicCacheKey,
+  VAULT_TOPIC_RECIPE,
 } from "../src/vault";
 import type { Conversation } from "../src/types";
 
@@ -85,6 +87,14 @@ test("clusterTopics does not absorb a broader topic into a narrower one", () => 
   expect(canonicalOf.get("nix-flake-input-pinning")).toBe("nix-flake-input-pinning");
 });
 
+test("topicCacheKey canonically binds recipe, model, and conversation hash", () => {
+  const key = topicCacheKey(hash, "test-model");
+  expect(key).toMatch(/^[a-f0-9]{64}$/);
+  expect(key).toBe(topicCacheKey(hash, "test-model", VAULT_TOPIC_RECIPE));
+  expect(key).not.toBe(topicCacheKey(hash, "other-model"));
+  expect(key).not.toBe(topicCacheKey(hash, "test-model", "older-recipe"));
+});
+
 test("buildExtractionPrompt redacts secrets and bounds excerpt length", () => {
   const prompt = buildExtractionPrompt(conversation);
   expect(prompt).not.toContain("supersecretvalue");
@@ -156,6 +166,14 @@ test("extractTopics caches by conversation content hash — a second run makes n
   expect(first.cached).toBe(false);
   expect(first.topics).toEqual(["restic-check-weekly", "nix-flakes"]);
   expect(calls).toBe(1);
+  const key = topicCacheKey(hash, "test-model");
+  const cached = JSON.parse(
+    await readFile(
+      join(root, "analysis", "vault-topic-cache", key.slice(0, 2), `${key}.json`),
+      "utf8",
+    ),
+  );
+  expect(cached).toMatchObject({ model: "test-model", recipe: VAULT_TOPIC_RECIPE });
 
   const second = await extractTopics(root, conversation, { fetchImpl: mockFetch, model: "test-model" });
   expect(second.cached).toBe(true);

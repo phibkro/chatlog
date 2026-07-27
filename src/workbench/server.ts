@@ -67,6 +67,7 @@ export function workbenchHandler(
         return json(await data.knowledgeCandidates(url));
       if (url.pathname === "/api/knowledge-candidate")
         return json(await data.knowledgeCandidate(url));
+      if (url.pathname === "/api/themes") return json(await data.themes(url));
       if (url.pathname === "/api/insights") return json(await data.insights(url));
       if (url.pathname === "/api/sources") return json(await data.sources());
       if (url.pathname === "/api/evidence") {

@@ -7,6 +7,7 @@ import { deriveCorpus } from "../src/derive";
 import { WorkbenchData } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import type { Conversation } from "../src/types";
+import { topicCacheKey, VAULT_TOPIC_RECIPE } from "../src/vault";
 
 function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -93,6 +94,41 @@ function knowledgeCandidateFixture(index: number): any {
       cutRule: "Cut on regression or no measured benefit.",
     },
   };
+}
+
+async function writeTopicCache(
+  root: string,
+  conversationHash: string,
+  model: string,
+  recipe: string,
+  topics: string[],
+): Promise<string> {
+  const key = topicCacheKey(conversationHash, model, recipe);
+  const directory = join(root, "analysis", "vault-topic-cache", key.slice(0, 2));
+  const path = join(directory, `${key}.json`);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path,
+    `${JSON.stringify({
+      topics,
+      model,
+      recipe,
+      extractedAt: "2026-07-27T12:00:00Z",
+      latencyMs: 1,
+    })}\n`,
+  );
+  return path;
+}
+
+async function fileSnapshot(root: string): Promise<Record<string, string>> {
+  const paths = [
+    ...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true, dot: true }),
+  ].toSorted();
+  return Object.fromEntries(
+    await Promise.all(
+      paths.map(async (path) => [path, await readFile(join(root, path), "utf8")] as const),
+    ),
+  );
 }
 
 async function slice2Fixture(): Promise<{
@@ -831,6 +867,248 @@ test("Knowledge Gaps review marks stale refinery candidates as historical", asyn
     expect(detail.reviewNotice).toContain("not classified as a project documentation gap");
   } finally {
     data.close();
+  }
+});
+
+test("experimental Themes explorer reports exact current completed-cache coverage without side effects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-themes-"));
+  const currentHashes = ["a".repeat(64), "b".repeat(64), "c".repeat(64)];
+  const staleHash = "9".repeat(64);
+  await mkdir(join(root, "derived"), { recursive: true });
+  await writeFile(
+    join(root, "derived", "current-hashes.jsonl"),
+    `${currentHashes
+      .map((conversationHash) => JSON.stringify({ conversationHash }))
+      .join("\n")}\n`,
+  );
+  await writeTopicCache(
+    root,
+    currentHashes[0]!,
+    "model-a",
+    VAULT_TOPIC_RECIPE,
+    ["nix-flakes", "restic-backups"],
+  );
+  await writeTopicCache(
+    root,
+    currentHashes[1]!,
+    "model-a",
+    VAULT_TOPIC_RECIPE,
+    ["nix-flake", "career-planning"],
+  );
+  await writeTopicCache(
+    root,
+    staleHash,
+    "model-b",
+    "older-topic-recipe",
+    ["stale-topic-must-not-count"],
+  );
+  const malformedKey = "f".repeat(64);
+  const malformedDirectory = join(
+    root,
+    "analysis",
+    "vault-topic-cache",
+    malformedKey.slice(0, 2),
+  );
+  await mkdir(malformedDirectory, { recursive: true });
+  await writeFile(join(malformedDirectory, `${malformedKey}.json`), "{malformed");
+  const before = await fileSnapshot(root);
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls++;
+    return new Response("unexpected");
+  }) as unknown as typeof fetch;
+  const data = new WorkbenchData(root);
+  const handler = workbenchHandler(data);
+  try {
+    const response = await handler(new Request("http://localhost/api/themes?limit=20"));
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as any;
+    expect(result).toMatchObject({
+      label: "Experimental · partial cached sample",
+      scope: "current-projection cached sample only",
+      coverage: {
+        exact: true,
+        reason: "current-projection",
+        currentDenominator: 3,
+        currentCovered: 2,
+        percent: 66.7,
+        currentCompletedCacheEntries: 2,
+        keyComputations: 6,
+        wholeCorpusClaimed: false,
+      },
+      cache: {
+        scannedFiles: 4,
+        totalCompletedEntries: 3,
+        staleOtherEntries: 1,
+        invalidEntries: 1,
+      },
+      distribution: {
+        totalClusters: 3,
+        sharedClusters: 1,
+        singletonLongTailClusters: 2,
+      },
+      attestations: {
+        egressPerformed: false,
+        extractionPerformed: false,
+        cacheWritesPerformed: false,
+      },
+      clustering: {
+        exact: true,
+        uniqueNormalizedTopics: 4,
+        pairwiseComparisons: 6,
+      },
+    });
+    expect(result.clusterRecipe).toBe(
+      "vault-topic-token-set-jaccard-current-conversation-v1",
+    );
+    expect(result.clusters[0]).toMatchObject({
+      topic: "nix-flake",
+      conversations: 2,
+    });
+    expect(result.clusters.map((cluster: any) => cluster.topic)).toEqual(
+      expect.arrayContaining(["restic-backups", "career-planning"]),
+    );
+    expect(JSON.stringify(result)).not.toContain("stale-topic-must-not-count");
+    expect(result.variants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: "model-a",
+          recipe: VAULT_TOPIC_RECIPE,
+          completedCacheEntries: 2,
+          currentCacheEntries: 2,
+          currentCovered: 2,
+          coveragePercent: 66.7,
+        }),
+        expect.objectContaining({
+          model: "model-b",
+          recipe: "older-topic-recipe",
+          completedCacheEntries: 1,
+          currentCacheEntries: 0,
+          currentCovered: 0,
+        }),
+      ]),
+    );
+    expect(fetchCalls).toBe(0);
+    expect(await fileSnapshot(root)).toEqual(before);
+
+    const topicBoundResponse = await handler(
+      new Request("http://localhost/api/themes?topicLimit=2"),
+    );
+    const topicBound = (await topicBoundResponse.json()) as any;
+    expect(topicBound.coverage).toMatchObject({
+      exact: false,
+      reason: "topic-clustering-bound-exceeded",
+      currentKeyCoverageExact: true,
+      currentDenominator: 3,
+      currentCovered: 2,
+      wholeCorpusClaimed: false,
+    });
+    expect(topicBound.clustering).toEqual({
+      exact: false,
+      reason: "topic-clustering-bound-exceeded",
+      uniqueNormalizedTopics: 4,
+      appliedUniqueTopicLimit: 2,
+      pairwiseComparisons: 6,
+      maximumPairwiseComparisons: 500_000,
+    });
+    expect(topicBound.bounds).toMatchObject({
+      requestedTopicLimit: "2",
+      appliedTopicLimit: 2,
+      maximumUniqueTopics: 1_000,
+      maximumPairwiseComparisons: 500_000,
+    });
+    expect(topicBound.clusters).toEqual([]);
+    expect(topicBound.distribution).toBeNull();
+    expect(fetchCalls).toBe(0);
+    expect(await fileSnapshot(root)).toEqual(before);
+
+    const boundedResponse = await handler(
+      new Request("http://localhost/api/themes?scanLimit=2"),
+    );
+    const bounded = (await boundedResponse.json()) as any;
+    expect(bounded.coverage).toMatchObject({
+      exact: false,
+      reason: "cache-scan-bound-exceeded",
+      wholeCorpusClaimed: false,
+    });
+    expect(bounded.cache.totalCompletedEntries).toBeNull();
+    expect(bounded.clusters).toEqual([]);
+    expect(bounded.bounds).toMatchObject({
+      requestedScanLimit: "2",
+      appliedScanLimit: 2,
+      maximumScanLimit: 10_000,
+    });
+    expect(fetchCalls).toBe(0);
+    expect(await fileSnapshot(root)).toEqual(before);
+
+    const postResponse = await handler(
+      new Request("http://localhost/api/themes", { method: "POST" }),
+    );
+    expect(postResponse.status).toBe(405);
+    expect(await postResponse.json()).toEqual({ error: "read-only workbench" });
+
+    const appResponse = await handler(new Request("http://localhost/app.js"));
+    const appSource = await appResponse.text();
+    expect(appSource).toContain('api("/api/themes?limit=20")');
+    const bootstrap = appSource.slice(
+      appSource.indexOf("async function load()"),
+      appSource.indexOf('$$(".nav-item")'),
+    );
+    expect(bootstrap).not.toContain("/api/themes");
+    expect(appSource).not.toContain("exact cached sample");
+    expect(appSource).toContain(
+      "Clusters are withheld because coverage or clustering is not exact.",
+    );
+    const pageResponse = await handler(new Request("http://localhost/"));
+    const pageSource = await pageResponse.text();
+    expect(pageSource).toContain("Experimental · partial cached sample");
+    for (const banned of ["knowledge graph", "personal↔technical bridge"])
+      expect(`${appSource}\n${pageSource}`.toLowerCase()).not.toContain(banned);
+  } finally {
+    globalThis.fetch = originalFetch;
+    data.close();
+  }
+});
+
+test("experimental Themes explorer fails closed without a valid current projection", async () => {
+  const missingRoot = await mkdtemp(join(tmpdir(), "chatlog-workbench-themes-missing-"));
+  const missingData = new WorkbenchData(missingRoot);
+  try {
+    const missing = (await missingData.themes(
+      new URL("http://localhost/api/themes"),
+    )) as any;
+    expect(missing.coverage).toMatchObject({
+      exact: false,
+      reason: "projection-missing",
+      currentDenominator: null,
+      wholeCorpusClaimed: false,
+    });
+    expect(missing.clusters).toEqual([]);
+  } finally {
+    missingData.close();
+  }
+
+  const malformedRoot = await mkdtemp(join(tmpdir(), "chatlog-workbench-themes-invalid-"));
+  await mkdir(join(malformedRoot, "derived"), { recursive: true });
+  await writeFile(
+    join(malformedRoot, "derived", "current-hashes.jsonl"),
+    `${JSON.stringify({ conversationHash: "a".repeat(64) })}\n{"wrong":"shape"}\n`,
+  );
+  const malformedData = new WorkbenchData(malformedRoot);
+  try {
+    const malformed = (await malformedData.themes(
+      new URL("http://localhost/api/themes"),
+    )) as any;
+    expect(malformed.coverage).toMatchObject({
+      exact: false,
+      reason: "projection-invalid",
+      currentDenominator: null,
+      wholeCorpusClaimed: false,
+    });
+    expect(malformed.clusters).toEqual([]);
+  } finally {
+    malformedData.close();
   }
 });
 

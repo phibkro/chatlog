@@ -1,12 +1,13 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { opendir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentAskLexical } from "../agent-query";
 import { loadDerived } from "../derive";
 import { parseEvidenceUri } from "../evidence-uri";
 import { sourceCatalog } from "../source-catalog";
 import type { Conversation } from "../types";
+import { clusterTopics, normalizeTopic, topicCacheKey } from "../vault";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || !value.trim()) return fallback;
@@ -31,6 +32,16 @@ const KNOWLEDGE_CANDIDATE_PAGE_MAX = 10_000;
 const KNOWLEDGE_CANDIDATE_QUERY_MAX = 160;
 const KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX = 6;
 const KNOWLEDGE_CANDIDATE_CHECKS_MAX = 12;
+const THEMES_CACHE_SCAN_MAX = 10_000;
+const THEMES_KEY_COMPUTATION_MAX = 1_000_000;
+const THEMES_PROJECTION_BYTES_MAX = 16 * 1024 * 1024;
+const THEMES_CACHE_ENTRY_BYTES_MAX = 64 * 1024;
+const THEMES_CLUSTER_LIMIT = 20;
+const THEMES_CLUSTER_LIMIT_MAX = 50;
+const THEMES_CLUSTER_MEMBERS_MAX = 10;
+const THEMES_UNIQUE_TOPICS_MAX = 1_000;
+const THEMES_PAIRWISE_COMPARISONS_MAX = 500_000;
+const THEMES_CLUSTER_RECIPE = "vault-topic-token-set-jaccard-current-conversation-v1";
 const PRIOR_ATTEMPT_LIMIT = 10;
 const PROJECT_DERIVED_SAMPLE_LIMIT = 40;
 const PROJECT_SESSION_LIMIT = 100;
@@ -295,6 +306,150 @@ function candidateDetail(candidate: any): Record<string, unknown> {
       KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX,
     ),
   };
+}
+
+interface ThemeProjection {
+  exact: boolean;
+  reason: "current-projection" | "projection-missing" | "projection-invalid" | "projection-bound";
+  hashes: string[];
+}
+
+interface ThemeCachePath {
+  directory: string;
+  filename: string;
+  path: string;
+}
+
+interface ThemeCacheEntry {
+  key: string;
+  model: string;
+  recipe: string;
+  topics: string[];
+}
+
+async function readThemeProjection(root: string): Promise<ThemeProjection> {
+  const path = join(root, "derived", "current-hashes.jsonl");
+  let size: number;
+  try {
+    size = (await stat(path)).size;
+  } catch (error: any) {
+    return {
+      exact: false,
+      reason: error?.code === "ENOENT" ? "projection-missing" : "projection-invalid",
+      hashes: [],
+    };
+  }
+  if (size > THEMES_PROJECTION_BYTES_MAX)
+    return { exact: false, reason: "projection-bound", hashes: [] };
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return { exact: false, reason: "projection-invalid", hashes: [] };
+  }
+  const hashes = new Set<string>();
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as { conversationHash?: unknown };
+      if (
+        typeof parsed.conversationHash !== "string" ||
+        !/^[a-f0-9]{64}$/.test(parsed.conversationHash)
+      )
+        return { exact: false, reason: "projection-invalid", hashes: [] };
+      hashes.add(parsed.conversationHash);
+    } catch {
+      return { exact: false, reason: "projection-invalid", hashes: [] };
+    }
+  }
+  return { exact: true, reason: "current-projection", hashes: [...hashes].toSorted() };
+}
+
+async function scanThemeCachePaths(
+  root: string,
+  limit: number,
+): Promise<{ exact: boolean; paths: ThemeCachePath[]; observedFiles: number }> {
+  const cacheRoot = join(root, "analysis", "vault-topic-cache");
+  const paths: ThemeCachePath[] = [];
+  if (!existsSync(cacheRoot)) return { exact: true, paths, observedFiles: 0 };
+  let rootDirectory;
+  try {
+    rootDirectory = await opendir(cacheRoot);
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return { exact: true, paths, observedFiles: 0 };
+    return { exact: false, paths, observedFiles: 0 };
+  }
+  let observedFiles = 0;
+  for await (const prefix of rootDirectory) {
+    if (!prefix.isDirectory() || !/^[a-f0-9]{2}$/.test(prefix.name)) continue;
+    let directory;
+    try {
+      directory = await opendir(join(cacheRoot, prefix.name));
+    } catch {
+      return { exact: false, paths, observedFiles };
+    }
+    for await (const entry of directory) {
+      if (!entry.isFile()) continue;
+      observedFiles++;
+      if (observedFiles > limit) return { exact: false, paths, observedFiles };
+      paths.push({
+        directory: prefix.name,
+        filename: entry.name,
+        path: join(cacheRoot, prefix.name, entry.name),
+      });
+    }
+  }
+  return { exact: true, paths, observedFiles };
+}
+
+async function readThemeCacheEntry(
+  item: ThemeCachePath,
+): Promise<{ entry: ThemeCacheEntry | null; invalid: boolean }> {
+  const match = /^([a-f0-9]{64})\.json$/.exec(item.filename);
+  if (!match || item.directory !== match[1]!.slice(0, 2))
+    return { entry: null, invalid: true };
+  try {
+    if ((await stat(item.path)).size > THEMES_CACHE_ENTRY_BYTES_MAX)
+      return { entry: null, invalid: true };
+    const parsed = JSON.parse(await readFile(item.path, "utf8")) as any;
+    if (
+      !Array.isArray(parsed.topics) ||
+      parsed.topics.length < 1 ||
+      parsed.topics.length > 5 ||
+      typeof parsed.model !== "string" ||
+      !parsed.model.trim() ||
+      parsed.model.length > 200 ||
+      typeof parsed.recipe !== "string" ||
+      !parsed.recipe.trim() ||
+      parsed.recipe.length > 200 ||
+      typeof parsed.extractedAt !== "string" ||
+      Number.isNaN(new Date(parsed.extractedAt).getTime())
+    )
+      return { entry: null, invalid: true };
+    const topics = parsed.topics.map((topic: unknown) =>
+      typeof topic === "string" ? normalizeTopic(topic) : "",
+    );
+    if (
+      topics.some((topic: string) => topic.length < 2 || topic.length > 60) ||
+      new Set(topics).size !== topics.length
+    )
+      return { entry: null, invalid: true };
+    return {
+      entry: {
+        key: match[1]!,
+        model: parsed.model.trim(),
+        recipe: parsed.recipe.trim(),
+        topics,
+      },
+      invalid: false,
+    };
+  } catch {
+    return { entry: null, invalid: true };
+  }
+}
+
+function themeVariantId(model: string, recipe: string): string {
+  return JSON.stringify([model, recipe]);
 }
 
 export class WorkbenchData {
@@ -834,6 +989,285 @@ export class WorkbenchData {
         curationChecks: KNOWLEDGE_CANDIDATE_CHECKS_MAX,
       },
       egress: { performed: false, surface: "none" },
+    };
+  }
+
+  async themes(url: URL): Promise<unknown> {
+    const requestedScanLimit = url.searchParams.get("scanLimit");
+    const scanLimit = boundedInteger(
+      requestedScanLimit,
+      THEMES_CACHE_SCAN_MAX,
+      THEMES_CACHE_SCAN_MAX,
+    );
+    const clusterLimit = boundedInteger(
+      url.searchParams.get("limit"),
+      THEMES_CLUSTER_LIMIT,
+      THEMES_CLUSTER_LIMIT_MAX,
+    );
+    const requestedTopicLimit = url.searchParams.get("topicLimit");
+    const topicLimit = boundedInteger(
+      requestedTopicLimit,
+      THEMES_UNIQUE_TOPICS_MAX,
+      THEMES_UNIQUE_TOPICS_MAX,
+    );
+    const [projection, scan] = await Promise.all([
+      readThemeProjection(this.root),
+      scanThemeCachePaths(this.root, scanLimit),
+    ]);
+    const base = {
+      label: "Experimental · partial cached sample",
+      scope: "current-projection cached sample only",
+      clusterRecipe: THEMES_CLUSTER_RECIPE,
+      bounds: {
+        requestedScanLimit:
+          requestedScanLimit == null ? null : boundedText(requestedScanLimit, 32),
+        appliedScanLimit: scanLimit,
+        maximumScanLimit: THEMES_CACHE_SCAN_MAX,
+        maximumKeyComputations: THEMES_KEY_COMPUTATION_MAX,
+        maximumProjectionBytes: THEMES_PROJECTION_BYTES_MAX,
+        maximumCacheEntryBytes: THEMES_CACHE_ENTRY_BYTES_MAX,
+        requestedClusterLimit: clusterLimit,
+        maximumClusterLimit: THEMES_CLUSTER_LIMIT_MAX,
+        maximumClusterMembers: THEMES_CLUSTER_MEMBERS_MAX,
+        requestedTopicLimit:
+          requestedTopicLimit == null ? null : boundedText(requestedTopicLimit, 32),
+        appliedTopicLimit: topicLimit,
+        maximumUniqueTopics: THEMES_UNIQUE_TOPICS_MAX,
+        maximumPairwiseComparisons: THEMES_PAIRWISE_COMPARISONS_MAX,
+      },
+      attestations: {
+        egressPerformed: false,
+        extractionPerformed: false,
+        cacheWritesPerformed: false,
+        source: "completed vault topic cache files plus current hash projection",
+      },
+    };
+    if (!scan.exact)
+      return {
+        ...base,
+        coverage: {
+          exact: false,
+          reason:
+            scan.observedFiles > scanLimit ? "cache-scan-bound-exceeded" : "cache-scan-error",
+          currentDenominator: projection.exact ? projection.hashes.length : null,
+          currentCovered: null,
+          percent: null,
+          wholeCorpusClaimed: false,
+        },
+        cache: {
+          scannedFiles: Math.min(scan.paths.length, scanLimit),
+          observedFilesBeforeStop: scan.observedFiles,
+          totalCompletedEntries: null,
+          staleOtherEntries: null,
+          invalidEntries: null,
+        },
+        variants: [],
+        clusters: [],
+        distribution: null,
+      };
+    const parsed = await Promise.all(scan.paths.map(readThemeCacheEntry));
+    const entries = parsed.flatMap((item) => (item.entry ? [item.entry] : []));
+    const invalidEntries = parsed.filter((item) => item.invalid).length;
+    const variantsById = new Map<
+      string,
+      {
+        model: string;
+        recipe: string;
+        completedCacheEntries: number;
+        currentCacheEntries: number;
+        currentHashes: Set<string>;
+      }
+    >();
+    for (const entry of entries) {
+      const id = themeVariantId(entry.model, entry.recipe);
+      const variant = variantsById.get(id) ?? {
+        model: entry.model,
+        recipe: entry.recipe,
+        completedCacheEntries: 0,
+        currentCacheEntries: 0,
+        currentHashes: new Set<string>(),
+      };
+      variant.completedCacheEntries++;
+      variantsById.set(id, variant);
+    }
+    const incompleteCoverage = (
+      reason: string,
+      currentDenominator: number | null,
+    ): unknown => ({
+      ...base,
+      coverage: {
+        exact: false,
+        reason,
+        currentDenominator,
+        currentCovered: null,
+        percent: null,
+        wholeCorpusClaimed: false,
+      },
+      cache: {
+        scannedFiles: scan.paths.length,
+        observedFilesBeforeStop: scan.observedFiles,
+        totalCompletedEntries: entries.length,
+        staleOtherEntries: null,
+        invalidEntries,
+      },
+      variants: [...variantsById.values()]
+        .map((variant) => ({
+          model: variant.model,
+          recipe: variant.recipe,
+          completedCacheEntries: variant.completedCacheEntries,
+          currentCacheEntries: null,
+          currentCovered: null,
+          coveragePercent: null,
+        }))
+        .toSorted(
+          (a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe),
+        ),
+      clusters: [],
+      distribution: null,
+    });
+    if (!projection.exact)
+      return incompleteCoverage(projection.reason, null);
+    const keyComputations = projection.hashes.length * variantsById.size;
+    if (keyComputations > THEMES_KEY_COMPUTATION_MAX)
+      return incompleteCoverage("key-computation-bound-exceeded", projection.hashes.length);
+    const expected = new Map<string, { conversationHash: string; variantId: string }>();
+    for (const [variantId, variant] of variantsById)
+      for (const conversationHash of projection.hashes)
+        expected.set(topicCacheKey(conversationHash, variant.model, variant.recipe), {
+          conversationHash,
+          variantId,
+        });
+    const topicsByConversation = new Map<string, Set<string>>();
+    let currentCacheEntries = 0;
+    for (const entry of entries) {
+      const variantId = themeVariantId(entry.model, entry.recipe);
+      const match = expected.get(entry.key);
+      if (!match || match.variantId !== variantId) continue;
+      currentCacheEntries++;
+      const topics = topicsByConversation.get(match.conversationHash) ?? new Set<string>();
+      for (const topic of entry.topics) topics.add(topic);
+      topicsByConversation.set(match.conversationHash, topics);
+      const variant = variantsById.get(variantId)!;
+      variant.currentCacheEntries++;
+      variant.currentHashes.add(match.conversationHash);
+    }
+    const rawCounts = new Map<string, number>();
+    for (const topics of topicsByConversation.values())
+      for (const topic of topics) rawCounts.set(topic, (rawCounts.get(topic) ?? 0) + 1);
+    const denominator = projection.hashes.length;
+    const covered = topicsByConversation.size;
+    const percent = denominator ? Number(((covered / denominator) * 100).toFixed(1)) : 0;
+    const pairwiseComparisons = (rawCounts.size * (rawCounts.size - 1)) / 2;
+    const cacheResult = {
+      scannedFiles: scan.paths.length,
+      observedFilesBeforeStop: scan.observedFiles,
+      totalCompletedEntries: entries.length,
+      staleOtherEntries: entries.length - currentCacheEntries,
+      invalidEntries,
+    };
+    const variantResults = [...variantsById.values()]
+      .map((variant) => ({
+        model: variant.model,
+        recipe: variant.recipe,
+        completedCacheEntries: variant.completedCacheEntries,
+        currentCacheEntries: variant.currentCacheEntries,
+        currentCovered: variant.currentHashes.size,
+        coveragePercent: denominator
+          ? Number(((variant.currentHashes.size / denominator) * 100).toFixed(1))
+          : 0,
+      }))
+      .toSorted(
+        (a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe),
+      );
+    if (
+      rawCounts.size > topicLimit ||
+      pairwiseComparisons > THEMES_PAIRWISE_COMPARISONS_MAX
+    )
+      return {
+        ...base,
+        coverage: {
+          exact: false,
+          reason: "topic-clustering-bound-exceeded",
+          currentKeyCoverageExact: true,
+          currentDenominator: denominator,
+          currentCovered: covered,
+          percent,
+          currentCompletedCacheEntries: currentCacheEntries,
+          keyComputations,
+          wholeCorpusClaimed: false,
+        },
+        cache: cacheResult,
+        variants: variantResults,
+        clustering: {
+          exact: false,
+          reason: "topic-clustering-bound-exceeded",
+          uniqueNormalizedTopics: rawCounts.size,
+          appliedUniqueTopicLimit: topicLimit,
+          pairwiseComparisons,
+          maximumPairwiseComparisons: THEMES_PAIRWISE_COMPARISONS_MAX,
+        },
+        clusters: [],
+        distribution: null,
+      };
+    const clustered = clusterTopics(rawCounts);
+    const canonicalCounts = new Map<string, number>();
+    for (const topics of topicsByConversation.values()) {
+      const canonical = new Set(
+        [...topics].map((topic) => clustered.canonicalOf.get(topic) ?? topic),
+      );
+      for (const topic of canonical)
+        canonicalCounts.set(topic, (canonicalCounts.get(topic) ?? 0) + 1);
+    }
+    const allClusters = clustered.clusters
+      .map((cluster) => ({
+        topic: cluster.canonical,
+        conversations: canonicalCounts.get(cluster.canonical) ?? 0,
+        members: cluster.members.slice(0, THEMES_CLUSTER_MEMBERS_MAX),
+        totalMembers: cluster.members.length,
+      }))
+      .toSorted(
+        (a, b) => b.conversations - a.conversations || a.topic.localeCompare(b.topic),
+      );
+    const shared = allClusters.filter((cluster) => cluster.conversations >= 2);
+    const singleton = allClusters.filter((cluster) => cluster.conversations === 1);
+    return {
+      ...base,
+      coverage: {
+        exact: true,
+        reason: projection.reason,
+        currentKeyCoverageExact: true,
+        currentDenominator: denominator,
+        currentCovered: covered,
+        percent,
+        currentCompletedCacheEntries: currentCacheEntries,
+        keyComputations,
+        wholeCorpusClaimed: false,
+      },
+      cache: cacheResult,
+      variants: variantResults,
+      clustering: {
+        exact: true,
+        reason: "within-topic-clustering-bounds",
+        uniqueNormalizedTopics: rawCounts.size,
+        appliedUniqueTopicLimit: topicLimit,
+        pairwiseComparisons,
+        maximumPairwiseComparisons: THEMES_PAIRWISE_COMPARISONS_MAX,
+      },
+      clusters: allClusters.slice(0, clusterLimit),
+      distribution: {
+        totalClusters: allClusters.length,
+        sharedClusters: shared.length,
+        sharedConversationAssignments: shared.reduce(
+          (sum, cluster) => sum + cluster.conversations,
+          0,
+        ),
+        singletonLongTailClusters: singleton.length,
+        singletonConversationAssignments: singleton.reduce(
+          (sum, cluster) => sum + cluster.conversations,
+          0,
+        ),
+        singletonLongTailDefinition: "cluster observed in exactly one covered conversation",
+      },
     };
   }
 

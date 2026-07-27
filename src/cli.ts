@@ -20,6 +20,8 @@ import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTim
 import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
+import { queryUndocumented } from "./undocumented";
+import type { PromotionType } from "./refinery";
 import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
@@ -153,6 +155,19 @@ if (command === "ingest") {
       console.log(
         JSON.stringify(await agentRefinery(root, args[0], Number(args[1] ?? 30)), null, 2),
       );
+    } else if (subcommand === "undocumented") {
+      const projectIdx = args.indexOf("--project");
+      if (projectIdx === -1 || !args[projectIdx + 1])
+        throw new Error(
+          "usage: bun run query undocumented --project <path> [--type claude-md,gotcha-skill,memory-or-adr]",
+        );
+      const project = resolve(args[projectIdx + 1]!);
+      const typeIdx = args.indexOf("--type");
+      const types =
+        typeIdx === -1 || !args[typeIdx + 1]
+          ? undefined
+          : (args[typeIdx + 1]!.split(",") as PromotionType[]);
+      console.log(JSON.stringify(await queryUndocumented(root, project, { types }), null, 2));
     } else if (subcommand === "candidate") {
       if (!args[0]) throw new Error("usage: bun run query candidate <candidate-id>");
       console.log(JSON.stringify(await agentRefineryCandidate(root, args[0]), null, 2));
@@ -179,7 +194,7 @@ if (command === "ingest") {
       console.log(JSON.stringify(await duckSessionLengths(root), null, 2));
     else
       throw new Error(
-        "usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>",
+        "usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|candidate|eval-plan|undocumented|stats|models|tokens|usage-time|tools|lengths>",
       );
   } catch (error: any) {
     console.log(

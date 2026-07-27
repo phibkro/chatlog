@@ -4,6 +4,8 @@ import { Data, Effect } from "effect";
 import type { SourceFile, TokenUsage, Turn } from "../types";
 import { redact } from "../redact";
 
+export { projectOf } from "../project-identity";
+
 export async function discoverJsonl(
   root: string,
   accept: (path: string) => boolean = () => true,
@@ -111,8 +113,4 @@ export function finishTimes(turns: Turn[], fallback: string): [string, string] {
     .filter((x): x is string => Boolean(x))
     .toSorted();
   return [times[0] ?? fallback, times.at(-1) ?? fallback];
-}
-
-export function projectOf(cwd: string): string {
-  return cwd || "(unknown)";
 }

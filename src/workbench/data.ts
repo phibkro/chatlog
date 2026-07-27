@@ -20,15 +20,142 @@ function searchExpression(query: string): string {
     .join(" AND ");
 }
 
-async function currentArtifact(root: string, manifestName: string): Promise<any | null> {
+const INSIGHT_EVIDENCE_LIMIT = 3;
+const CANDIDATE_EVIDENCE_LIMIT = 2;
+
+interface CurrentArtifact {
+  artifact: any;
+  manifest: any;
+}
+
+interface InsightFreshness {
+  fresh: boolean;
+  status: "fresh" | "stale";
+  reason:
+    | "projection-match"
+    | "current-projection-missing"
+    | "artifact-projection-missing"
+    | "artifact-manifest-mismatch"
+    | "projection-mismatch";
+  currentProjectionHash: string | null;
+  artifactProjectionHash: string | null;
+  manifestProjectionHash: string | null;
+}
+
+function sha256(text: string): string {
+  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+}
+
+async function currentProjectionHash(root: string): Promise<string | null> {
+  try {
+    return sha256(await readFile(join(root, "derived", "current-hashes.jsonl"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function currentArtifact(
+  root: string,
+  manifestName: string,
+): Promise<CurrentArtifact | null> {
   try {
     const manifest = JSON.parse(await readFile(join(root, "derived", manifestName), "utf8"));
     const path = manifest.current?.artifactPath;
-    return path ? JSON.parse(await readFile(join(root, "derived", path), "utf8")) : null;
+    return path
+      ? {
+          artifact: JSON.parse(await readFile(join(root, "derived", path), "utf8")),
+          manifest,
+        }
+      : null;
   } catch (error: any) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+}
+
+function artifactFreshness(currentHash: string | null, current: CurrentArtifact): InsightFreshness {
+  const artifactProjectionHash =
+    typeof current.artifact.inputProjectionHash === "string"
+      ? current.artifact.inputProjectionHash
+      : null;
+  const manifestProjectionHash =
+    typeof current.manifest.current?.inputProjectionHash === "string"
+      ? current.manifest.current.inputProjectionHash
+      : null;
+  const base = {
+    currentProjectionHash: currentHash,
+    artifactProjectionHash,
+    manifestProjectionHash,
+  };
+  if (!currentHash)
+    return {
+      ...base,
+      fresh: false,
+      status: "stale",
+      reason: "current-projection-missing",
+    };
+  if (!artifactProjectionHash || !manifestProjectionHash)
+    return {
+      ...base,
+      fresh: false,
+      status: "stale",
+      reason: "artifact-projection-missing",
+    };
+  if (artifactProjectionHash !== manifestProjectionHash)
+    return {
+      ...base,
+      fresh: false,
+      status: "stale",
+      reason: "artifact-manifest-mismatch",
+    };
+  if (artifactProjectionHash !== currentHash)
+    return { ...base, fresh: false, status: "stale", reason: "projection-mismatch" };
+  return { ...base, fresh: true, status: "fresh", reason: "projection-match" };
+}
+
+function boundedEvidence(
+  evidence: unknown,
+  limit = INSIGHT_EVIDENCE_LIMIT,
+): Array<{ uri: string }> {
+  if (!Array.isArray(evidence)) return [];
+  const pointers = new Set<string>();
+  for (const item of evidence) {
+    const pointer =
+      typeof item === "string"
+        ? item
+        : item && typeof item === "object"
+          ? typeof (item as any).pointer === "string"
+            ? (item as any).pointer
+            : typeof (item as any).pointer?.uri === "string"
+              ? (item as any).pointer.uri
+              : null
+          : null;
+    if (!pointer) continue;
+    try {
+      parseEvidenceUri(pointer);
+      pointers.add(pointer);
+    } catch {
+      continue;
+    }
+    if (pointers.size >= limit) break;
+  }
+  return [...pointers].map((uri) => ({ uri }));
+}
+
+function boundedDecisionBoundary(value: unknown): unknown {
+  if (!value || typeof value !== "object") return null;
+  const boundary = value as any;
+  const shape = (item: any) =>
+    item
+      ? {
+          claim: item.claim,
+          evidence: boundedEvidence(item.evidence),
+        }
+      : null;
+  return {
+    grantsAutonomy: shape(boundary.grantsAutonomy),
+    imposesGuardrail: shape(boundary.imposesGuardrail),
+  };
 }
 
 export class WorkbenchData {
@@ -215,18 +342,58 @@ export class WorkbenchData {
   }
 
   async insights(): Promise<unknown> {
-    const [lean, roles, effectiveness, refinery] = await Promise.all([
+    const [projectionHash, lean, roles, effectiveness, refinery] = await Promise.all([
+      currentProjectionHash(this.root),
       currentArtifact(this.root, "orchestration-lean-manifest.json"),
       currentArtifact(this.root, "orchestration-roles-manifest.json"),
       currentArtifact(this.root, "orchestration-effectiveness-manifest.json"),
       currentArtifact(this.root, "refinery-manifest.json"),
     ]);
+    const leanFreshness = lean ? artifactFreshness(projectionHash, lean) : null;
+    const rolesFreshness = roles ? artifactFreshness(projectionHash, roles) : null;
+    const refineryFreshness = refinery ? artifactFreshness(projectionHash, refinery) : null;
+    const currentRoleProfileContentHash =
+      typeof roles?.manifest.current?.contentHash === "string"
+        ? roles.manifest.current.contentHash
+        : null;
+    const referencedRoleProfileContentHash =
+      typeof effectiveness?.artifact.roleProfileContentHash === "string"
+        ? effectiveness.artifact.roleProfileContentHash
+        : null;
+    const effectivenessFresh =
+      Boolean(rolesFreshness?.fresh) &&
+      Boolean(currentRoleProfileContentHash) &&
+      referencedRoleProfileContentHash === currentRoleProfileContentHash;
+    const effectivenessFreshness = effectiveness
+      ? {
+          fresh: effectivenessFresh,
+          status: effectivenessFresh ? ("fresh" as const) : ("stale" as const),
+          reason: !rolesFreshness?.fresh
+            ? "role-profile-stale"
+            : referencedRoleProfileContentHash !== currentRoleProfileContentHash
+              ? "role-profile-mismatch"
+              : "role-profile-match",
+          currentProjectionHash: projectionHash,
+          roleProfileContentHash: referencedRoleProfileContentHash,
+          currentRoleProfileContentHash,
+          artifactInputProjectionHash:
+            typeof effectiveness.manifest.current?.inputProjectionHash === "string"
+              ? effectiveness.manifest.current.inputProjectionHash
+              : null,
+        }
+      : null;
     return {
-      orchestration: lean?.finding
+      projection: {
+        path: "derived/current-hashes.jsonl",
+        contentHash: projectionHash,
+      },
+      orchestration: lean?.artifact.finding
         ? {
-            claim: lean.finding.claim,
-            decisionBoundary: lean.finding.decisionBoundary,
-            inventories: (lean.inventories ?? []).map((item: any) => ({
+            provenance: leanFreshness,
+            claim: lean.artifact.finding.claim,
+            evidence: boundedEvidence(lean.artifact.finding.evidence),
+            decisionBoundary: boundedDecisionBoundary(lean.artifact.finding.decisionBoundary),
+            inventories: (lean.artifact.inventories ?? []).map((item: any) => ({
               pole: item.pole,
               signal: item.signal,
               claim: item.claim,
@@ -237,37 +404,43 @@ export class WorkbenchData {
         : null,
       roles: roles
         ? {
-            inferredCounts: roles.inferredCounts,
-            profiles: (roles.profiles ?? []).map((profile: any) => ({
+            provenance: rolesFreshness,
+            inferredCounts: roles.artifact.inferredCounts,
+            profiles: (roles.artifact.profiles ?? []).map((profile: any) => ({
               role: profile.role,
               highConfidenceSessions: profile.highConfidenceSessions,
               classifiedChoices: profile.classifiedChoices,
               autonomyChoiceRate: profile.autonomyChoiceRate,
               claim: profile.claim,
               signalCounts: profile.signalCounts,
+              evidence: boundedEvidence(profile.evidence),
             })),
           }
         : null,
-      effectiveness: effectiveness?.ranking
+      effectiveness: effectiveness?.artifact.ranking
         ? {
-            claim: effectiveness.ranking.claim,
-            winner: effectiveness.ranking.winner,
-            loser: effectiveness.ranking.loser,
-            role: effectiveness.ranking.role,
-            metrics: effectiveness.ranking.metrics,
+            provenance: effectivenessFreshness,
+            claim: effectiveness.artifact.ranking.claim,
+            winner: effectiveness.artifact.ranking.winner,
+            loser: effectiveness.artifact.ranking.loser,
+            role: effectiveness.artifact.ranking.role,
+            metrics: effectiveness.artifact.ranking.metrics,
+            evidence: boundedEvidence(effectiveness.artifact.ranking.evidence),
           }
         : null,
       refinery: refinery
         ? {
-            threshold: refinery.threshold,
-            policy: refinery.policy,
-            candidates: (refinery.candidates ?? []).map((candidate: any) => ({
+            provenance: refineryFreshness,
+            threshold: refinery.artifact.threshold,
+            policy: refinery.artifact.policy,
+            candidates: (refinery.artifact.candidates ?? []).map((candidate: any) => ({
               id: candidate.id,
               type: candidate.type,
               signature: candidate.signature,
               title: candidate.title,
               status: candidate.status,
               frequency: candidate.frequency,
+              evidence: boundedEvidence(candidate.evidence, CANDIDATE_EVIDENCE_LIMIT),
             })),
           }
         : null,

@@ -16,13 +16,37 @@ hosted telemetry product.
   resolves the canonical redacted turn on demand.
 - **Patterns** — inferred role boundaries, measured agent experiments, and
   knowledge-refinery candidates. A candidate is a prompt for review, never an
-  automatic configuration change.
+  automatic configuration change. Every artifact is marked fresh or stale
+  against the current derived corpus projection.
 - **Sources** — connected harnesses, discovered exports, planned connectors,
   provenance domains, and their privacy behavior.
 
 Workbench is intentionally not a transcript-first chat viewer. It starts with
 projects, evidence, and reusable findings; full turn content stays behind an
 explicit evidence action.
+
+### Insight freshness and evidence
+
+Workbench hashes the exact bytes of `derived/current-hashes.jsonl` and compares
+that current projection with the `inputProjectionHash` recorded by both the
+artifact and its manifest. Orchestration, role, and refinery artifacts are
+fresh only when all three hashes agree. A missing projection, missing
+provenance, manifest/artifact disagreement, or older projection is displayed as
+stale.
+
+Effectiveness results are downstream of role segmentation. They are current
+only when the role artifact is fresh and the result's
+`roleProfileContentHash` names the current role artifact. A stale role profile
+therefore makes its effectiveness result stale even when the experiment itself
+has not changed.
+
+The UI keeps stale artifacts visible as historical context, with an explicit
+badge and mismatch explanation. It never presents a stale effectiveness result
+as a current recommendation. Insight evidence is pointer-only and bounded:
+three `chatlog://` pointers per orchestration, role, or effectiveness finding,
+and two per refinery candidate. Opening a pointer uses the existing explicit
+one-turn evidence dialog; `/api/insights` does not embed derived snippets or
+complete turns.
 
 ## Run it
 
@@ -129,15 +153,15 @@ connected.
 
 Workbench's JSON endpoints expose the same bounded views used by the UI:
 
-| Endpoint                        | Result                                                  |
-| ------------------------------- | ------------------------------------------------------- |
-| `/api/overview`                 | Corpus counts, recent sessions, project concentration   |
-| `/api/projects`                 | Project activity and harness mix                        |
-| `/api/sessions?project=…`       | Session metadata for a project                          |
-| `/api/search?q=…&limit=…`       | Ranked local FTS results and evidence pointers          |
-| `/api/evidence?uri=chatlog://…` | One canonical redacted turn                             |
-| `/api/insights`                 | Orchestration, role, experiment, and refinery artifacts |
-| `/api/sources`                  | Connector state and import actions                      |
+| Endpoint                        | Result                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/api/overview`                 | Corpus counts, recent sessions, project concentration                                     |
+| `/api/projects`                 | Project activity and harness mix                                                          |
+| `/api/sessions?project=…`       | Session metadata for a project                                                            |
+| `/api/search?q=…&limit=…`       | Ranked local FTS results and evidence pointers                                            |
+| `/api/evidence?uri=chatlog://…` | One canonical redacted turn                                                               |
+| `/api/insights`                 | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
+| `/api/sources`                  | Connector state and import actions                                                        |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and

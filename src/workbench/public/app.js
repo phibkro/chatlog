@@ -46,6 +46,34 @@ const relativeTime = (value) => {
 };
 const shortProject = (project = "") =>
   project.replace(/^\/srv\/share\/projects\//, "").replace(/^\/tmp\//, "tmp/") || "(unknown)";
+const shortHash = (value) => (value ? String(value).slice(0, 10) : "missing");
+
+function provenanceContext(provenance) {
+  if (!provenance)
+    return `<span class="freshness-badge unavailable">Unavailable</span><span>No derived artifact is available.</span>`;
+  if (provenance.fresh)
+    return `<span class="freshness-badge fresh">Fresh</span><span>Matches corpus projection <code>${escapeHtml(shortHash(provenance.currentProjectionHash))}</code>.</span>`;
+  const reason = {
+    "current-projection-missing": "The current corpus projection is missing.",
+    "artifact-projection-missing": "The artifact is missing projection provenance.",
+    "artifact-manifest-mismatch": "The artifact and its manifest disagree.",
+    "projection-mismatch": `Artifact <code>${escapeHtml(shortHash(provenance.artifactProjectionHash))}</code> does not match corpus <code>${escapeHtml(shortHash(provenance.currentProjectionHash))}</code>.`,
+    "role-profile-stale": "Its role profile is stale, so this downstream result is stale too.",
+    "role-profile-mismatch": `It references role profile <code>${escapeHtml(shortHash(provenance.roleProfileContentHash))}</code>, not current profile <code>${escapeHtml(shortHash(provenance.currentRoleProfileContentHash))}</code>.`,
+  }[provenance.reason];
+  return `<span class="freshness-badge stale">Stale</span><span>${reason || "Provenance does not match current derived state"} Re-run the relevant derivation before using this as current guidance.</span>`;
+}
+
+function evidenceLinks(evidence, label = "Evidence") {
+  const pointers = Array.isArray(evidence) ? evidence : [];
+  if (!pointers.length) return "";
+  return `<div class="insight-evidence"><span>${escapeHtml(label)}</span>${pointers
+    .map(
+      (item, index) =>
+        `<button type="button" class="evidence-link" data-evidence-uri="${escapeHtml(item.uri)}">Turn ${index + 1}</button>`,
+    )
+    .join("")}</div>`;
+}
 
 async function api(path) {
   const response = await fetch(path);
@@ -238,39 +266,57 @@ async function openEvidence(uri) {
 
 function renderInsights() {
   const insights = state.insights || {};
-  $("#orchestration-claim").textContent =
-    insights.orchestration?.claim || "No orchestration profile has been derived yet.";
+  const orchestration = insights.orchestration;
+  $("#orchestration-provenance").innerHTML = provenanceContext(orchestration?.provenance);
+  $("#orchestration-claim").textContent = orchestration
+    ? orchestration.provenance?.fresh
+      ? orchestration.claim
+      : `Historical finding: ${orchestration.claim}`
+    : "No orchestration profile has been derived yet.";
+  $("#orchestration-evidence").innerHTML = evidenceLinks(orchestration?.evidence);
+
+  const roles = insights.roles;
+  $("#roles-provenance").innerHTML = provenanceContext(roles?.provenance);
   const profiles = insights.roles?.profiles || [];
   $("#role-profiles").innerHTML =
     profiles
       .map(
         (profile) => `
-    <div class="role-row">
+    <div class="role-row ${roles?.provenance?.fresh ? "" : "stale-insight"}">
       <span class="role-name">${escapeHtml(profile.role)}</span>
       <div class="role-track"><i style="width:${Math.max(2, profile.autonomyChoiceRate * 100)}%"></i></div>
       <span class="role-rate">${Math.round(profile.autonomyChoiceRate * 100)}%</span>
-      <span class="role-copy">${formatNumber(profile.highConfidenceSessions)} high-confidence sessions · autonomy latitude among classified boundary choices</span>
+      <span class="role-copy">${roles?.provenance?.fresh ? "" : "Historical · "}${formatNumber(profile.highConfidenceSessions)} high-confidence sessions · autonomy latitude among classified boundary choices</span>
+      ${evidenceLinks(profile.evidence)}
     </div>`,
       )
       .join("") || `<div class="empty">No role profile derived.</div>`;
 
   const effectiveness = insights.effectiveness;
+  $("#effectiveness-provenance").innerHTML = provenanceContext(effectiveness?.provenance);
   $("#effectiveness-result").innerHTML = effectiveness
     ? `
-    <div class="experiment-verdict">
-      <strong>Recommendation: ${escapeHtml(effectiveness.metrics?.recommendation || "inspect")}</strong>
+    <div class="experiment-verdict ${effectiveness.provenance?.fresh ? "" : "stale-insight"}">
+      <strong>${
+        effectiveness.provenance?.fresh
+          ? `Recommendation: ${escapeHtml(effectiveness.metrics?.recommendation || "inspect")}`
+          : "Historical result — not current guidance"
+      }</strong>
       <p>${escapeHtml(effectiveness.claim)}</p>
     </div>
     <div class="metric-pair">
       <div class="metric-box"><span>Control tokens to gate</span><strong>${formatNumber(effectiveness.metrics?.control?.medianTokensToGate)}</strong></div>
       <div class="metric-box"><span>Treatment tokens to gate</span><strong>${formatNumber(effectiveness.metrics?.treatment?.medianTokensToGate)}</strong></div>
-    </div>`
+    </div>
+    ${evidenceLinks(effectiveness.evidence)}`
     : `<div class="empty">No measured experiment loaded.</div>`;
+  $("#refinery-provenance").innerHTML = provenanceContext(insights.refinery?.provenance);
   renderCandidates();
 }
 
 function renderCandidates() {
   const candidates = state.insights?.refinery?.candidates || [];
+  const refineryFresh = state.insights?.refinery?.provenance?.fresh;
   const filtered =
     state.candidateFilter === "all"
       ? candidates
@@ -280,8 +326,8 @@ function renderCandidates() {
       .slice(0, 40)
       .map(
         (candidate) => `
-    <div class="candidate-row">
-      <div><strong>${escapeHtml(candidate.title)}</strong><p>${escapeHtml(candidate.signature)}</p></div>
+    <div class="candidate-row ${refineryFresh ? "" : "stale-insight"}">
+      <div><strong>${refineryFresh ? "" : "Historical · "}${escapeHtml(candidate.title)}</strong><p>${escapeHtml(candidate.signature)}</p>${evidenceLinks(candidate.evidence)}</div>
       <span class="badge">${escapeHtml(candidate.type)}</span>
       <span class="candidate-frequency">${formatNumber(candidate.frequency?.sessions)} sessions · ${formatNumber(candidate.frequency?.projects)} projects</span>
     </div>`,
@@ -364,6 +410,10 @@ $("#close-project").addEventListener("click", () => $("#project-drawer").classLi
 $("#close-evidence").addEventListener("click", () => $("#evidence-dialog").close());
 $("#evidence-dialog").addEventListener("click", (event) => {
   if (event.target === $("#evidence-dialog")) $("#evidence-dialog").close();
+});
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-evidence-uri]");
+  if (link) openEvidence(link.dataset.evidenceUri);
 });
 $("#candidate-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]");

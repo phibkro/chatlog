@@ -112,9 +112,11 @@
                     <h2>How you orchestrate</h2>
                   </div>
                 </div>
+                <div id="orchestration-provenance" class="provenance"></div>
                 <blockquote id="orchestration-claim">Loading derived operator profile…</blockquote>
+                <div id="orchestration-evidence"></div>
                 <button class="text-button" data-view-jump="patterns">
-                  Inspect the evidence →
+                  Inspect role context →
                 </button>
               </article>
             </div>
@@ -197,15 +199,17 @@
                   <h2>Agent operating modes</h2>
                 </div>
               </div>
+              <div id="roles-provenance" class="provenance"></div>
               <div id="role-profiles"></div>
             </article>
             <article class="panel experiment-panel">
               <div class="panel-heading">
                 <div>
                   <p class="eyebrow">Measured, not assumed</p>
-                  <h2>Latest effectiveness result</h2>
+                  <h2>Effectiveness result</h2>
                 </div>
               </div>
+              <div id="effectiveness-provenance" class="provenance"></div>
               <div id="effectiveness-result" class="empty">No measured experiment loaded.</div>
             </article>
           </div>
@@ -223,6 +227,7 @@
                 <button data-filter="claude-md">Context</button>
               </div>
             </div>
+            <div id="refinery-provenance" class="provenance"></div>
             <div id="candidate-list" class="candidate-list"></div>
           </article>
         </section>

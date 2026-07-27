@@ -782,6 +782,69 @@ mark {
   gap: 18px;
   margin-bottom: 18px;
 }
+.provenance {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -5px 0 15px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.provenance code {
+  color: var(--muted);
+  font-size: 9px;
+}
+.freshness-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.freshness-badge.fresh {
+  border-color: rgba(158, 215, 166, 0.3);
+  color: var(--green);
+  background: rgba(158, 215, 166, 0.07);
+}
+.freshness-badge.stale {
+  border-color: rgba(221, 184, 113, 0.3);
+  color: var(--amber);
+  background: rgba(221, 184, 113, 0.07);
+}
+.freshness-badge.unavailable {
+  color: var(--faint);
+}
+.stale-insight {
+  opacity: 0.78;
+}
+.insight-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  color: var(--faint);
+  font-size: 8px;
+}
+.evidence-link {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--green);
+  background: rgba(158, 215, 166, 0.04);
+  cursor: pointer;
+  font-size: 8px;
+}
+.evidence-link:hover {
+  border-color: rgba(158, 215, 166, 0.3);
+  color: var(--green-strong);
+}
 .role-row {
   display: grid;
   grid-template-columns: 82px minmax(0, 1fr) 44px;
@@ -816,6 +879,10 @@ mark {
   color: var(--faint);
   font-size: 9px;
   line-height: 1.45;
+}
+.role-row .insight-evidence {
+  grid-column: 2 / -1;
+  margin-top: -3px;
 }
 .experiment-verdict {
   padding: 14px;
@@ -900,6 +967,9 @@ mark {
   margin: 5px 0 0;
   color: var(--faint);
   font-size: 9px;
+}
+.candidate-row .insight-evidence {
+  margin-top: 7px;
 }
 .candidate-frequency {
   color: var(--muted);

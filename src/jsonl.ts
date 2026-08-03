@@ -1,13 +1,32 @@
-export async function readJsonLines(
+import { Data, Effect } from "effect";
+
+// Malformed JSON on a non-tail line is a file-format failure, distinct from
+// AdaptError (adapters/common.ts), which is a record-shape failure a caller
+// validates after successful parse. Kept separate because readJsonLines is
+// shared by every harness adapter and knows nothing about record shapes.
+export class JsonlParseError extends Data.TaggedError("JsonlParseError")<{
+  readonly path: string;
+  readonly line: number;
+  readonly cause: unknown;
+}> {
+  override get message(): string {
+    return `${this.path}:${this.line}: invalid JSON before final line: ${String(this.cause)}`;
+  }
+}
+
+// visit runs once per parsed record, in file order. Its failure propagates
+// immediately (yield* short-circuits the read loop) rather than being
+// collected — callers no longer need to run visit to an Exit themselves.
+export const readJsonLines = Effect.fnUntraced(function* <E = never>(
   path: string,
-  visit: (record: any, line: number) => void,
-): Promise<{ partialTail: boolean; lines: number }> {
+  visit: (record: unknown, line: number) => Effect.Effect<void, E>,
+): Effect.fn.Return<{ partialTail: boolean; lines: number }, JsonlParseError | E> {
   const reader = Bun.file(path).stream().getReader();
   const decoder = new TextDecoder();
   let pending = "";
   let lineNo = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    const { done, value } = yield* Effect.promise(() => reader.read());
     if (done) break;
     pending += decoder.decode(value, { stream: true });
     const lines = pending.split("\n");
@@ -19,9 +38,9 @@ export async function readJsonLines(
       try {
         record = JSON.parse(line);
       } catch (error) {
-        throw new Error(`${path}:${lineNo}: invalid JSON before final line: ${String(error)}`);
+        return yield* Effect.fail(new JsonlParseError({ path, line: lineNo, cause: error }));
       }
-      visit(record, lineNo);
+      yield* visit(record, lineNo);
     }
   }
   pending += decoder.decode();
@@ -33,6 +52,6 @@ export async function readJsonLines(
   } catch {
     return { partialTail: true, lines: lineNo };
   }
-  visit(record, lineNo);
+  yield* visit(record, lineNo);
   return { partialTail: false, lines: lineNo };
-}
+});

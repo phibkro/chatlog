@@ -25,29 +25,57 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+function errorStatus(message: string): number {
+  if (message === "Evidence not found" || message === "Evidence turn not found") return 404;
+  if (message === "knowledge candidate artifact not found") return 404;
+  if (message.startsWith("knowledge candidate not found: ")) return 404;
+  if (message.startsWith("project not found: ")) return 404;
+  return 400;
+}
+
 function securityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  headers.set(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  );
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
-export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(import.meta.dir, "public")) {
+export function workbenchHandler(
+  data: WorkbenchData,
+  publicRoot = resolve(import.meta.dir, "public"),
+) {
   return async function fetch(request: Request): Promise<Response> {
     try {
-      if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "read-only workbench" }, 405);
+      if (request.method !== "GET" && request.method !== "HEAD")
+        return json({ error: "read-only workbench" }, 405);
       const url = new URL(request.url);
       if (url.pathname === "/api/health") {
         const health = data.health();
         return json(health, health.ready ? 200 : 503);
       }
       if (url.pathname === "/api/overview") return json(await data.overview());
-      if (url.pathname === "/api/projects") return json(data.projects(url.searchParams.get("limit")));
+      if (url.pathname === "/api/projects")
+        return json(data.projects(url.searchParams.get("limit")));
       if (url.pathname === "/api/sessions") return json(data.sessions(url));
       if (url.pathname === "/api/search") return json(data.search(url));
-      if (url.pathname === "/api/insights") return json(await data.insights());
+      if (url.pathname === "/api/prior-attempts") return json(await data.priorAttempts(url));
+      if (url.pathname === "/api/project-intelligence")
+        return json(await data.projectIntelligence(url));
+      if (url.pathname === "/api/knowledge-candidates")
+        return json(await data.knowledgeCandidates(url));
+      if (url.pathname === "/api/knowledge-candidate")
+        return json(await data.knowledgeCandidate(url));
+      if (url.pathname === "/api/themes") return json(await data.themes(url));
+      if (url.pathname === "/api/insights") return json(await data.insights(url));
       if (url.pathname === "/api/sources") return json(await data.sources());
       if (url.pathname === "/api/receipts") return json(await data.receipts(url.searchParams.get("limit")));
       if (url.pathname === "/api/evidence") {
@@ -62,18 +90,20 @@ export function workbenchHandler(data: WorkbenchData, publicRoot = resolve(impor
       const file = Bun.file(resolve(publicRoot, asset));
       if (!(await file.exists())) return json({ error: "not found" }, 404);
       const extension = asset.includes(".") ? `.${asset.split(".").at(-1)}` : "";
-      return securityHeaders(new Response(request.method === "HEAD" ? null : file, {
-        headers: {
-          "Content-Type": MIME[extension] ?? "application/octet-stream",
-          "Cache-Control": asset === "index.html" ? "no-cache" : "public, max-age=3600",
-        },
-      }));
+      return securityHeaders(
+        new Response(request.method === "HEAD" ? null : file, {
+          headers: {
+            "Content-Type": MIME[extension] ?? "application/octet-stream",
+            "Cache-Control": "no-cache",
+          },
+        }),
+      );
     } catch (error: any) {
       const message = redact(String(error?.message ?? error));
-      const status = error instanceof ActiveProjectionDriftError
-        || error instanceof DerivedProjectionDriftError
-        ? 503
-        : message.includes("not found") ? 404 : 400;
+      const status =
+        error instanceof ActiveProjectionDriftError || error instanceof DerivedProjectionDriftError
+          ? 503
+          : errorStatus(message);
       return json({ error: message }, status);
     }
   };

@@ -46,7 +46,8 @@ const DOMAIN_PROPERTY = {
 export const MCP_TOOLS = [
   {
     name: "chatlog_search",
-    description: "Search policy-visible Chatlog turns locally and return bounded snippets with stable evidence URIs.",
+    description:
+      "Search policy-visible Chatlog turns locally and return bounded snippets with stable evidence URIs.",
     inputSchema: {
       type: "object",
       properties: {
@@ -60,7 +61,8 @@ export const MCP_TOOLS = [
   },
   {
     name: "chatlog_get_evidence",
-    description: "Resolve one policy-visible chatlog:// turn pointer, bounded to 12,000 text characters.",
+    description:
+      "Resolve one policy-visible chatlog:// turn pointer, bounded to 12,000 text characters.",
     inputSchema: {
       type: "object",
       properties: {
@@ -87,7 +89,8 @@ export const MCP_TOOLS = [
   },
   {
     name: "chatlog_project_brief",
-    description: "Return a bounded local activity and derived-evidence brief for one exact project path.",
+    description:
+      "Return a bounded local activity and derived-evidence brief for one exact project path.",
     inputSchema: {
       type: "object",
       properties: {
@@ -119,11 +122,16 @@ function toolResult(value: unknown, isError = false): unknown {
 
 function argumentsRecord(value: unknown): Record<string, unknown> {
   if (value == null) return {};
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error("tool arguments must be an object");
+  if (typeof value !== "object" || Array.isArray(value))
+    throw new Error("tool arguments must be an object");
   return value as Record<string, unknown>;
 }
 
-async function callTool(data: McpData, name: string, args: Record<string, unknown>): Promise<unknown> {
+async function callTool(
+  data: McpData,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
   if (name === "chatlog_search") return data.search(args);
   if (name === "chatlog_get_evidence") return data.evidence(args);
   if (name === "chatlog_recent_work") return data.recentWork(args);
@@ -137,7 +145,7 @@ export async function handleMcpMessage(
   state = createMcpState(),
 ): Promise<JsonRpcMessage | null> {
   const hasId = Object.prototype.hasOwnProperty.call(message, "id");
-  const id = hasId ? message.id ?? null : null;
+  const id = hasId ? (message.id ?? null) : null;
   if (message.jsonrpc !== "2.0" || typeof message.method !== "string")
     return hasId ? errorResponse(id, -32600, "invalid JSON-RPC request") : null;
 
@@ -150,14 +158,16 @@ export async function handleMcpMessage(
   if (message.method === "initialize") {
     state.initializeReceived = true;
     const requested = message.params?.protocolVersion;
-    state.protocolVersion = typeof requested === "string" && SUPPORTED_PROTOCOLS.has(requested)
-      ? requested
-      : LATEST_STABLE_PROTOCOL;
+    state.protocolVersion =
+      typeof requested === "string" && SUPPORTED_PROTOCOLS.has(requested)
+        ? requested
+        : LATEST_STABLE_PROTOCOL;
     return response(id, {
       protocolVersion: state.protocolVersion,
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-      instructions: "Search first, then resolve only the evidence turns needed. Results are local, bounded, redacted, and domain-filtered.",
+      instructions:
+        "Search first, then resolve only the evidence turns needed. Results are local, bounded, redacted, and domain-filtered.",
     });
   }
   if (message.method === "ping") return response(id, {});
@@ -177,10 +187,17 @@ export async function handleMcpMessage(
   return errorResponse(id, -32601, `method not found: ${message.method}`);
 }
 
-export async function processMcpLine(data: McpData, line: string, state: McpState): Promise<JsonRpcMessage | null> {
+export async function processMcpLine(
+  data: McpData,
+  line: string,
+  state: McpState,
+): Promise<JsonRpcMessage | null> {
   let parsed: unknown;
-  try { parsed = JSON.parse(line); }
-  catch { return errorResponse(null, -32700, "parse error"); }
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return errorResponse(null, -32700, "parse error");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return errorResponse(null, -32600, "invalid JSON-RPC request");
   return handleMcpMessage(data, parsed as JsonRpcMessage, state);

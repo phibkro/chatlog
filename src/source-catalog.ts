@@ -31,8 +31,12 @@ interface SourceConfigFile {
 }
 
 async function exists(path: string): Promise<boolean> {
-  try { await stat(path); return true; }
-  catch { return false; }
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuote(value: string): string {
@@ -44,7 +48,7 @@ async function loadConfiguredSources(): Promise<SourceConfiguration[]> {
     ? resolve(process.env.CHATLOG_SOURCE_CONFIG)
     : `${homedir()}/.config/chatlog/sources.json`;
   if (!(await exists(path))) return [];
-  const parsed = await Bun.file(path).json() as SourceConfigFile;
+  const parsed = (await Bun.file(path).json()) as SourceConfigFile;
   if (!Array.isArray(parsed.sources)) throw new Error(`${path}: sources must be an array`);
   return parsed.sources.filter((source) => source.enabled !== false);
 }
@@ -87,7 +91,10 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
   const resolved: SourceCatalogItem[] = [];
   for (const item of builtins) {
     const { probe, ...source } = item;
-    resolved.push({ ...source, status: probe && await exists(probe) ? "connected" : "not-found" });
+    resolved.push({
+      ...source,
+      status: probe && (await exists(probe)) ? "connected" : "not-found",
+    });
   }
 
   const configuredSources = await loadConfiguredSources();
@@ -99,9 +106,10 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
       id: configured.id,
       kind: configured.kind,
       label: configured.label,
-      description: configured.kind === "anthropic-export"
-        ? "Claude Web conversations, brainstorming and broader personal context."
-        : "Configured external conversation source.",
+      description:
+        configured.kind === "anthropic-export"
+          ? "Claude Web conversations, brainstorming and broader personal context."
+          : "Configured external conversation source.",
       path,
       domain: configured.domain ?? "general",
       status: available ? "available" : "not-found",

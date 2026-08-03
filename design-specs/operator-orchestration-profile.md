@@ -23,12 +23,12 @@ The operator's thesis is the spine of the analysis:
 > deterministic guardrails.
 
 So the deliverable is **not** a scalar "autonomy vs determinism" score. It is a
-**decision boundary**: *grants autonomy WHEN ⟨context⟩ · imposes determinism
-WHEN ⟨context⟩*, with the guardrail placement made explicit. Autonomy and
+**decision boundary**: _grants autonomy WHEN ⟨context⟩ · imposes determinism
+WHEN ⟨context⟩_, with the guardrail placement made explicit. Autonomy and
 determinism are represented by two analytical poles the operator named — **Flue**
 (agent self-propelling non-determinism) and **Mastra** (deterministic
-workflow/guardrails) — used here only to *characterize the operator's measured
-lean*, NOT as a proposal to adopt Mastra into the spine (standing rule: Mastra
+workflow/guardrails) — used here only to _characterize the operator's measured
+lean_, NOT as a proposal to adopt Mastra into the spine (standing rule: Mastra
 stays out of the spine).
 
 ## User journey
@@ -43,7 +43,7 @@ stays out of the spine).
      worker different latitude than a manager.
    - **Guardrail inventory**: the deterministic structures the operator
      repeatedly imposes (one-writer, spec-freeze, gate-before-act, A/B-with-
-     recommendation, stop-and-report) and the *conditions* that trigger each.
+     recommendation, stop-and-report) and the _conditions_ that trigger each.
    - **Autonomy inventory**: the latitudes the operator repeatedly grants
      (self-propel, tracer-bullet-and-continue, don't-wait-for-approval-in-lane,
      recommend-and-proceed) and their triggering conditions.
@@ -56,9 +56,9 @@ stays out of the spine).
 chatlog today emits knowledge candidates (skill / gotcha / memory-or-adr /
 claude-md) and a hand-written prose profile. This spec adds two output kinds:
 
-| Output | Shape | Consumes |
-|---|---|---|
-| `orchestration-lean` | evidence-cited boundary doc: guardrail vs autonomy signals, per context | corpus + derive + new signal miners |
+| Output                | Shape                                                                                                        | Consumes                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| `orchestration-lean`  | evidence-cited boundary doc: guardrail vs autonomy signals, per context                                      | corpus + derive + new signal miners      |
 | `role-prompt-profile` | per-role prompting profile (defaults, latitudes, guardrails, model-routing) ranked by what measurably worked | above + role segmentation + eval harness |
 
 ## Goal / Constraints / Values
@@ -68,6 +68,7 @@ role-segmented, effectiveness-ranked derivation that reveals the operator's
 orchestration decision boundary and feeds per-agent prompting profiles.
 
 **Constraints** (inherited from chatlog, non-negotiable):
+
 - **Zero-egress by default.** Hosted models only for bounded retrieval rerank
   (≤50 candidates, ≤600 redacted chars), never for raw-corpus synthesis egress.
   Any synthesis stage that calls a hosted model must declare its exact egress
@@ -92,7 +93,7 @@ is a derivation with a traceable edge back to it).
 The central unknown: **can the corpus actually distinguish an autonomy-grant from
 a determinism-impose reliably enough to characterize a lean?** If that signal is
 too noisy, every downstream artifact is built on sand. So slice 1 is exactly that
-test, and it also *directly answers what the operator asked to see*:
+test, and it also _directly answers what the operator asked to see_:
 
 **Slice 1 — the orchestration-lean tracer.** Mine both signal classes from the
 existing corpus, produce ONE evidence-cited `orchestration-lean` document with
@@ -102,6 +103,7 @@ autonomy/determinism boundary and made repeatable. **Ship this first — it tell
 the operator their lean before any generation machinery is built.**
 
 Then, in risk order:
+
 - **Slice 2 — role segmentation.** Infer agent role per session (from launch
   prompt, label, project, harness) since the data model has model-per-session but
   no role. Prerequisite for per-role anything.
@@ -116,16 +118,16 @@ Each slice is 1:1 spec→code→PR, gated on its falsifier.
 
 ## Falsifiers / definition of done
 
-| Capability | Falsifier that must fail before impl and pass before ship |
-|---|---|
-| lean signal validity | A hand-labelled sample of N corpus turns disagrees with the miner's autonomy-grant vs determinism-impose classification beyond an agreed error bar. |
-| decision boundary | The boundary predicts the operator's actual choice (autonomy vs guardrail) on held-out conversations no better than the base rate. |
-| evidence binding | Any conclusion lacks a resolvable `chatlog://` pointer, or a cited pointer does not support the claim. |
-| zero-egress | A default run makes any hosted call beyond the declared bounded-rerank surface, or fails to report its egress. |
-| idempotence | Two runs on an unchanged corpus produce different `orchestration-lean` content hashes. |
-| role segmentation (S2) | A session's inferred role contradicts its launch prompt/label on a labelled sample beyond the error bar. |
-| effectiveness (S3) | A profile recommendation ranks above an alternative that the eval harness shows produced worse gate-pass / more corrections / more tokens-to-gate. |
-| no fossilization | The artifact hardcodes a model name as permanent rather than deriving it from the current corpus snapshot. |
+| Capability             | Falsifier that must fail before impl and pass before ship                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| lean signal validity   | A hand-labelled sample of N corpus turns disagrees with the miner's autonomy-grant vs determinism-impose classification beyond an agreed error bar. |
+| decision boundary      | The boundary predicts the operator's actual choice (autonomy vs guardrail) on held-out conversations no better than the base rate.                  |
+| evidence binding       | Any conclusion lacks a resolvable `chatlog://` pointer, or a cited pointer does not support the claim.                                              |
+| zero-egress            | A default run makes any hosted call beyond the declared bounded-rerank surface, or fails to report its egress.                                      |
+| idempotence            | Two runs on an unchanged corpus produce different `orchestration-lean` content hashes.                                                              |
+| role segmentation (S2) | A session's inferred role contradicts its launch prompt/label on a labelled sample beyond the error bar.                                            |
+| effectiveness (S3)     | A profile recommendation ranks above an alternative that the eval harness shows produced worse gate-pass / more corrections / more tokens-to-gate.  |
+| no fossilization       | The artifact hardcodes a model name as permanent rather than deriving it from the current corpus snapshot.                                          |
 
 ## Explicit non-goals / deferrals
 

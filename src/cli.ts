@@ -1,18 +1,28 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
 import { PiAdapter } from "./adapters/pi";
 import { ingest } from "./ingest";
 import { openAnalysis, queryModels, querySearch, queryStats } from "./analysis";
 import { deriveCorpus } from "./derive";
-import { agentAsk, agentAskLexical, agentGet, agentGrok, agentProject, agentSearch, agentSemanticSearch } from "./agent-query";
+import {
+  agentAsk,
+  agentAskLexical,
+  agentGet,
+  agentGrok,
+  agentProject,
+  agentSearch,
+  agentSemanticSearch,
+} from "./agent-query";
 import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTime } from "./duckdb";
 import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
+import { queryUndocumented } from "./undocumented";
+import type { PromotionType } from "./refinery";
 import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
@@ -28,6 +38,7 @@ import {
   loadCorpusManifest,
   reconcileSourceAuthority,
 } from "./source-authority";
+import { emitVault } from "./vault";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolveDataRoot();
@@ -50,7 +61,9 @@ if (command === "ingest") {
   console.log(JSON.stringify(await previewAnthropicExport(args[0], root, { domain }), null, 2));
 } else if (command === "import") {
   if (subcommand !== "anthropic" || !args[0])
-    throw new Error("usage: chatlog import anthropic <export.zip|directory> [domain] [--no-derive]");
+    throw new Error(
+      "usage: chatlog import anthropic <export.zip|directory> [domain] [--no-derive]",
+    );
   const domain = normalizeConversationDomain(
     args[1] && !args[1].startsWith("--") ? args[1] : "general",
   );
@@ -81,7 +94,13 @@ if (command === "ingest") {
     }
   }), null, 2));
 } else if (command === "derive") {
-  console.log(JSON.stringify({ derived: await deriveCorpus(root), refinery: await refineCorpus(root) }, null, 2));
+  console.log(
+    JSON.stringify(
+      { derived: await deriveCorpus(root), refinery: await refineCorpus(root) },
+      null,
+      2,
+    ),
+  );
 } else if (command === "refine") {
   console.log(JSON.stringify(await refineCorpus(root, Number(subcommand ?? 3)), null, 2));
 } else if (command === "query") {
@@ -121,6 +140,19 @@ if (command === "ingest") {
       output = { derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) }, effectiveness: { derivation: effectivenessDerivation, report: await loadEffectivenessRanking(root) } };
     } else if (subcommand === "refinery") {
       output = await agentRefinery(root, args[0], Number(args[1] ?? 30));
+    } else if (subcommand === "undocumented") {
+      const projectIdx = args.indexOf("--project");
+      if (projectIdx === -1 || !args[projectIdx + 1])
+        throw new Error(
+          "usage: bun run query undocumented --project <path> [--type claude-md,gotcha-skill,memory-or-adr]",
+        );
+      const project = resolve(args[projectIdx + 1]!);
+      const typeIdx = args.indexOf("--type");
+      const types =
+        typeIdx === -1 || !args[typeIdx + 1]
+          ? undefined
+          : (args[typeIdx + 1]!.split(",") as PromotionType[]);
+      output = await queryUndocumented(root, project, { types });
     } else if (subcommand === "candidate") {
       if (!args[0]) throw new Error("usage: bun run query candidate <candidate-id>");
       output = await agentRefineryCandidate(root, args[0]);
@@ -139,7 +171,7 @@ if (command === "ingest") {
       output = await duckUsageOverTime(root, bucket, Number(args[1] ?? 60));
     } else if (subcommand === "tools") output = await duckToolFrequency(root, Number(args[0] ?? 30));
     else if (subcommand === "lengths") output = await duckSessionLengths(root);
-    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
+    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|undocumented|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
     const currentProjection = projectionGuard.assert(db);
     if (
       currentProjection.manifestSourcesHash !== projection.manifestSourcesHash
@@ -152,14 +184,39 @@ if (command === "ingest") {
     }
     console.log(JSON.stringify(output, null, 2));
   } catch (error: any) {
-    console.log(JSON.stringify({ error: { message: redact(String(error?.message ?? error)), command: subcommand ?? null } }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          error: { message: redact(String(error?.message ?? error)), command: subcommand ?? null },
+        },
+        null,
+        2,
+      ),
+    );
     process.exitCode = 1;
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 } else if (command === "bridge") {
-  if (subcommand !== "emit-pi" || !args[0]) throw new Error("usage: bun run src/cli.ts bridge emit-pi <conversation-hash> [history|summary] [output-path]");
+  if (subcommand !== "emit-pi" || !args[0])
+    throw new Error(
+      "usage: bun run src/cli.ts bridge emit-pi <conversation-hash> [history|summary] [output-path]",
+    );
   const mode = (args[1] ?? "summary") as PiBridgeMode;
-  if (mode !== "history" && mode !== "summary") throw new Error("bridge mode must be history or summary");
+  if (mode !== "history" && mode !== "summary")
+    throw new Error("bridge mode must be history or summary");
   console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
+} else if (command === "vault") {
+  const outputDir = resolve(
+    subcommand && !subcommand.startsWith("--")
+      ? subcommand
+      : join(homedir(), "obsidian-vaults", "chatlog"),
+  );
+  const limitIdx = args.indexOf("--limit");
+  const limit = limitIdx === -1 ? undefined : Number(args[limitIdx + 1]);
+  const sinceIdx = args.indexOf("--since");
+  const since = sinceIdx === -1 ? undefined : args[sinceIdx + 1];
+  console.log(JSON.stringify(await emitVault(root, outputDir, { limit, since }), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge>");
+  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|vault>");
 }

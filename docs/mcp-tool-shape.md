@@ -11,12 +11,12 @@ to stdout. Run it with `bun run mcp`.
 
 ## Implemented tools
 
-| Tool | Input | Default output |
-|---|---|---|
-| `chatlog_search` | `{query, limit?, domains?}` | Up to 8 ranked turn snippets, session metadata, policy receipt, `chatlog://` turn pointers |
-| `chatlog_get_evidence` | `{uri, domains?}` | One canonical redacted turn, policy receipt, bounded to 12,000 text characters |
-| `chatlog_recent_work` | `{project, limit?, domains?}` | Up to 8 recent policy-visible sessions for an exact project path |
-| `chatlog_project_brief` | `{project, domains?}` | Bounded project activity, outcomes, problems, and decision evidence |
+| Tool                    | Input                         | Default output                                                                             |
+| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------ |
+| `chatlog_search`        | `{query, limit?, domains?}`   | Up to 8 ranked turn snippets, session metadata, policy receipt, `chatlog://` turn pointers |
+| `chatlog_get_evidence`  | `{uri, domains?}`             | One canonical redacted turn, policy receipt, bounded to 12,000 text characters             |
+| `chatlog_recent_work`   | `{project, limit?, domains?}` | Up to 8 recent policy-visible sessions for an exact project path                           |
+| `chatlog_project_brief` | `{project, domains?}`         | Bounded project activity, outcomes, problems, and decision evidence                        |
 
 The process configuration is suitable for any MCP client that accepts a command,
 arguments, and environment:
@@ -38,17 +38,17 @@ The local CLI already provides the following larger query surface. These tools
 remain deferred until their authorization and bounding behavior is specified
 as tightly as the Wave 1 tools.
 
-| Candidate tool | Input | Existing CLI behavior |
-|---|---|---|
-| `chatlog_semantic_search` | `{query, limit?, candidateLimit?}` | Local FTS candidates reranked by meaning, with scores, pointers and egress receipt |
-| `chatlog_grok` | `{topic, limit?}` | Problems, decisions, tool profile, attempts, gates and outcomes for matching sessions |
-| `chatlog_project` | `{path}` | Timespan, session/token/model effort, outcomes, recurring problems and decision pointers |
-| `chatlog_ask` | `{question, limit?}` | Hosted semantic rerank followed by chronological prior attempts and resolutions |
-| `chatlog_ask_lexical` | `{question, limit?}` | Zero-egress lexical prior-attempt query |
-| `chatlog_derive` | `{}` | Incremental derivation counts (`processed`, `skipped`, recipe drift) |
-| `chatlog_refinery` | `{type?, limit?}` | Typed rule-of-three nominations, frequency, routes, and evidence pointers |
-| `chatlog_candidate` | `{id}` | One candidate's bounded evidence, curation checks, and evaluation contract |
-| `chatlog_eval_plan` | `{id}` | Ineligible-until-curated paired evaluation shape for `agent-eval` |
+| Candidate tool            | Input                              | Existing CLI behavior                                                                    |
+| ------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `chatlog_semantic_search` | `{query, limit?, candidateLimit?}` | Local FTS candidates reranked by meaning, with scores, pointers and egress receipt       |
+| `chatlog_grok`            | `{topic, limit?}`                  | Problems, decisions, tool profile, attempts, gates and outcomes for matching sessions    |
+| `chatlog_project`         | `{path}`                           | Timespan, session/token/model effort, outcomes, recurring problems and decision pointers |
+| `chatlog_ask`             | `{question, limit?}`               | Hosted semantic rerank followed by chronological prior attempts and resolutions          |
+| `chatlog_ask_lexical`     | `{question, limit?}`               | Zero-egress lexical prior-attempt query                                                  |
+| `chatlog_derive`          | `{}`                               | Incremental derivation counts (`processed`, `skipped`, recipe drift)                     |
+| `chatlog_refinery`        | `{type?, limit?}`                  | Typed rule-of-three nominations, frequency, routes, and evidence pointers                |
+| `chatlog_candidate`       | `{id}`                             | One candidate's bounded evidence, curation checks, and evaluation contract               |
+| `chatlog_eval_plan`       | `{id}`                             | Ineligible-until-curated paired evaluation shape for `agent-eval`                        |
 
 Discovery tools never return complete turn bodies. Their snippets are bounded
 and secret-redacted, and search considers only user and assistant turns. Tool

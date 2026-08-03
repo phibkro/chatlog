@@ -16,11 +16,22 @@ interface PilotConfig {
   agentEvalRoot: string;
   realTaskReferencePath: string;
   minimumPairs: number;
-  pilotEgress: { performed: true; hostedCalls: number; surface: string; authorization: string; maxBudgetUsdPerCall: number };
+  pilotEgress: {
+    performed: true;
+    hostedCalls: number;
+    surface: string;
+    authorization: string;
+    maxBudgetUsdPerCall: number;
+  };
 }
 interface PromotionRun {
-  pairId: string; arm: "control" | "treatment"; gatePassed: boolean; tokensToGate: number | null;
-  wallClockMs: number; interventions: number; rederivationCount: number;
+  pairId: string;
+  arm: "control" | "treatment";
+  gatePassed: boolean;
+  tokensToGate: number | null;
+  wallClockMs: number;
+  interventions: number;
+  rederivationCount: number;
 }
 interface PromotionExperiment {
   schema: "agent-eval/promotion-v1";
@@ -29,43 +40,88 @@ interface PromotionExperiment {
   runs: PromotionRun[];
 }
 
-function hash(text: string): string { return new Bun.CryptoHasher("sha256").update(text).digest("hex"); }
-async function atomicWrite(path: string, data: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 }); const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, data, { mode: 0o600 }); await rename(temp, path); await chmod(path, 0o600);
+function hash(text: string): string {
+  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
 }
-function finiteNonnegative(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0; }
+async function atomicWrite(path: string, data: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.tmp`;
+  await writeFile(temp, data, { mode: 0o600 });
+  await rename(temp, path);
+  await chmod(path, 0o600);
+}
+function finiteNonnegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 function validateExperiment(value: unknown, minimumPairs: number): PromotionExperiment {
-  if (!value || typeof value !== "object") throw new Error("promotion experiment must be an object"); const experiment = value as any;
-  if (experiment.schema !== "agent-eval/promotion-v1" || !Array.isArray(experiment.runs)) throw new Error("expected agent-eval/promotion-v1 runs");
-  if (!/^[0-9a-f]{64}$/.test(experiment.candidate?.contentHash ?? "")) throw new Error("promotion candidate contentHash is required");
+  if (!value || typeof value !== "object")
+    throw new Error("promotion experiment must be an object");
+  const experiment = value as any;
+  if (experiment.schema !== "agent-eval/promotion-v1" || !Array.isArray(experiment.runs))
+    throw new Error("expected agent-eval/promotion-v1 runs");
+  if (!/^[0-9a-f]{64}$/.test(experiment.candidate?.contentHash ?? ""))
+    throw new Error("promotion candidate contentHash is required");
   const pairs = new Map<string, Set<string>>();
   for (const [index, run] of experiment.runs.entries()) {
-    if (!run || typeof run.pairId !== "string" || !["control", "treatment"].includes(run.arm) || typeof run.gatePassed !== "boolean" || (run.tokensToGate !== null && !finiteNonnegative(run.tokensToGate)) || !finiteNonnegative(run.wallClockMs) || !finiteNonnegative(run.interventions) || !finiteNonnegative(run.rederivationCount)) throw new Error(`invalid promotion run ${index}`);
-    const arms = pairs.get(run.pairId) ?? new Set<string>(); if (arms.has(run.arm)) throw new Error(`duplicate ${run.arm} in pair ${run.pairId}`); arms.add(run.arm); pairs.set(run.pairId, arms);
+    if (
+      !run ||
+      typeof run.pairId !== "string" ||
+      !["control", "treatment"].includes(run.arm) ||
+      typeof run.gatePassed !== "boolean" ||
+      (run.tokensToGate !== null && !finiteNonnegative(run.tokensToGate)) ||
+      !finiteNonnegative(run.wallClockMs) ||
+      !finiteNonnegative(run.interventions) ||
+      !finiteNonnegative(run.rederivationCount)
+    )
+      throw new Error(`invalid promotion run ${index}`);
+    const arms = pairs.get(run.pairId) ?? new Set<string>();
+    if (arms.has(run.arm)) throw new Error(`duplicate ${run.arm} in pair ${run.pairId}`);
+    arms.add(run.arm);
+    pairs.set(run.pairId, arms);
   }
   if (pairs.size < minimumPairs) throw new Error(`pilot requires at least ${minimumPairs} pairs`);
-  for (const [pairId, arms] of pairs) if (!arms.has("control") || !arms.has("treatment")) throw new Error(`incomplete pair ${pairId}`);
+  for (const [pairId, arms] of pairs)
+    if (!arms.has("control") || !arms.has("treatment"))
+      throw new Error(`incomplete pair ${pairId}`);
   return experiment as PromotionExperiment;
 }
 async function runExistingScorer(root: string, experimentPath: string): Promise<any> {
   const scorer = join(root, "src", "promotion-score.ts");
-  const process = Bun.spawn(["bun", scorer, experimentPath], { cwd: root, stdout: "pipe", stderr: "pipe", env: { ...processEnv(), NO_COLOR: "1" } });
-  const [stdout, stderr, exitCode] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]);
+  const process = Bun.spawn(["bun", scorer, experimentPath], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...processEnv(), NO_COLOR: "1" },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
+  ]);
   if (exitCode !== 0) throw new Error(`agent-eval scorer failed: ${stderr.trim() || exitCode}`);
   return JSON.parse(stdout);
 }
-function processEnv(): Record<string, string | undefined> { return { ...process.env }; }
-function executableAvailable(name: string): boolean { return Boolean(Bun.which(name)); }
-function sum(values: number[]): number { return values.reduce((total, value) => total + value, 0); }
+function processEnv(): Record<string, string | undefined> {
+  return { ...process.env };
+}
+function executableAvailable(name: string): boolean {
+  return Boolean(Bun.which(name));
+}
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
 async function treatmentConsumption(experimentPath: string, experiment: PromotionExperiment) {
   const artifactText = await readFile(experiment.curation.installedArtifact, "utf8");
-  if (hash(artifactText) !== experiment.curation.installedContentHash) throw new Error("installed treatment content hash mismatch");
-  const skillName = /^name:\s*(\S+)\s*$/m.exec(artifactText)?.[1]; if (!skillName) throw new Error("treatment skill name is missing");
+  if (hash(artifactText) !== experiment.curation.installedContentHash)
+    throw new Error("installed treatment content hash mismatch");
+  const skillName = /^name:\s*(\S+)\s*$/m.exec(artifactText)?.[1];
+  if (!skillName) throw new Error("treatment skill name is missing");
   const traceRows = [] as Array<{ pairId: string; traceContentHash: string; invoked: boolean }>;
   for (const run of experiment.runs.filter((item) => item.arm === "treatment")) {
-    const path = join(dirname(experimentPath), "traces", `pair-${run.pairId}-treatment.jsonl`); const text = await readFile(path, "utf8");
-    const invoked = text.includes('"name":"Skill"') && text.includes(`"skill":"${skillName}"`); traceRows.push({ pairId: run.pairId, traceContentHash: hash(text), invoked });
+    const path = join(dirname(experimentPath), "traces", `pair-${run.pairId}-treatment.jsonl`);
+    const text = await readFile(path, "utf8");
+    const invoked = text.includes('"name":"Skill"') && text.includes(`"skill":"${skillName}"`);
+    traceRows.push({ pairId: run.pairId, traceContentHash: hash(text), invoked });
   }
   if (traceRows.some((row) => !row.invoked)) throw new Error("pilot treatment was available but not consumed in every treatment arm");
   return { skillName, invocations: traceRows.length, traces: traceRows, projectionHash: hash(JSON.stringify(traceRows)) };
@@ -148,10 +204,19 @@ export async function deriveEffectivenessRanking(root: string, configPath = join
       if (!(error instanceof DerivedProjectionDriftError)) throw error;
     }
   }
-  const artifact = await buildEffectivenessRanking(root, config); const text = JSON.stringify(artifact, null, 2) + "\n"; const contentHash = hash(text);
-  const artifactRel = `orchestration-effectiveness/${contentHash.slice(0, 2)}/${contentHash}.json`; await atomicWrite(join(root, "derived", artifactRel), text);
-  manifest.current = { inputProjectionHash, recipeHash, artifactPath: artifactRel, contentHash }; await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-  return { processed: true, artifactPath: join(root, "derived", artifactRel), contentHash, inputProjectionHash };
+  const artifact = await buildEffectivenessRanking(root, config);
+  const text = JSON.stringify(artifact, null, 2) + "\n";
+  const contentHash = hash(text);
+  const artifactRel = `orchestration-effectiveness/${contentHash.slice(0, 2)}/${contentHash}.json`;
+  await atomicWrite(join(root, "derived", artifactRel), text);
+  manifest.current = { inputProjectionHash, recipeHash, artifactPath: artifactRel, contentHash };
+  await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  return {
+    processed: true,
+    artifactPath: join(root, "derived", artifactRel),
+    contentHash,
+    inputProjectionHash,
+  };
 }
 export async function loadEffectivenessRanking(root: string): Promise<any> {
   const roleCurrent = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", { optional: true });

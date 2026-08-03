@@ -60,7 +60,11 @@ export async function duckTokenUsage(root: string): Promise<unknown> {
   return { engine: "duckdb", source: "derived current-hash projection + objects/*/*.json", rows };
 }
 
-export async function duckUsageOverTime(root: string, bucket: "day" | "month", limit: number): Promise<unknown> {
+export async function duckUsageOverTime(
+  root: string,
+  bucket: "day" | "month",
+  limit: number,
+): Promise<unknown> {
   const format = bucket === "day" ? "%Y-%m-%d" : "%Y-%m";
   const rows = await withDerivedProjection(root, (expected) =>
     query(`SELECT strftime(CAST(startedAt AS TIMESTAMP), '${format}') period, harness, model, count(*)::BIGINT sessions,
@@ -86,7 +90,10 @@ export async function duckSessionLengths(root: string): Promise<unknown> {
   return { engine: "duckdb", source: "derived current-hash projection + objects/*/*.json", rows };
 }
 
-export async function duckProjectAnalytics(root: string, project: string): Promise<{ overview: any; models: any[]; tools: any[] }> {
+export async function duckProjectAnalytics(
+  root: string,
+  project: string,
+): Promise<{ overview: any; models: any[]; tools: any[] }> {
   const where = `project=${literal(project)}`;
   const [overviewRows, models, tools] = await withDerivedProjection(root, (expected) =>
     Promise.all([

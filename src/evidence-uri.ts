@@ -1,5 +1,4 @@
-export const EVIDENCE_URI_PATTERN =
-  "^chatlog://conversation/([a-fA-F0-9]{64})/turn/([0-9]+)$";
+export const EVIDENCE_URI_PATTERN = "^chatlog://conversation/([a-fA-F0-9]{64})/turn/([0-9]+)$";
 
 const evidenceUriRegex = new RegExp(EVIDENCE_URI_PATTERN);
 

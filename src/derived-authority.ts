@@ -29,6 +29,12 @@ function sha256(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
 }
 
+function artifactInputProjectionHash(value: unknown): unknown {
+  return value !== null && typeof value === "object" && "inputProjectionHash" in value
+    ? value.inputProjectionHash
+    : undefined;
+}
+
 export function serializeCurrentProjection(
   sources: Record<string, { contentHash: string }>,
 ): string {
@@ -149,7 +155,7 @@ export async function loadProjectionBoundArtifact<T = any>(
   const current = await loadCurrentDerivedArtifact<T>(root, manifestName, options);
   if (current && (
     current.inputProjectionHash !== inputProjectionHash
-    || current.artifact?.inputProjectionHash !== inputProjectionHash
+    || artifactInputProjectionHash(current.artifact) !== inputProjectionHash
   )) {
     throw new DerivedProjectionDriftError(
       `${manifestName}: current artifact does not match the active derived projection`,

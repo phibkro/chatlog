@@ -19,17 +19,35 @@ const signalPrompts: Record<Exclude<AgentRole, "unclassified">, string> = {
   worker: "Build only in this tree as sole writer; stop-and-report at a wall.",
 };
 
-function fixture(hash: string, role: Exclude<AgentRole, "unclassified">, index: number): Conversation {
+function fixture(
+  hash: string,
+  role: Exclude<AgentRole, "unclassified">,
+  index: number,
+): Conversation {
   return {
-    id: `${role}-${index}`, provider: "test", harness: index % 2 ? "harness-a" : "harness-b", project: `/project-${index % 2}`, cwd: "/test", model: `ephemeral-${index}`,
-    startedAt: "2026-07-01T00:00:00Z", endedAt: "2026-07-01T00:01:00Z", sourcePath: `/${role}-${index}`, contentHash: hash,
-    turns: [{ role: "user", content: rolePrompts[role] }, ...Array.from({ length: 10 }, () => ({ role: "user", content: signalPrompts[role] }))],
+    id: `${role}-${index}`,
+    provider: "test",
+    harness: index % 2 ? "harness-a" : "harness-b",
+    project: `/project-${index % 2}`,
+    cwd: "/test",
+    model: `ephemeral-${index}`,
+    startedAt: "2026-07-01T00:00:00Z",
+    endedAt: "2026-07-01T00:01:00Z",
+    sourcePath: `/${role}-${index}`,
+    contentHash: hash,
+    turns: [
+      { role: "user", content: rolePrompts[role] },
+      ...Array.from({ length: 10 }, () => ({ role: "user", content: signalPrompts[role] })),
+    ],
   };
 }
 
 test("explicit launch anchors outrank later interaction vocabulary", () => {
   const conversation = fixture("f".repeat(64), "manager", 0);
-  conversation.turns.push({ role: "user", content: "Ask an independent reviewer to try to falsify it." });
+  conversation.turns.push({
+    role: "user",
+    content: "Ask an independent reviewer to try to falsify it.",
+  });
   expect(inferAgentRole(conversation)).toMatchObject({ role: "manager", confidence: "high" });
 });
 
@@ -50,10 +68,22 @@ test("role segmentation is labelled, distinguishable, local, and idempotent", as
   expect(first.processed).toBe(true); expect(second).toMatchObject({ processed: false, contentHash: first.contentHash });
   expect(new Bun.CryptoHasher("sha256").update(await readFile(first.artifactPath, "utf8")).digest("hex")).toBe(first.contentHash);
   const report = await loadRoleSegmentation(root);
-  expect(report.validation.roleInference).toMatchObject({ sampleSize: 8, accuracy: 1, contradictionRate: 0 });
+  expect(report.validation.roleInference).toMatchObject({
+    sampleSize: 8,
+    accuracy: 1,
+    contradictionRate: 0,
+  });
   expect(report.validation.distinguishability.distinguishablePairs.length).toBeGreaterThan(0);
-  expect(report.taxonomy.map((item: any) => item.role)).toEqual(["reviewer", "advisor", "manager", "worker"]);
+  expect(report.taxonomy.map((item: any) => item.role)).toEqual([
+    "reviewer",
+    "advisor",
+    "manager",
+    "worker",
+  ]);
   expect(report.egress).toMatchObject({ performed: false, surface: "none", hostedCalls: 0 });
-  expect(report.policy).toMatchObject({ autoPromotion: false, slice3EffectivenessRanking: "not started" });
+  expect(report.policy).toMatchObject({
+    autoPromotion: false,
+    slice3EffectivenessRanking: "not started",
+  });
   expect(JSON.stringify(report)).not.toContain("ephemeral-");
 });

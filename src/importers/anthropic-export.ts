@@ -113,7 +113,8 @@ async function readExportJson(path: string, member: string): Promise<string> {
   const source = resolve(path);
   const info = await stat(source);
   if (info.isDirectory()) return readFile(join(source, member), "utf8");
-  if (extname(source).toLowerCase() !== ".zip") throw new Error("Anthropic export must be a directory or .zip archive");
+  if (extname(source).toLowerCase() !== ".zip")
+    throw new Error("Anthropic export must be a directory or .zip archive");
 
   const child = Bun.spawn(["unzip", "-p", source, member], {
     stdout: "pipe",
@@ -124,13 +125,17 @@ async function readExportJson(path: string, member: string): Promise<string> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0) throw new Error(`cannot read ${member} from Anthropic export: ${redact(error.trim())}`);
+  if (exitCode !== 0)
+    throw new Error(`cannot read ${member} from Anthropic export: ${redact(error.trim())}`);
   return text;
 }
 
 function safeJson(value: unknown): string {
-  try { return redact(JSON.stringify(value ?? {})); }
-  catch { return "[unserializable tool input]"; }
+  try {
+    return redact(JSON.stringify(value ?? {}));
+  } catch {
+    return "[unserializable tool input]";
+  }
 }
 
 function blockText(block: ExportContentBlock): string {
@@ -166,9 +171,15 @@ export function adaptAnthropicConversation(
   const toolCalls = new Map<string, ToolCall>();
 
   for (const message of item.chat_messages ?? []) {
-    const role = message.sender === "human" ? "user" : message.sender === "assistant" ? "assistant" : String(message.sender ?? "unknown");
+    const role =
+      message.sender === "human"
+        ? "user"
+        : message.sender === "assistant"
+          ? "assistant"
+          : String(message.sender ?? "unknown");
     const text = (message.content ?? []).map(blockText).filter(Boolean);
-    if (!text.length && typeof message.text === "string" && message.text.trim()) text.push(redact(message.text));
+    if (!text.length && typeof message.text === "string" && message.text.trim())
+      text.push(redact(message.text));
     text.push(...attachmentSummary(message));
 
     const calls: ToolCall[] = [];
@@ -197,7 +208,10 @@ export function adaptAnthropicConversation(
     }
   }
 
-  const timestamps = turns.map((turn) => turn.at).filter((value): value is string => Boolean(value)).sort();
+  const timestamps = turns
+    .map((turn) => turn.at)
+    .filter((value): value is string => Boolean(value))
+    .toSorted();
   const fallback = item.created_at ?? item.updated_at ?? new Date(0).toISOString();
   return {
     id: item.uuid,
@@ -246,7 +260,8 @@ export async function previewAnthropicExport(
   const sourceInfo = await stat(resolved);
   const exportText = await readExportJson(resolved, "conversations.json");
   const conversations = JSON.parse(exportText) as ExportConversation[];
-  if (!Array.isArray(conversations)) throw new Error("Anthropic conversations.json must contain an array");
+  if (!Array.isArray(conversations))
+    throw new Error("Anthropic conversations.json must contain an array");
 
   const manifest = await loadManifest(join(root, "corpus", "manifest.json"));
   const proposed: Array<{ sourcePath: string; contentHash: string }> = [];
@@ -296,13 +311,24 @@ export async function previewAnthropicExport(
     } else {
       let domainOnly = false;
       try {
-        const previousConversation = JSON.parse(await readFile(
-          join(root, "corpus", "objects", previous.contentHash.slice(0, 2), `${previous.contentHash}.json`),
-          "utf8",
-        )) as Conversation;
-        const previousDomain = normalizeConversationDomain(previousConversation.domain ?? "general");
-        domainOnly = previousDomain !== domain
-          && JSON.stringify({
+        const previousConversation = JSON.parse(
+          await readFile(
+            join(
+              root,
+              "corpus",
+              "objects",
+              previous.contentHash.slice(0, 2),
+              `${previous.contentHash}.json`,
+            ),
+            "utf8",
+          ),
+        ) as Conversation;
+        const previousDomain = normalizeConversationDomain(
+          previousConversation.domain ?? "general",
+        );
+        domainOnly =
+          previousDomain !== domain &&
+          JSON.stringify({
             ...previousConversation,
             domain,
             contentHash: conversation.contentHash,
@@ -330,14 +356,16 @@ export async function previewAnthropicExport(
   observed.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
   timestamps.sort();
   const sourceContentHash = sha256(exportText);
-  const proposalId = sha256(JSON.stringify({
-    schema: "chatlog/anthropic-import-preview-v1",
-    source: resolved,
-    sourceContentHash,
-    domain,
-    proposed,
-    invalid,
-  }));
+  const proposalId = sha256(
+    JSON.stringify({
+      schema: "chatlog/anthropic-import-preview-v1",
+      source: resolved,
+      sourceContentHash,
+      domain,
+      proposed,
+      invalid,
+    }),
+  );
   const receiptId = sha256(JSON.stringify({ proposalId, observed }));
 
   return {
@@ -415,7 +443,9 @@ export async function importAnthropicExport(
           summary.attachments += message.attachments?.length ?? 0;
           summary.files += message.files?.length ?? 0;
         }
-        const conversation = canonicalizeConversation(adaptAnthropicConversation(resolved, item, domain));
+        const conversation = canonicalizeConversation(
+          adaptAnthropicConversation(resolved, item, domain),
+        );
         summary.turns += conversation.turns.length;
         const previous = manifest.sources[conversation.sourcePath];
         if (previous?.contentHash === conversation.contentHash) {
@@ -425,8 +455,14 @@ export async function importAnthropicExport(
         if (previous) replaced++;
         else added++;
 
-        const objectPath = join(corpusDir, "objects", conversation.contentHash.slice(0, 2), `${conversation.contentHash}.json`);
-        if (!(await Bun.file(objectPath).exists())) await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
+        const objectPath = join(
+          corpusDir,
+          "objects",
+          conversation.contentHash.slice(0, 2),
+          `${conversation.contentHash}.json`,
+        );
+        if (!(await Bun.file(objectPath).exists()))
+          await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
         indexConversation(db, conversation, source.mtimeMs, source.size);
         manifest.sources[conversation.sourcePath] = {
           size: source.size,

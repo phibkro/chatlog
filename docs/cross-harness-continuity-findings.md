@@ -17,11 +17,11 @@ and should be the product default.
 
 ## Tier 1: native resume
 
-| Target | Resume entry point | Native state it expects | Foreign session result |
-| --- | --- | --- | --- |
-| Codex | `codex resume [SESSION_ID] [PROMPT]`, `--last`, `--all` | A rollout event stream beginning with Codex session metadata, then turn context, response items, event messages, world state, encrypted reasoning, function/custom calls and outputs, sandbox/approval state, and token events | No path import; ID/name resolution is against Codex's own rollout store. Claude/pi IDs and records do not provide the required state. |
-| Claude Code | `claude --resume [id]`, `--continue`, optionally `--fork-session` | A UUID-linked record tree (`uuid`, `parentUuid`, `sessionId`) with Claude message blocks, request/prompt IDs, tool-use/result linkage, mode/permission data, file-history snapshots, attachments, and side metadata | Resume resolves Claude's project/session store. Codex/pi records lack the graph and Claude-specific message and snapshot state. |
-| pi | `pi --continue`, `--resume`, `--session <path|id>`, `--fork` | A documented version-3 header followed by an `id`/`parentId` entry tree with typed messages, model changes, compactions, branch summaries, and custom state | Path import makes the incompatibility testable. Pi rejected a copied real Claude JSONL: `Session file is not a valid pi session`. |
+| Target      | Resume entry point                                                | Native state it expects                                                                                                                                                                                                        | Foreign session result                                                                                                                                      |
+| ----------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex       | `codex resume [SESSION_ID] [PROMPT]`, `--last`, `--all`           | A rollout event stream beginning with Codex session metadata, then turn context, response items, event messages, world state, encrypted reasoning, function/custom calls and outputs, sandbox/approval state, and token events | No path import; ID/name resolution is against Codex's own rollout store. Claude/pi IDs and records do not provide the required state.                       |
+| Claude Code | `claude --resume [id]`, `--continue`, optionally `--fork-session` | A UUID-linked record tree (`uuid`, `parentUuid`, `sessionId`) with Claude message blocks, request/prompt IDs, tool-use/result linkage, mode/permission data, file-history snapshots, attachments, and side metadata            | Resume resolves Claude's project/session store. Codex/pi records lack the graph and Claude-specific message and snapshot state.                             |
+| pi          | `pi --continue`, `--resume`, `--session <path                     | id>`, `--fork`                                                                                                                                                                                                                 | A documented version-3 header followed by an `id`/`parentId` entry tree with typed messages, model changes, compactions, branch summaries, and custom state | Path import makes the incompatibility testable. Pi rejected a copied real Claude JSONL: `Session file is not a valid pi session`. |
 
 All six cross-harness directions fail for the same structural reason, not just a
 filename mismatch. The source harness's model-specific context is part of the
@@ -43,15 +43,15 @@ Renaming a file or transplanting a UUID cannot reconstruct those invariants.
 
 ### What is lossy or must be discarded
 
-| State | Treatment | Why |
-| --- | --- | --- |
-| Branch topology and abandoned branches | Canonical linearization | Current `Conversation` is linear. |
-| Source system/developer instructions, approvals, sandbox, tool registry | Drop | They are stale target policy and can be unsafe if replayed as authority. |
-| Reasoning/thinking | Drop | Codex may store encrypted reasoning; signatures and provider replay rules are model-specific. |
-| Native tool-call continuation | Encode as inert historical text | A dangling or imperfectly paired call can trigger target tool protocol errors or accidental execution. Claude IR currently loses some exact result pairing. |
-| Provider response/request IDs | Drop | Meaningful only to the source API/harness. |
-| Tokens, cache, cost, context windows | Zero/non-authoritative in emitted Pi assistant records | Historical accounting is analysis data, not valid target runtime state. |
-| Compaction/file snapshots/attachments/world state | Drop, point back to canonical data | Not represented portably by the current IR. |
+| State                                                                   | Treatment                                              | Why                                                                                                                                                         |
+| ----------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Branch topology and abandoned branches                                  | Canonical linearization                                | Current `Conversation` is linear.                                                                                                                           |
+| Source system/developer instructions, approvals, sandbox, tool registry | Drop                                                   | They are stale target policy and can be unsafe if replayed as authority.                                                                                    |
+| Reasoning/thinking                                                      | Drop                                                   | Codex may store encrypted reasoning; signatures and provider replay rules are model-specific.                                                               |
+| Native tool-call continuation                                           | Encode as inert historical text                        | A dangling or imperfectly paired call can trigger target tool protocol errors or accidental execution. Claude IR currently loses some exact result pairing. |
+| Provider response/request IDs                                           | Drop                                                   | Meaningful only to the source API/harness.                                                                                                                  |
+| Tokens, cache, cost, context windows                                    | Zero/non-authoritative in emitted Pi assistant records | Historical accounting is analysis data, not valid target runtime state.                                                                                     |
+| Compaction/file snapshots/attachments/world state                       | Drop, point back to canonical data                     | Not represented portably by the current IR.                                                                                                                 |
 
 Pi is the viable first emitter because its v3 format and loader are locally
 documented and it accepts an explicit path. Codex and Claude target emitters are

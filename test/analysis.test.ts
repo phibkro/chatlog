@@ -30,10 +30,20 @@ test("separates provider-specific non-cached and cached token semantics", async 
     "/codex": { contentHash: "b".repeat(64) },
   });
   const rows = queryTokenUsage(db) as any[];
-  expect(rows.find((row) => row.harness === "claude-code")).toMatchObject({ non_cached_tokens: 15, cached_tokens: 50, reported_total_tokens: 65 });
-  expect(rows.find((row) => row.harness === "codex")).toMatchObject({ non_cached_tokens: 40, cached_tokens: 80, reported_total_tokens: 120 });
+  expect(rows.find((row) => row.harness === "claude-code")).toMatchObject({
+    non_cached_tokens: 15,
+    cached_tokens: 50,
+    reported_total_tokens: 65,
+  });
+  expect(rows.find((row) => row.harness === "codex")).toMatchObject({
+    non_cached_tokens: 40,
+    cached_tokens: 80,
+    reported_total_tokens: 120,
+  });
   expect(queryToolFrequency(db)).toHaveLength(2);
   expect(queryUsageOverTime(db, "month")).toHaveLength(2);
-  expect(querySessionLengths(db)).toEqual([{ turn_bucket: "1-10", sessions: 2, avg_turns: 1, min_turns: 1, max_turns: 1 }]);
+  expect(querySessionLengths(db)).toEqual([
+    { turn_bucket: "1-10", sessions: 2, avg_turns: 1, min_turns: 1, max_turns: 1 },
+  ]);
   db.close();
 });

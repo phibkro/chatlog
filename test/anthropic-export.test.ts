@@ -21,7 +21,13 @@ const fixture = {
       sender: "human",
       created_at: "2025-01-01T10:00:00Z",
       content: [{ type: "text", text: "Explore this idea with sk-ant-abcdefghijklmnop" }],
-      attachments: [{ file_name: "notes.pdf", file_type: "application/pdf", extracted_content: "not indexed by default" }],
+      attachments: [
+        {
+          file_name: "notes.pdf",
+          file_type: "application/pdf",
+          extracted_content: "not indexed by default",
+        },
+      ],
     },
     {
       uuid: "message-2",
@@ -57,8 +63,9 @@ test("adapts Claude Web exports without indexing thinking or attachment bodies",
   expect(JSON.stringify(conversation)).not.toContain("not indexed by default");
   expect(JSON.stringify(conversation)).not.toContain("private model scratchpad");
   expect(conversation.turns[1].toolCalls?.[0]).toMatchObject({ name: "search", output: "result" });
-  expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*"))
-    .toThrow("invalid conversation domain");
+  expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*")).toThrow(
+    "invalid conversation domain",
+  );
 });
 
 test("imports an extracted Anthropic export idempotently", async () => {
@@ -97,8 +104,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
   expect(preview.sourceContentHash).toHaveLength(64);
   expect(await Bun.file(join(root, "corpus", "manifest.json")).exists()).toBe(false);
   expect(await Bun.file(join(root, "analysis", "chatlog.sqlite")).exists()).toBe(false);
-  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
-    .toBe(preview.receiptId);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId).toBe(
+    preview.receiptId,
+  );
 
   const first = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(first).toMatchObject({ discovered: 1, imported: 1, skipped: 0, turns: 2, attachments: 1 });
@@ -134,7 +142,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
     unchanged: 1,
     wouldImport: 0,
   });
-  const reclassificationPreview = await previewAnthropicExport(source, root, { domain: "personal" });
+  const reclassificationPreview = await previewAnthropicExport(source, root, {
+    domain: "personal",
+  });
   expect(reclassificationPreview).toMatchObject({
     new: 0,
     changed: 0,
@@ -143,8 +153,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
     wouldImport: 1,
   });
   expect(reclassificationPreview.proposalId).not.toBe(preview.proposalId);
-  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
-    .not.toBe(preview.receiptId);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId).not.toBe(
+    preview.receiptId,
+  );
   const second = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(second).toMatchObject({ discovered: 1, imported: 0, skipped: 1 });
   expect(second.receipt).toMatchObject({
@@ -156,8 +167,17 @@ test("imports an extracted Anthropic export idempotently", async () => {
 
   const manifest = JSON.parse(await readFile(join(root, "corpus", "manifest.json"), "utf8"));
   const hash = Object.values(manifest.sources)[0] as { contentHash: string };
-  const canonical = JSON.parse(await readFile(join(root, "corpus", "objects", hash.contentHash.slice(0, 2), `${hash.contentHash}.json`), "utf8"));
-  expect(canonical).toMatchObject({ title: "A broader idea", domain: "ideas", harness: "claude-web" });
+  const canonical = JSON.parse(
+    await readFile(
+      join(root, "corpus", "objects", hash.contentHash.slice(0, 2), `${hash.contentHash}.json`),
+      "utf8",
+    ),
+  );
+  expect(canonical).toMatchObject({
+    title: "A broader idea",
+    domain: "ideas",
+    harness: "claude-web",
+  });
 
   const db = new Database(join(root, "analysis", "chatlog.sqlite"), { readonly: true });
   expect(db.query("SELECT title, domain, source_kind FROM current_conversations").get()).toEqual({

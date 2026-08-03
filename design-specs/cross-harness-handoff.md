@@ -82,11 +82,11 @@ PoC already emits deterministic bytes but has not yet added this manifest.
 
 ## Target strategy
 
-| Target | Default | Optional | Launch shape |
-| --- | --- | --- | --- |
-| pi | One user handoff message | Reconstructed v3 linear history | `pi --session <emitted-file>` for experimental import; fresh prompt preferred for production |
-| Codex | Fresh-session prompt | None until a supported import API exists | `codex <handoff-prompt>` / supported exec surface |
-| Claude Code | Fresh-session prompt | None until a supported import API exists | dispatched Claude fresh session with the handoff prompt; never forge `.jsonl` |
+| Target      | Default                  | Optional                                 | Launch shape                                                                                 |
+| ----------- | ------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| pi          | One user handoff message | Reconstructed v3 linear history          | `pi --session <emitted-file>` for experimental import; fresh prompt preferred for production |
+| Codex       | Fresh-session prompt     | None until a supported import API exists | `codex <handoff-prompt>` / supported exec surface                                            |
+| Claude Code | Fresh-session prompt     | None until a supported import API exists | dispatched Claude fresh session with the handoff prompt; never forge `.jsonl`                |
 
 ## Acceptance gates
 

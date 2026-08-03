@@ -79,6 +79,26 @@ The answer does not ask for promotion eligibility: that value is derived later
 from a genuine verdict and the distinct sessions behind selected evidence, so a
 human-entered boolean cannot disagree with the evidence.
 
+The Workbench Memory Lab at `/memory/` is the preferred operator surface. It
+does not expose these expert-facing fields directly. Each candidate becomes a
+scenario plus a model-authored memory proposal with three correctness choices (`correct`,
+`incorrect`, `unsure`) and three reinforcement choices (`positive`, `negative`,
+`neutral`). A written correction or missing-context note is optional. The
+proposal is stored in an exact, packet-bound `proposals.json` sidecar with
+provider, model, effort, and recipe provenance. The application stores the
+operator's choices in a separate review ledger; it does not compile them into
+the expert packet-answer schema. The review ledger also binds the SHA-256 hash
+of the exact proposal sidecar bytes, so a regenerated proposal set invalidates
+stale reviews instead of changing their meaning.
+
+The same public-only workflow is available at Workbench `/memory/`. Memory Lab
+discovers only the newest valid separated `public/` bundle with complete,
+strictly validated proposals. It saves `operator-reviews.draft.json` atomically
+during review and creates `operator-reviews.json` only after an explicit
+complete-packet finalization. Legacy `answers.draft.json` and `answers.json`
+remain untouched for the expert adjudication workflow. The UI never reads the
+private manifest, invokes a model, or exposes promotion controls.
+
 ## `agent-eval/promotion-v1`
 
 The control and treatment use the same repository, clean start commit, task,

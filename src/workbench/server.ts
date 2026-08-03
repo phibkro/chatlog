@@ -3,8 +3,12 @@ import { resolve } from "node:path";
 import { redact } from "../redact";
 import { WorkbenchData } from "./data";
 import { resolveDataRoot } from "../data-root";
-import { ActiveProjectionDriftError } from "../source-authority";
 import { DerivedProjectionDriftError } from "../derived-authority";
+import { ActiveProjectionDriftError } from "../source-authority";
+import { MemoryLab, type MemoryLabResult } from "./memory-lab";
+
+const MEMORY_LAB_WRITE_HEADER = "X-Chatlog-Memory-Lab";
+const MEMORY_LAB_MAX_BODY_BYTES = 16 * 1024;
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -49,12 +53,73 @@ function securityHeaders(response: Response): Response {
   });
 }
 
+function memoryLabResponse<T>(result: MemoryLabResult<T>): Response {
+  return result.ok ? json(result.value) : json({ error: result.error }, result.status);
+}
+
+async function memoryLabBody<T>(request: Request): Promise<MemoryLabResult<T>> {
+  if (request.headers.get(MEMORY_LAB_WRITE_HEADER) !== "1")
+    return { ok: false, status: 403, error: "memory lab write header required" };
+  if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
+    return { ok: false, status: 415, error: "memory lab writes require application/json" };
+  const declaredLength = Number(request.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MEMORY_LAB_MAX_BODY_BYTES)
+    return { ok: false, status: 413, error: "memory lab request is too large" };
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (reader !== undefined)
+    while (true) {
+      // oxlint-disable-next-line no-await-in-loop -- the stream must be consumed sequentially
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > MEMORY_LAB_MAX_BODY_BYTES) {
+        void reader.cancel().catch(() => undefined);
+        return { ok: false, status: 413, error: "memory lab request is too large" };
+      }
+      chunks.push(next.value);
+    }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(bytes);
+  try {
+    return { ok: true, value: JSON.parse(text) as T };
+  } catch {
+    return { ok: false, status: 400, error: "memory lab request must be valid JSON" };
+  }
+}
+
 export function workbenchHandler(
   data: WorkbenchData,
   publicRoot = resolve(import.meta.dir, "public"),
+  memoryLab: MemoryLab | null = null,
 ) {
   return async function fetch(request: Request): Promise<Response> {
     try {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/memory-lab" && request.method === "GET") {
+        if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
+        return memoryLabResponse(await memoryLab.get());
+      }
+      if (url.pathname === "/api/memory-lab/draft" && request.method === "POST") {
+        if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
+        const body = await memoryLabBody<unknown>(request);
+        return body.ok
+          ? memoryLabResponse(await memoryLab.save(body.value))
+          : memoryLabResponse(body);
+      }
+      if (url.pathname === "/api/memory-lab/finalize" && request.method === "POST") {
+        if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
+        const body = await memoryLabBody<unknown>(request);
+        return body.ok
+          ? memoryLabResponse(await memoryLab.finalize(body.value))
+          : memoryLabResponse(body);
+      }
       if (request.method !== "GET" && request.method !== "HEAD")
         return json({ error: "read-only workbench" }, 405);
       const url = new URL(request.url);
@@ -85,7 +150,12 @@ export function workbenchHandler(
       }
       if (url.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
 
-      const asset = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
+      const asset =
+        url.pathname === "/"
+          ? "index.html"
+          : url.pathname === "/memory" || url.pathname === "/memory/"
+            ? "memory/index.html"
+            : url.pathname.replace(/^\/+/, "");
       if (asset.includes("..") || asset.includes("\\")) return json({ error: "not found" }, 404);
       const file = Bun.file(resolve(publicRoot, asset));
       if (!(await file.exists())) return json({ error: "not found" }, 404);
@@ -131,7 +201,11 @@ if (import.meta.main) {
   const root = resolveDataRoot();
   const { host, port } = resolveBindConfig();
   const data = new WorkbenchData(root);
-  const server = Bun.serve({ hostname: host, port, fetch: workbenchHandler(data) });
+  const server = Bun.serve({
+    hostname: host,
+    port,
+    fetch: workbenchHandler(data, resolve(import.meta.dir, "public"), new MemoryLab(root)),
+  });
   console.log(`Chatlog Workbench: ${server.url}`);
   console.log(`Data root: ${root}`);
 }

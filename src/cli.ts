@@ -39,6 +39,11 @@ import {
   reconcileSourceAuthority,
 } from "./source-authority";
 import { emitVault } from "./vault";
+import {
+  publishAcceptedMemory,
+  readPublishedMemory,
+  recallPublishedMemory,
+} from "./experience-memory-store";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolveDataRoot();
@@ -206,6 +211,28 @@ if (command === "ingest") {
   if (mode !== "history" && mode !== "summary")
     throw new Error("bridge mode must be history or summary");
   console.log(JSON.stringify(await emitPiBridge(root, args[0], mode, args[2]), null, 2));
+} else if (command === "memory") {
+  let result: unknown;
+  if (subcommand === "publish") {
+    result = await publishAcceptedMemory(root, args[0]);
+  } else if (subcommand === "current") {
+    result = await readPublishedMemory(root, args[0]);
+  } else if (subcommand === "recall" && args[0] && args[1]) {
+    result = await recallPublishedMemory(root, args[0], args[1]);
+  } else {
+    result = {
+      ok: false,
+      error: {
+        code: "invalid-memory-command",
+        message:
+          "usage: chatlog memory <publish [ledger-path]|current [snapshot-hash]|recall <snapshot-hash> <memory-id>>",
+      },
+    };
+  }
+  console.log(JSON.stringify(result, null, 2));
+  if (typeof result === "object" && result !== null && "ok" in result && result.ok === false) {
+    process.exitCode = 1;
+  }
 } else if (command === "vault") {
   const outputDir = resolve(
     subcommand && !subcommand.startsWith("--")
@@ -218,5 +245,7 @@ if (command === "ingest") {
   const since = sinceIdx === -1 ? undefined : args[sinceIdx + 1];
   console.log(JSON.stringify(await emitVault(root, outputDir, { limit, since }), null, 2));
 } else {
-  throw new Error("usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|vault>");
+  throw new Error(
+    "usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|memory|vault>",
+  );
 }

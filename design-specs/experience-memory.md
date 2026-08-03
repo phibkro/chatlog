@@ -89,6 +89,39 @@ The model does not promote memories. A curator can accept, correct, reject, or
 retire a proposal in a separate memory ledger. The refinery remains nomination
 provenance and does not become an authoritative memory store.
 
+The operator review surface must not require semantic-analysis expertise. A
+versioned sidecar binds a real model-authored proposal and its generator
+provenance to every alias in the blinded packet. The surface presents the
+historical scenario and that proposed lesson, then asks:
+
+- was the judgment `correct`, `incorrect`, or `unsure`;
+- was the lesson `positive`, `negative`, or `neutral`;
+- optionally, what should the judgment have been or what context is missing.
+
+The structured choices are authoritative feedback. Free text is supporting
+detail, never a completion requirement. Proposal reviews live in their own
+ledger and must not be lossily compiled into the expert human-adjudication
+answer schema.
+
+### Semantic routing and escalation
+
+Use model capability as an escalation ladder, not as a reason to send every
+candidate to the strongest model or the operator:
+
+1. Batch ordinary candidates through the selected efficient semantic model.
+2. Escalate only explicitly uncertain, internally inconsistent, or
+   policy-gated rows to the strongest available model.
+3. Ask the operator only when the strongest model still returns uncertainty or
+   when an operator-only product decision is required.
+
+Each request is deterministically partitioned at no more than 250,000 input
+tokens, with whole candidates kept together. Batch manifests bind the recipe,
+model, effort, ordered candidate aliases, input hash, and output hash. An
+upgraded result supersedes only the exact rows named in its manifest; it does
+not rewrite unrelated proposals. Operator review remains useful for calibrating
+the system and measuring model error even when production routing would not
+have escalated that row.
+
 ## Compilation and cache contract
 
 - Compile the accepted ledger into a content-addressed, deterministically
@@ -142,8 +175,8 @@ misapplied, stale, or harmful.
 
 ## Tracer bullet
 
-1. Human-label the existing blinded refinery packet before selecting a semantic
-   judge.
+1. Human-label the existing blinded refinery packet in the Foldkit Memory Lab
+   at `/memory/` before selecting a semantic judge.
 2. Curate five genuine candidates spanning `prefer`, `avoid`, and `check`.
 3. Store them in a minimal accepted-memory ledger.
 4. Compile one project snapshot and inject it into fresh Codex and Claude Code

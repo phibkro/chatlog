@@ -101,6 +101,28 @@ export const MCP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "chatlog_recall_memory",
+    description:
+      "Recall one accepted Tier 2 memory card by exact content-addressed snapshot hash and memory ID. Use the hash emitted at session startup.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        snapshotHash: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$",
+          description: "Exact snapshot hash emitted by the SessionStart routing index.",
+        },
+        memoryId: {
+          type: "string",
+          pattern: "^[a-z0-9][a-z0-9._-]*[a-z0-9]$",
+          description: "Exact memory ID from the startup routing index.",
+        },
+      },
+      required: ["snapshotHash", "memoryId"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 function response(id: JsonRpcId, result: unknown): JsonRpcMessage {
@@ -136,6 +158,11 @@ async function callTool(
   if (name === "chatlog_get_evidence") return data.evidence(args);
   if (name === "chatlog_recent_work") return data.recentWork(args);
   if (name === "chatlog_project_brief") return data.projectBrief(args);
+  if (name === "chatlog_recall_memory") {
+    const recalled = (await data.recallMemory(args)) as any;
+    if (!recalled?.ok) throw new Error(recalled?.error?.message ?? "memory recall failed");
+    return recalled.value;
+  }
   throw new Error(`unknown tool: ${name}`);
 }
 

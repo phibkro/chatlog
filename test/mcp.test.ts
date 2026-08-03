@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,6 +10,8 @@ import { McpData, parseDomainPolicy } from "../src/mcp/data";
 import { createMcpState, handleMcpMessage, processMcpLine } from "../src/mcp/server";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
+import { publishAcceptedMemory } from "../src/experience-memory-store";
+import type { AcceptedMemoryLedger } from "../src/experience-memory";
 
 async function fixture(): Promise<{
   root: string;
@@ -186,6 +189,99 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
 
 test("MCP protocol initializes, lists bounded tools, calls them, and reports structured errors", async () => {
   const { root, personal } = await fixture();
+  const memoryLedger: AcceptedMemoryLedger = {
+    schemaVersion: 1,
+    ledgerId: "mcp-test",
+    projectIdentity: "/project",
+    entries: [
+      {
+        id: "memory-a",
+        status: "accepted",
+        judgment: "correct",
+        valence: "positive",
+        provenance: {
+          packetHash: "a".repeat(64),
+          proposalSetHash: "b".repeat(64),
+          operatorReviewHash: "c".repeat(64),
+          candidateAlias: "C001",
+          candidateId: "d".repeat(20),
+        },
+        trigger: "the MCP test needs a memory",
+        scope: { kind: "global", value: null },
+        polarity: "check",
+        action: "recall the card",
+        situation: "MCP recall is under test.",
+        outcome: "The pinned card was returned.",
+        lesson: "Require a snapshot hash for recall.",
+        confidence: 0.9,
+        freshness: "current",
+        canonicalDocs: ["design-specs/experience-memory.md"],
+        evidencePointers: [`chatlog://conversation/${"a".repeat(64)}/turn/0`],
+      },
+    ],
+  };
+  const packetHash = memoryLedger.entries[0]!.provenance.packetHash;
+  const proposals = {
+    schemaVersion: 1,
+    packetHash,
+    generator: { provider: "test" },
+    proposals: {
+      C001: {
+        lesson: memoryLedger.entries[0]!.lesson,
+        suggestedValence: "positive",
+        rationale: "test",
+      },
+    },
+  };
+  const proposalBytes = `${JSON.stringify(proposals, null, 2)}\n`;
+  memoryLedger.entries[0]!.provenance.proposalSetHash = createHash("sha256")
+    .update(proposalBytes)
+    .digest("hex");
+  const reviews = {
+    schemaVersion: 1,
+    packetHash,
+    proposalSetHash: memoryLedger.entries[0]!.provenance.proposalSetHash,
+    reviewer: { id: "test" },
+    reviews: {
+      C001: {
+        status: "reviewed",
+        judgment: "correct",
+        valence: "positive",
+        feedback: "",
+      },
+    },
+  };
+  const reviewBytes = `${JSON.stringify(reviews, null, 2)}\n`;
+  memoryLedger.entries[0]!.provenance.operatorReviewHash = createHash("sha256")
+    .update(reviewBytes)
+    .digest("hex");
+  const publicDirectory = join(root, "derived", "adjudication", "refinery", packetHash, "public");
+  const privateDirectory = join(root, "derived", "adjudication", "refinery-private", packetHash);
+  await Promise.all([
+    mkdir(publicDirectory, { recursive: true }),
+    mkdir(privateDirectory, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(publicDirectory, "proposals.json"), proposalBytes),
+    writeFile(join(publicDirectory, "operator-reviews.json"), reviewBytes),
+    writeFile(
+      join(privateDirectory, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        packetHash,
+        candidates: [{ candidateAlias: "C001", candidateId: "d".repeat(20) }],
+      })}\n`,
+    ),
+  ]);
+  await mkdir(join(root, "memory"), { recursive: true });
+  await writeFile(
+    join(root, "memory", "accepted-ledger.json"),
+    `${JSON.stringify(memoryLedger)}\n`,
+    { mode: 0o600 },
+  );
+  const published = await publishAcceptedMemory(root);
+  expect(published.ok).toBe(true);
+  if (!published.ok) return;
   const data = new McpData(root);
   const state = createMcpState();
   try {
@@ -248,6 +344,7 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
       "chatlog_get_evidence",
       "chatlog_recent_work",
       "chatlog_project_brief",
+      "chatlog_recall_memory",
     ]);
 
     const called = (await handleMcpMessage(
@@ -262,6 +359,25 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
     )) as any;
     expect(called.result.isError).toBeUndefined();
     expect(called.result.structuredContent.hits).toHaveLength(1);
+
+    const recalled = (await handleMcpMessage(
+      data,
+      {
+        jsonrpc: "2.0",
+        id: 31,
+        method: "tools/call",
+        params: {
+          name: "chatlog_recall_memory",
+          arguments: {
+            snapshotHash: published.value.pointer.snapshotHash,
+            memoryId: "memory-a",
+          },
+        },
+      },
+      state,
+    )) as any;
+    expect(recalled.result.isError).toBeUndefined();
+    expect(recalled.result.structuredContent.lesson).toBe("Require a snapshot hash for recall.");
 
     const denied = (await handleMcpMessage(
       data,

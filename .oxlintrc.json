@@ -1,10 +1,47 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc"],
+  "jsPlugins": [
+    {
+      "name": "foldkit",
+      "specifier": "@foldkit/oxlint-plugin"
+    }
+  ],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
     "perf": "warn"
   },
-  "ignorePatterns": ["dist", "corpus", "derived", "analysis", "node_modules"]
+  "rules": {
+    "no-debugger": "error",
+    "prefer-const": "error"
+  },
+  "overrides": [
+    {
+      "files": ["apps/workbench-web/**/*.ts"],
+      "rules": {
+        "no-underscore-dangle": "off",
+        "foldkit/command-binding-matches-name": "error",
+        "foldkit/command-define-pascal-const": "error",
+        "foldkit/keyed-required-for-mapped-rows": "error",
+        "foldkit/message-binding-matches-tag": "error",
+        "foldkit/no-disabling-dev-guardrails": "error",
+        "foldkit/no-hand-rolled-command-struct": "error",
+        "foldkit/no-module-level-mutable-state": "error",
+        "foldkit/no-raw-dom-event-attributes": "error",
+        "foldkit/prefer-callable-message-constructor": "error",
+        "foldkit/require-rel-for-external-link": "error",
+        "typescript/no-explicit-any": "error"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "dist",
+    "corpus",
+    "derived",
+    "analysis",
+    "node_modules",
+    "src/workbench/public/memory",
+    "plugins/chatlog-memory/scripts"
+  ]
 }

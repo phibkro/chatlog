@@ -15,6 +15,7 @@ import {
   type ProjectionReceipt,
 } from "../source-authority";
 import type { Conversation } from "../types";
+import { recallPublishedMemory } from "../experience-memory-store";
 
 const EVIDENCE_CHARACTER_LIMIT = 12_000;
 const EVIDENCE_UNAVAILABLE = "evidence not found or not permitted";
@@ -324,5 +325,18 @@ export class McpData {
     };
     this.assertProjection(projection);
     return result;
+  }
+
+  async recallMemory(args: Record<string, unknown>): Promise<unknown> {
+    if (typeof args.snapshotHash !== "string" || typeof args.memoryId !== "string") {
+      return {
+        ok: false,
+        error: {
+          code: "invalid-memory-id",
+          message: "memory recall requires snapshotHash and memoryId",
+        },
+      };
+    }
+    return recallPublishedMemory(this.root, args.snapshotHash, args.memoryId);
   }
 }

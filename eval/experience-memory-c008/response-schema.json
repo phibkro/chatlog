@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "failingLayer": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "whyMisleading": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "evidenceChain": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 6,
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "firstTwoActions": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "ruledOut": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "maxLength": 240
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "failingLayer",
+    "whyMisleading",
+    "evidenceChain",
+    "firstTwoActions",
+    "ruledOut",
+    "confidence"
+  ],
+  "additionalProperties": false
+}

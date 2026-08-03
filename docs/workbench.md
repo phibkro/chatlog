@@ -17,6 +17,11 @@ hosted telemetry product.
   resolves the canonical redacted turn on demand. Prior Attempts mode builds a
   chronological structural timeline through the existing zero-egress lexical
   query path.
+- **Memory Lab** — a separate Foldkit application for proposal review. It
+  presents blinded evidence and a model-authored memory proposal, then asks the
+  operator only whether the proposal is correct, incorrect, or uncertain and
+  whether the outcome is positive, negative, or neutral. Written correction or
+  missing-context feedback is optional. Reviews never promote or inject memory.
 - **Patterns** — inferred role boundaries, measured agent experiments, and
   knowledge-refinery candidates. A candidate is a prompt for review, never an
   automatic configuration change. The server returns an artifact only when its
@@ -27,6 +32,61 @@ hosted telemetry product.
 Workbench is intentionally not a transcript-first chat viewer. It starts with
 projects, evidence, and reusable findings; full turn content stays behind an
 explicit evidence action.
+
+### Frontend migration boundary
+
+The established Workbench remains a static Bun-served application while its
+surfaces are migrated incrementally. Memory Lab is the first standalone
+Foldkit vertical slice at `/memory/`; it is not embedded inside the legacy
+interaction tree.
+
+The slice uses Foldkit `0.132.0`, Effect `4.0.0-beta.101`, Tailwind `4.3.3`,
+and Vite `8.1.5` as one exact-pinned runtime unit. Repository-owned semantic
+tokens and Tailwind utilities follow the shadcn source-ownership philosophy;
+React shadcn components are not dependencies. Its layout starts as one column,
+uses touch-sized controls and safe-area padding, and expands internal review
+geometry through container queries rather than reordering information.
+
+The application model, messages, update function, and HTTP commands are
+explicit Foldkit boundaries. Effect Schema decodes every response before it
+enters the model. Foldkit Story tests cover state and command laws, while Scene
+tests cover semantic interaction and inert rendering of untrusted snippets.
+
+The blinded adjudication packet and the proposal-review workflow remain
+separate. A packet-bound `proposals.json` sidecar contains the exact
+model-authored lesson, suggested outcome, rationale, and generator provenance
+for every candidate. Operator choices are stored in their own versioned review
+ledger; they are not reinterpreted as expert evidence labels. This preserves
+the meaning of `correct`, `incorrect`, `unsure`, and
+`positive`/`negative`/`neutral` without asking the operator to manipulate
+semantic-analysis terminology or evidence indices.
+
+The API hashes the exact `proposals.json` bytes. Every draft, final review, and
+write request binds both the packet hash and this proposal-set hash. Replacing
+or even rewriting the proposal sidecar therefore cannot silently reinterpret
+an existing judgment.
+
+### Memory Lab write boundary
+
+Workbench remains read-only except for two narrow, packet-bound Memory Lab
+actions:
+
+- `POST /api/memory-lab/draft` replaces one candidate review in the current
+  local draft;
+- `POST /api/memory-lab/finalize` validates all rows and writes the locked
+  operator-review file.
+
+Both endpoints require JSON plus `X-Chatlog-Memory-Lab: 1`, reject bodies over
+16 KiB, accept no paths, validate the exact current packet hash and aliases,
+and write atomically with mode `0600`. Only separated
+`derived/adjudication/refinery/<hash>/public/` bundles with an exact
+packet-bound `proposals.json` are discoverable; legacy directories that
+co-locate private mapping data are ignored. Drafts use
+`operator-reviews.draft.json`; final reviews use create-once
+`operator-reviews.json`. Existing expert `answers.draft.json` and
+`answers.json` files are ignored and preserved. A malformed operator draft or
+final file fails closed rather than being overwritten. Finalized reviews cannot
+be edited through Workbench. Every other non-GET route still returns `405`.
 
 ### Repository identity
 
@@ -212,8 +272,9 @@ bun run refine
 bun run workbench
 ```
 
-Open `http://127.0.0.1:4789`. The server is read-only and binds to loopback by
-default.
+Open `http://127.0.0.1:4789`. The server binds to loopback by default. Its
+corpus and evidence routes are read-only; the only writes are the bounded
+Memory Lab draft/finalize actions described above.
 
 Environment variables:
 

@@ -135,8 +135,8 @@ function syncNavigationMode() {
   setNavigationOpen(false);
 }
 
-async function api(path) {
-  const response = await fetch(path);
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Request failed: ${response.status}`);
   return body;
@@ -287,13 +287,15 @@ async function openProject(project) {
     const models =
       result.models
         .map(
-          (model) => `<div class="mix-row"><strong>${escapeHtml(model.model)}</strong><span>${escapeHtml(model.harness)} · ${formatNumber(model.sessions)} sessions</span></div>`,
+          (model) =>
+            `<div class="mix-row"><strong>${escapeHtml(model.model)}</strong><span>${escapeHtml(model.harness)} · ${formatNumber(model.sessions)} sessions</span></div>`,
         )
         .join("") || `<div class="empty">No model activity.</div>`;
     const tools =
       result.tools
         .map(
-          (tool) => `<div class="mix-row"><strong>${escapeHtml(tool.tool)}</strong><span>${formatNumber(tool.calls)} calls · ${formatNumber(tool.sessions)} sessions</span></div>`,
+          (tool) =>
+            `<div class="mix-row"><strong>${escapeHtml(tool.tool)}</strong><span>${formatNumber(tool.calls)} calls · ${formatNumber(tool.sessions)} sessions</span></div>`,
         )
         .join("") || `<div class="empty">No assistant tool calls.</div>`;
     const sessions =
@@ -380,7 +382,8 @@ async function runPriorAttempts(question) {
   showView("recall");
   $("#recall-input").value = input;
   $("#result-meta").textContent = "Finding prior attempts in current local sessions…";
-  $("#search-results").innerHTML = `<div class="empty spacious">Building the attempt timeline…</div>`;
+  $("#search-results").innerHTML =
+    `<div class="empty spacious">Building the attempt timeline…</div>`;
   try {
     const result = await api(`/api/prior-attempts?q=${encodeURIComponent(input)}&limit=8`);
     $("#result-meta").textContent =
@@ -815,7 +818,7 @@ async function load() {
   }
 }
 
-$$(".nav-item").forEach((button) =>
+$$(".nav-item[data-view]").forEach((button) =>
   button.addEventListener("click", () => showView(button.dataset.view)),
 );
 $$("[data-view-jump]").forEach((button) =>

@@ -2,11 +2,19 @@ import type { Database } from "bun:sqlite";
 import { readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { indexConversation } from "./analysis";
+import { indexConversation, indexEventBatch } from "./analysis";
+import { eventBatchHash, readEventBatch } from "./event-store";
+import { ACTIVE_SOURCE_AUTHORITY_VERSION, stableStringify } from "./events";
+import { validateSourceReceipt, type SourceReceipt } from "./source-receipts";
 import type { Conversation } from "./types";
+
+export { ACTIVE_SOURCE_AUTHORITY_VERSION };
 
 export interface ManifestSourceEntry {
   contentHash: string;
+  eventBatchHash?: string;
+  conversationProjectionHash?: string;
+  receiptHash?: string;
   size?: number;
   mtimeMs?: number;
 }
@@ -14,6 +22,8 @@ export interface ManifestSourceEntry {
 export interface CorpusManifest {
   version: 1;
   redactionRecipe?: string;
+  projectIdentityRecipe?: string;
+  eventRecipe?: string;
   sources: Record<string, ManifestSourceEntry>;
 }
 
@@ -44,6 +54,14 @@ export class MissingIndexedSourceError extends Error {
   }
 }
 
+export class SourceAuthorityError extends Error {
+  override readonly name = "SourceAuthorityError";
+}
+
+function invalidSourceAuthority(message: string): never {
+  throw new SourceAuthorityError(message);
+}
+
 function sha256(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
 }
@@ -51,21 +69,63 @@ function sha256(value: string): string {
 function validateManifest(value: unknown, path: string): CorpusManifest {
   const manifest = value as Partial<CorpusManifest>;
   if (manifest?.version !== 1 || !manifest.sources || typeof manifest.sources !== "object")
-    throw new Error(`${path}: unsupported corpus manifest`);
+    invalidSourceAuthority(`${path}: unsupported corpus manifest`);
   for (const [sourcePath, entry] of Object.entries(manifest.sources)) {
     if (!sourcePath || !entry || !/^[a-f0-9]{64}$/.test(entry.contentHash))
-      throw new Error(`${path}: invalid source mapping`);
+      invalidSourceAuthority(`${path}: invalid source mapping`);
+    for (const key of ["eventBatchHash", "conversationProjectionHash", "receiptHash"] as const)
+      if (entry[key] !== undefined && !/^[a-f0-9]{64}$/.test(entry[key]!))
+        invalidSourceAuthority(`${path}: invalid source mapping`);
   }
   return manifest as CorpusManifest;
 }
 
+function validateReceiptMappings(root: string, sources: Record<string, ManifestSourceEntry>): void {
+  for (const [sourcePath, entry] of Object.entries(sources)) {
+    if (!entry.receiptHash) continue;
+    const receiptPath = join(
+      root,
+      "receipts",
+      "sources",
+      entry.receiptHash.slice(0, 2),
+      `${entry.receiptHash}.json`,
+    );
+    let receipt: SourceReceipt;
+    try {
+      receipt = validateSourceReceipt(JSON.parse(readFileSync(receiptPath, "utf8")));
+    } catch {
+      invalidSourceAuthority(`${sourcePath}: source receipt is missing or invalid`);
+    }
+    if (
+      receipt.receiptHash !== entry.receiptHash ||
+      receipt.source.path !== sourcePath ||
+      receipt.eventBatchHash !== entry.eventBatchHash ||
+      receipt.conversationProjectionHash !== (entry.conversationProjectionHash ?? entry.contentHash)
+    )
+      invalidSourceAuthority(`${sourcePath}: source receipt does not match manifest mapping`);
+  }
+}
 export function manifestSourcesHash(
-  sources: Record<string, { contentHash: string }>,
+  sources: Record<
+    string,
+    {
+      contentHash: string;
+      eventBatchHash?: string;
+      conversationProjectionHash?: string;
+      receiptHash?: string;
+    }
+  >,
 ): string {
   const canonical = Object.entries(sources)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([sourcePath, entry]) => [sourcePath, entry.contentHash]);
-  return sha256(JSON.stringify(canonical));
+    .map(([sourcePath, entry]) => [
+      sourcePath,
+      entry.contentHash,
+      entry.eventBatchHash ?? null,
+      entry.conversationProjectionHash ?? entry.contentHash,
+      entry.receiptHash ?? null,
+    ]);
+  return sha256(stableStringify(canonical));
 }
 
 export async function loadCorpusManifest(root: string): Promise<CorpusManifest> {
@@ -80,63 +140,94 @@ export function loadCorpusManifestSync(root: string): CorpusManifest {
 
 export function reconcileActiveSources(
   db: Database,
-  sources: Record<string, { contentHash: string }>,
+  sources: Record<string, ManifestSourceEntry>,
   options: { force?: boolean } = {},
 ): ProjectionReceipt {
   const manifestSourcesHashValue = manifestSourcesHash(sources);
-  const mappings = Object.entries(sources)
-    .sort(([left], [right]) => left.localeCompare(right));
-  const currentMeta = db.query(`SELECT manifest_sources_hash manifestSourcesHash,
-    reconciled_at reconciledAt
-    FROM active_projection_meta WHERE singleton = 1`).get() as
-    { manifestSourcesHash: string; reconciledAt: string } | null;
+  const mappings = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right));
+  const currentMeta = db
+    .query(`SELECT manifest_sources_hash manifestSourcesHash,
+    reconciled_at reconciledAt FROM active_projection_meta WHERE singleton = 1`)
+    .get() as { manifestSourcesHash: string; reconciledAt: string } | null;
   if (!options.force && currentMeta?.manifestSourcesHash === manifestSourcesHashValue) {
-    const currentMappings = db.query(
-      "SELECT source_path sourcePath, content_hash contentHash FROM active_sources ORDER BY source_path",
-    ).all() as Array<{ sourcePath: string; contentHash: string }>;
-    const currentHash = manifestSourcesHash(Object.fromEntries(
-      currentMappings.map((row) => [row.sourcePath, { contentHash: row.contentHash }]),
-    ));
-    const missing = db.query(`SELECT 1
-      FROM active_sources a
-      LEFT JOIN conversations c
-        ON c.source_path = a.source_path AND c.content_hash = a.content_hash
-      WHERE c.content_hash IS NULL LIMIT 1`).get();
-    if (currentHash === manifestSourcesHashValue && !missing) {
+    const currentMappings = db
+      .query(
+        "SELECT source_path sourcePath, content_hash contentHash, event_batch_hash eventBatchHash, projection_hash projectionHash, receipt_hash receiptHash FROM active_sources ORDER BY source_path",
+      )
+      .all() as Array<{
+      sourcePath: string;
+      contentHash: string;
+      eventBatchHash: string | null;
+      projectionHash: string | null;
+      receiptHash: string | null;
+    }>;
+    const currentHash = manifestSourcesHash(
+      Object.fromEntries(
+        currentMappings.map((row) => [
+          row.sourcePath,
+          {
+            contentHash: row.contentHash,
+            ...(row.eventBatchHash ? { eventBatchHash: row.eventBatchHash } : {}),
+            ...(row.projectionHash ? { conversationProjectionHash: row.projectionHash } : {}),
+            ...(row.receiptHash ? { receiptHash: row.receiptHash } : {}),
+          },
+        ]),
+      ),
+    );
+    const missing = db
+      .query(`SELECT 1 FROM active_sources a
+      LEFT JOIN conversations c ON c.source_path = a.source_path AND c.content_hash = a.content_hash
+      WHERE c.content_hash IS NULL LIMIT 1`)
+      .get();
+    const missingEvents = db
+      .query(`SELECT 1 FROM active_sources a
+      LEFT JOIN event_batches e ON e.batch_hash = a.event_batch_hash
+      WHERE a.event_batch_hash IS NOT NULL AND e.batch_hash IS NULL LIMIT 1`)
+      .get();
+    if (currentHash === manifestSourcesHashValue && !missing && !missingEvents)
       return {
         manifestSourcesHash: manifestSourcesHashValue,
         activeSources: currentMappings.length,
         reconciledAt: currentMeta.reconciledAt,
       };
-    }
   }
   const previousTime = Date.parse(currentMeta?.reconciledAt ?? "");
-  const reconciledAt = new Date(Math.max(
-    Date.now(),
-    Number.isFinite(previousTime) ? previousTime + 1 : 0,
-  )).toISOString();
-  const insert = db.prepare(
-    "INSERT INTO active_sources(source_path, content_hash, updated_at) VALUES (?, ?, ?)",
-  );
+  const reconciledAt = new Date(
+    Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0),
+  ).toISOString();
+  const insert = db.prepare(`INSERT INTO active_sources
+    (source_path, content_hash, event_batch_hash, projection_hash, receipt_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)`);
   db.transaction(() => {
     db.run("DELETE FROM active_sources");
     for (const [sourcePath, entry] of mappings)
-      insert.run(sourcePath, entry.contentHash, reconciledAt);
-    const missing = db.query(`SELECT a.source_path sourcePath, a.content_hash contentHash
-      FROM active_sources a
-      LEFT JOIN conversations c
-        ON c.source_path = a.source_path AND c.content_hash = a.content_hash
-      WHERE c.content_hash IS NULL
-      ORDER BY a.source_path LIMIT 1`).get() as
-      { sourcePath: string; contentHash: string } | null;
-    if (missing)
-      throw new MissingIndexedSourceError(missing.sourcePath, missing.contentHash);
-    db.query(`INSERT INTO active_projection_meta(
-      singleton, manifest_sources_hash, reconciled_at
-    ) VALUES (1, ?, ?)
-    ON CONFLICT(singleton) DO UPDATE SET
-      manifest_sources_hash=excluded.manifest_sources_hash,
-      reconciled_at=excluded.reconciled_at`).run(manifestSourcesHashValue, reconciledAt);
+      insert.run(
+        sourcePath,
+        entry.contentHash,
+        entry.eventBatchHash ?? null,
+        entry.conversationProjectionHash ?? entry.contentHash,
+        entry.receiptHash ?? null,
+        reconciledAt,
+      );
+    const missing = db
+      .query(`SELECT a.source_path sourcePath, a.content_hash contentHash
+      FROM active_sources a LEFT JOIN conversations c
+      ON c.source_path = a.source_path AND c.content_hash = a.content_hash
+      WHERE c.content_hash IS NULL ORDER BY a.source_path LIMIT 1`)
+      .get() as { sourcePath: string; contentHash: string } | null;
+    if (missing) throw new MissingIndexedSourceError(missing.sourcePath, missing.contentHash);
+    const missingEvents = db
+      .query(`SELECT a.source_path sourcePath, a.event_batch_hash eventBatchHash
+      FROM active_sources a LEFT JOIN event_batches e ON e.batch_hash = a.event_batch_hash
+      WHERE a.event_batch_hash IS NOT NULL AND e.batch_hash IS NULL LIMIT 1`)
+      .get() as { sourcePath: string; eventBatchHash: string } | null;
+    if (missingEvents)
+      throw new MissingIndexedSourceError(missingEvents.sourcePath, missingEvents.eventBatchHash);
+    db.query(`INSERT INTO active_projection_meta(singleton, manifest_sources_hash, reconciled_at)
+      VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET
+      manifest_sources_hash=excluded.manifest_sources_hash, reconciled_at=excluded.reconciled_at`).run(
+      manifestSourcesHashValue,
+      reconciledAt,
+    );
   })();
   return {
     manifestSourcesHash: manifestSourcesHashValue,
@@ -152,10 +243,16 @@ export interface SourceAuthorityReceipt extends ProjectionReceipt {
 function indexedMappingExists(
   db: Database,
   sourcePath: string,
-  contentHash: string,
+  entry: ManifestSourceEntry,
 ): boolean {
-  return Boolean(db.query(`SELECT 1 FROM conversations
-    WHERE source_path = ? AND content_hash = ?`).get(sourcePath, contentHash));
+  const conversation = db
+    .query(`SELECT 1 FROM conversations WHERE source_path = ? AND content_hash = ?`)
+    .get(sourcePath, entry.contentHash);
+  if (!conversation) return false;
+  if (!entry.eventBatchHash) return true;
+  return Boolean(
+    db.query("SELECT 1 FROM event_batches WHERE batch_hash = ?").get(entry.eventBatchHash),
+  );
 }
 
 function canonicalConversationHash(conversation: Conversation): string {
@@ -168,6 +265,7 @@ export async function reconcileSourceAuthority(
   db: Database,
   sources: Record<string, ManifestSourceEntry>,
 ): Promise<SourceAuthorityReceipt> {
+  validateReceiptMappings(root, sources);
   try {
     return { ...reconcileActiveSources(db, sources), reindexed: 0 };
   } catch (error) {
@@ -175,9 +273,21 @@ export async function reconcileSourceAuthority(
   }
 
   let reindexed = 0;
-  for (const [sourcePath, entry] of Object.entries(sources)
-    .sort(([left], [right]) => left.localeCompare(right))) {
-    if (indexedMappingExists(db, sourcePath, entry.contentHash)) continue;
+  for (const [sourcePath, entry] of Object.entries(sources).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    if (indexedMappingExists(db, sourcePath, entry)) continue;
+    if (entry.eventBatchHash) {
+      const batch = await readEventBatch(root, entry.eventBatchHash);
+      if (eventBatchHash(batch) !== entry.eventBatchHash)
+        invalidSourceAuthority(`${sourcePath}: event batch hash mismatch`);
+      indexEventBatch(
+        db,
+        batch,
+        entry.eventBatchHash,
+        entry.conversationProjectionHash ?? entry.contentHash,
+      );
+    }
     const objectPath = join(
       root,
       "corpus",
@@ -192,22 +302,21 @@ export async function reconcileSourceAuthority(
       throw new MissingIndexedSourceError(sourcePath, entry.contentHash, { cause });
     }
     if (
-      conversation.contentHash !== entry.contentHash
-      || canonicalConversationHash(conversation) !== entry.contentHash
-      || conversation.sourcePath !== sourcePath
-      || !Array.isArray(conversation.turns)
-    ) {
-      throw new Error(`${objectPath}: canonical object does not match manifest source mapping`);
-    }
-    if (indexConversation(db, conversation, entry.mtimeMs ?? 0, entry.size ?? 0))
-      reindexed++;
-    if (!indexedMappingExists(db, sourcePath, entry.contentHash))
+      conversation.contentHash !== entry.contentHash ||
+      canonicalConversationHash(conversation) !== entry.contentHash ||
+      conversation.sourcePath !== sourcePath ||
+      !Array.isArray(conversation.turns) ||
+      (entry.conversationProjectionHash &&
+        conversation.contentHash !== entry.conversationProjectionHash)
+    )
+      invalidSourceAuthority(
+        `${objectPath}: canonical object does not match manifest source mapping`,
+      );
+    if (indexConversation(db, conversation, entry.mtimeMs ?? 0, entry.size ?? 0)) reindexed++;
+    if (!indexedMappingExists(db, sourcePath, entry))
       throw new MissingIndexedSourceError(sourcePath, entry.contentHash);
   }
-  return {
-    ...reconcileActiveSources(db, sources, { force: reindexed > 0 }),
-    reindexed,
-  };
+  return { ...reconcileActiveSources(db, sources, { force: reindexed > 0 }), reindexed };
 }
 
 export function assertActiveProjection(root: string, db: Database): ProjectionReceipt {
@@ -230,7 +339,9 @@ export class ActiveProjectionGuard {
     const info = statSync(path, { bigint: true });
     const signature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}`;
     if (this.manifestCache?.signature === signature) return this.manifestCache.hash;
-    const hash = manifestSourcesHash(loadCorpusManifestSync(this.root).sources);
+    const manifest = loadCorpusManifestSync(this.root);
+    validateReceiptMappings(this.root, manifest.sources);
+    const hash = manifestSourcesHash(manifest.sources);
     this.manifestCache = { signature, hash };
     return hash;
   }
@@ -238,42 +349,67 @@ export class ActiveProjectionGuard {
   assert(db: Database): ProjectionReceipt {
     try {
       const expectedHash = this.expectedManifestHash();
-      const meta = db.query(`SELECT manifest_sources_hash manifestSourcesHash,
-        reconciled_at reconciledAt
-        FROM active_projection_meta WHERE singleton = 1`).get() as
-        { manifestSourcesHash: string; reconciledAt: string } | null;
+      const meta = db
+        .query(`SELECT manifest_sources_hash manifestSourcesHash, reconciled_at reconciledAt
+        FROM active_projection_meta WHERE singleton = 1`)
+        .get() as { manifestSourcesHash: string; reconciledAt: string } | null;
       if (!meta || meta.manifestSourcesHash !== expectedHash)
         throw new ActiveProjectionDriftError();
       const dataVersion = Number(
         (db.query("PRAGMA data_version").get() as { data_version: number }).data_version,
       );
       if (
-        this.verifiedCache?.manifestHash === expectedHash
-        && this.verifiedCache.reconciledAt === meta.reconciledAt
-        && this.verifiedCache.dataVersion === dataVersion
-      ) {
+        this.verifiedCache?.manifestHash === expectedHash &&
+        this.verifiedCache.reconciledAt === meta.reconciledAt &&
+        this.verifiedCache.dataVersion === dataVersion
+      )
         return {
           manifestSourcesHash: expectedHash,
           activeSources: this.verifiedCache.activeSources,
           reconciledAt: meta.reconciledAt,
         };
-      }
-      const rows = db.query(
-        "SELECT source_path sourcePath, content_hash contentHash FROM active_sources ORDER BY source_path",
-      ).all() as Array<{ sourcePath: string; contentHash: string }>;
-      const actualHash = manifestSourcesHash(Object.fromEntries(
-        rows.map((row) => [row.sourcePath, { contentHash: row.contentHash }]),
-      ));
-      if (actualHash !== expectedHash)
-        throw new ActiveProjectionDriftError();
-      const missingIndexedSource = db.query(`SELECT 1
-        FROM active_sources a
-        LEFT JOIN conversations c
-          ON c.source_path = a.source_path AND c.content_hash = a.content_hash
-        WHERE c.content_hash IS NULL LIMIT 1`).get();
+      const rows = db
+        .query(
+          "SELECT source_path sourcePath, content_hash contentHash, event_batch_hash eventBatchHash, projection_hash projectionHash, receipt_hash receiptHash FROM active_sources ORDER BY source_path",
+        )
+        .all() as Array<{
+        sourcePath: string;
+        contentHash: string;
+        eventBatchHash: string | null;
+        projectionHash: string | null;
+        receiptHash: string | null;
+      }>;
+      const actualHash = manifestSourcesHash(
+        Object.fromEntries(
+          rows.map((row) => [
+            row.sourcePath,
+            {
+              contentHash: row.contentHash,
+              ...(row.eventBatchHash ? { eventBatchHash: row.eventBatchHash } : {}),
+              ...(row.projectionHash ? { conversationProjectionHash: row.projectionHash } : {}),
+              ...(row.receiptHash ? { receiptHash: row.receiptHash } : {}),
+            },
+          ]),
+        ),
+      );
+      if (actualHash !== expectedHash) throw new ActiveProjectionDriftError();
+      const missingIndexedSource = db
+        .query(`SELECT 1 FROM active_sources a
+        LEFT JOIN conversations c ON c.source_path = a.source_path AND c.content_hash = a.content_hash
+        WHERE c.content_hash IS NULL LIMIT 1`)
+        .get();
       if (missingIndexedSource)
         throw new ActiveProjectionDriftError(
           "active source projection references missing analysis rows; run `chatlog source reconcile`",
+        );
+      const missingEventBatch = db
+        .query(`SELECT 1 FROM active_sources a
+        LEFT JOIN event_batches e ON e.batch_hash = a.event_batch_hash
+        WHERE a.event_batch_hash IS NOT NULL AND e.batch_hash IS NULL LIMIT 1`)
+        .get();
+      if (missingEventBatch)
+        throw new ActiveProjectionDriftError(
+          "active source projection references missing event batches; run `chatlog source reconcile`",
         );
       this.verifiedCache = {
         manifestHash: expectedHash,
@@ -288,13 +424,23 @@ export class ActiveProjectionGuard {
       };
     } catch (error) {
       if (error instanceof ActiveProjectionDriftError) throw error;
-      const code = typeof error === "object" && error && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : "";
+      const code =
+        typeof error === "object" && error && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : "";
       const message = error instanceof Error ? error.message : "";
-      if (code === "ENOENT" || message.includes("unsupported corpus manifest") || message.includes("invalid source mapping"))
+      if (
+        code === "ENOENT" ||
+        message.includes("unsupported corpus manifest") ||
+        message.includes("invalid source mapping")
+      )
         throw new ActiveProjectionDriftError(
           "active source projection cannot be verified because the corpus manifest is unavailable",
+          { cause: error },
+        );
+      if (message.includes("source receipt"))
+        throw new ActiveProjectionDriftError(
+          "active source projection cannot be verified because a source receipt is unavailable or stale",
           { cause: error },
         );
       if (message.includes("no such table: active_projection_meta"))
@@ -307,10 +453,9 @@ export class ActiveProjectionGuard {
           "active source projection verification is temporarily unavailable",
           { cause: error },
         );
-      throw new ActiveProjectionDriftError(
-        "active source projection verification failed",
-        { cause: error },
-      );
+      throw new ActiveProjectionDriftError("active source projection verification failed", {
+        cause: error,
+      });
     }
   }
 }

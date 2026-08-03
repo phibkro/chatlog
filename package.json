@@ -18,16 +18,17 @@
     "vault": "bun run src/cli.ts vault",
     "memory:publish": "bun run src/cli.ts memory publish",
     "memory:plugin:build": "bun run scripts/build-memory-plugin.ts",
+    "memory:plugin:check": "bun run scripts/build-memory-plugin.ts --check",
     "mcp": "bun run src/mcp/server.ts",
     "workbench": "bun run src/workbench/server.ts",
     "workbench:web:dev": "bun run --cwd apps/workbench-web dev",
     "workbench:web:build": "bun run --cwd apps/workbench-web build",
     "test": "bun test",
-    "check": "bun run fmt:check && bun run lint && bash scripts/no-throw-ratchet.sh && bun run typecheck && bun run --cwd apps/workbench-web typecheck && bun test && bun run workbench:web:build && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/mcp/server.ts --target=bun --outfile=/tmp/chatlog-mcp && bun build ./src/experience-memory-hook.ts --target=bun --outfile=/tmp/chatlog-memory-hook && bun build ./src/experience-memory-mcp.ts --target=bun --outfile=/tmp/chatlog-memory-mcp && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js && bun build ./scripts/judge-refinery-candidates.ts --target=bun --outfile=/tmp/chatlog-refinery-judge && bun build ./scripts/create-refinery-adjudication-packet.ts --target=bun --outfile=/tmp/chatlog-adjudication-packet && bun build ./scripts/verify-refinery-adjudication.ts --target=bun --outfile=/tmp/chatlog-adjudication-verify",
+    "check": "bun run fmt:check && bun run lint && bun run memory:plugin:check && bash scripts/no-throw-ratchet.sh && bun run typecheck && bun run --cwd apps/workbench-web typecheck && bun test && bun run workbench:web:build && bun build ./src/cli.ts --target=bun --outfile=/tmp/chatlog-cli && bun build ./src/mcp/server.ts --target=bun --outfile=/tmp/chatlog-mcp && bun build ./src/experience-memory-hook.ts --target=bun --outfile=/tmp/chatlog-memory-hook && bun build ./src/experience-memory-mcp.ts --target=bun --outfile=/tmp/chatlog-memory-mcp && bun build ./src/workbench/server.ts --target=bun --outfile=/tmp/chatlog-workbench && bun build ./src/workbench/public/app.js --target=browser --outfile=/tmp/chatlog-workbench-app.js && bun build ./scripts/judge-refinery-candidates.ts --target=bun --outfile=/tmp/chatlog-refinery-judge && bun build ./scripts/create-refinery-adjudication-packet.ts --target=bun --outfile=/tmp/chatlog-adjudication-packet && bun build ./scripts/verify-refinery-adjudication.ts --target=bun --outfile=/tmp/chatlog-adjudication-verify",
     "lint": "bun node_modules/oxlint/bin/oxlint . && bun node_modules/oxlint/bin/oxlint --deny-warnings apps/workbench-web/src apps/workbench-web/vite.config.ts src/workbench/memory-lab.ts src/workbench/server.ts test/memory-lab.test.ts test/workbench-layout.test.ts",
     "lint:fix": "bun node_modules/oxlint/bin/oxlint --fix",
-    "fmt": "bun node_modules/oxfmt/bin/oxfmt package.json .oxlintrc.json .oxfmtrc.json apps/workbench-web/package.json apps/workbench-web/tsconfig.json apps/workbench-web/vite.config.ts apps/workbench-web/src/*.ts apps/workbench-web/src/*.css plugins/chatlog-memory/.claude-plugin/plugin.json plugins/chatlog-memory/.codex-plugin/plugin.json plugins/chatlog-memory/.mcp.json plugins/chatlog-memory/codex.mcp.json plugins/chatlog-memory/hooks/hooks.json scripts/build-memory-plugin.ts src/experience-memory*.ts src/workbench/memory-lab.ts src/workbench/server.ts test/experience-memory*.test.ts test/memory-lab.test.ts test/workbench-layout.test.ts --write",
-    "fmt:check": "bun node_modules/oxfmt/bin/oxfmt package.json .oxlintrc.json .oxfmtrc.json apps/workbench-web/package.json apps/workbench-web/tsconfig.json apps/workbench-web/vite.config.ts apps/workbench-web/src/*.ts apps/workbench-web/src/*.css plugins/chatlog-memory/.claude-plugin/plugin.json plugins/chatlog-memory/.codex-plugin/plugin.json plugins/chatlog-memory/.mcp.json plugins/chatlog-memory/codex.mcp.json plugins/chatlog-memory/hooks/hooks.json scripts/build-memory-plugin.ts src/experience-memory*.ts src/workbench/memory-lab.ts src/workbench/server.ts test/experience-memory*.test.ts test/memory-lab.test.ts test/workbench-layout.test.ts --check",
+    "fmt": "bun node_modules/oxfmt/bin/oxfmt . --write",
+    "fmt:check": "bun node_modules/oxfmt/bin/oxfmt . --check",
     "no-throw": "bash scripts/no-throw-ratchet.sh",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
@@ -42,7 +43,7 @@
     "typescript": "6.0.3"
   },
   "engines": {
-    "bun": ">=1.3.14"
+    "bun": ">=1.3.13"
   },
   "packageManager": "bun@1.3.14"
 }

@@ -80,7 +80,9 @@ async function atomicWrite(path: string, data: string): Promise<void> {
 // "ollama") stays fully local.
 function requireHostedEgress(): void {
   if (process.env.CHATLOG_ALLOW_EGRESS !== "1")
-    throw new Error("Hosted reranking is disabled by default; set CHATLOG_ALLOW_EGRESS=1 to send bounded redacted snippets");
+    throw new Error(
+      "Hosted reranking is disabled by default; set CHATLOG_ALLOW_EGRESS=1 to send bounded redacted snippets",
+    );
 }
 export async function resolveRerankConfig(): Promise<RerankConfig> {
   const selected = process.env.CHATLOG_RERANK_PROVIDER?.toLowerCase();
@@ -112,8 +114,7 @@ export async function resolveRerankConfig(): Promise<RerankConfig> {
   }
   if (selected === "openrouter") {
     const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey)
-      throw new Error("CHATLOG_RERANK_PROVIDER=openrouter requires OPENROUTER_API_KEY");
+    if (!apiKey) throw new Error("CHATLOG_RERANK_PROVIDER=openrouter requires OPENROUTER_API_KEY");
     requireHostedEgress();
     return {
       provider: "openrouter",
@@ -175,12 +176,10 @@ export async function rerank(
 ): Promise<RerankResult> {
   const resolved = config ?? (await resolveRerankConfig());
   const cleanQuery = redact(query).slice(0, 800);
-  const cleanCandidates = candidates
-    .slice(0, 50)
-    .map((candidate) => ({
-      id: candidate.id,
-      text: redact(candidate.text).replace(/\s+/g, " ").trim().slice(0, MAX_CANDIDATE_CHARS),
-    }));
+  const cleanCandidates = candidates.slice(0, 50).map((candidate) => ({
+    id: candidate.id,
+    text: redact(candidate.text).replace(/\s+/g, " ").trim().slice(0, MAX_CANDIDATE_CHARS),
+  }));
   if (!cleanCandidates.length)
     throw new Error("semantic rerank needs at least one local candidate");
   const requestIdentity = JSON.stringify({

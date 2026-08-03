@@ -40,60 +40,60 @@ The loop does not let a model rewrite its own policy. Evaluation produces a prop
 
 ## Product boundary
 
-| Boundary | Deep module | Small interface | Required receipt |
-| --- | --- | --- | --- |
-| Provider → context plane | Ingest adapter | `adapt(source) -> EventBatch` | Ingest and semantic-loss receipt |
-| Evidence → insight | Insight compiler and ledger | `propose(events, priorState) -> ProposalSet`<br>`apply(command) -> LedgerVersion` | Derivation, review, and transition provenance |
-| Context plane → provider | Context planner and delivery adapter | `plan(request) -> ContextBundle`<br>`deliver(bundle, target) -> DeliveryReceipt` | Scope, policy, budget, omissions, and intervention ID |
-| Intervention → outcome | Outcome adapter | `observe(session) -> OutcomeEvents` | Session, task, gate, correction, and intervention links |
+| Boundary                 | Deep module                          | Small interface                                                                   | Required receipt                                        |
+| ------------------------ | ------------------------------------ | --------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Provider → context plane | Ingest adapter                       | `adapt(source) -> EventBatch`                                                     | Ingest and semantic-loss receipt                        |
+| Evidence → insight       | Insight compiler and ledger          | `propose(events, priorState) -> ProposalSet`<br>`apply(command) -> LedgerVersion` | Derivation, review, and transition provenance           |
+| Context plane → provider | Context planner and delivery adapter | `plan(request) -> ContextBundle`<br>`deliver(bundle, target) -> DeliveryReceipt`  | Scope, policy, budget, omissions, and intervention ID   |
+| Intervention → outcome   | Outcome adapter                      | `observe(session) -> OutcomeEvents`                                               | Session, task, gate, correction, and intervention links |
 
 A provider can support ingestion, delivery, or both. One provider must not require pairwise integration with another provider.
 
 ## Canonical vocabulary
 
-| Term | Meaning | Not this |
-| --- | --- | --- |
-| Source observation | One provider-native item under a declared capture policy | A derived fact |
-| Agent event | A normalized statement about observed activity | A transcript summary |
-| Evidence | Immutable events plus exact references and provenance | A model conclusion |
-| Insight | A revisable claim derived from evidence or a human assertion | Enforcement policy |
-| Policy | A rule that controls access, promotion, delivery, or authority | A learned preference |
-| Context bundle | A finite, policy-filtered selection for one task and target | The archive |
-| Intervention | A context bundle that Chatlog delivered or exposed | A retrieval candidate that was never shown |
-| Outcome | An observed result after an intervention | An agent statement that it succeeded |
-| Memory | A product projection of active insights and evidence routes | Canonical truth |
+| Term               | Meaning                                                        | Not this                                   |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------ |
+| Source observation | One provider-native item under a declared capture policy       | A derived fact                             |
+| Agent event        | A normalized statement about observed activity                 | A transcript summary                       |
+| Evidence           | Immutable events plus exact references and provenance          | A model conclusion                         |
+| Insight            | A revisable claim derived from evidence or a human assertion   | Enforcement policy                         |
+| Policy             | A rule that controls access, promotion, delivery, or authority | A learned preference                       |
+| Context bundle     | A finite, policy-filtered selection for one task and target    | The archive                                |
+| Intervention       | A context bundle that Chatlog delivered or exposed             | A retrieval candidate that was never shown |
+| Outcome            | An observed result after an intervention                       | An agent statement that it succeeded       |
+| Memory             | A product projection of active insights and evidence routes    | Canonical truth                            |
 
 Create `CONTEXT.md` from this table during Plan 001. Keep implementation details out of that glossary.
 
 ## Reconciliation with the current project
 
-| Shared-conversation insight | Live Chatlog evidence | Roadmap decision |
-| --- | --- | --- |
-| The event log is canonical. Derived memory is replaceable. | `src/ingest.ts:42-55,116-145` already redacts, hashes, and writes immutable objects. `src/derive.ts:354-416` rebuilds recipe-bound projections. | Keep content addressing and rebuildability. Replace flat adapter output with typed event batches. |
-| Normalization must preserve semantic variety. | `src/types.ts:14-45` has flat turns and tool calls. Adapters drop branches, approvals, compaction, artifacts, event IDs, and some tool relations. | Add typed events, explicit relations, source locators, capture policy, and semantic-loss receipts. |
-| Evidence, belief, policy, intervention, and outcome are different. | Evidence pointers, refinery candidates, accepted memory, and domain policy already exist. No intervention entity links delivery to later outcomes. | Give each concept its own type and authority. Do not use one generic edge or status. |
-| Claims need provenance, revision, and temporal validity. | `src/experience-memory-store.ts:141-231` strongly verifies proposal and operator-review bytes. `AcceptedMemoryEntry` only supports `accepted` and `current`. | Preserve exact provenance. Add proposal, dispute, supersession, expiry, counterevidence, and valid-time transitions. |
-| Context injection is an intervention. | The startup hook emits a snapshot, and MCP returns a card. Neither path writes an intervention receipt. | Add the intervention ledger before broad personalization. |
-| Recall is a bounded resumable effect. | Current exact card recall is finite. Core retrieval limits are not one shared budget, and no stop reason exists. | Keep cooperative recall first. Add a graded, structured recall runtime only after closed-loop measurement exists. |
-| An advisor is an intrusive controller. | Role and orchestration analysis exist, but no live advisor protocol exists. | Keep advisor behavior in shadow mode. Only enforced policy can block. Learned insights remain advisory. |
-| Multiple time scales need different authority. | Ingest, derive, refine, operator review, publication, and paired evaluation already run separately. | Formalize immediate, session, consolidation, and governance loops. Do not build one “dreaming” job. |
-| Provider-native resume is not portable. | `docs/cross-harness-continuity-findings.md:10-31,101-118` proves this boundary. The Pi bridge is experimental. | Use fresh-session context delivery and pointer-rich handoffs. Never forge native provider stores. |
-| Closed-loop utility matters more than recall accuracy. | The 2026-07-28 tracer passed delivery mechanics but did not establish promotion value. | Expand only after shadow and crossover measurements show no gate regression. |
+| Shared-conversation insight                                        | Live Chatlog evidence                                                                                                                                        | Roadmap decision                                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| The event log is canonical. Derived memory is replaceable.         | `src/ingest.ts:42-55,116-145` already redacts, hashes, and writes immutable objects. `src/derive.ts:354-416` rebuilds recipe-bound projections.              | Keep content addressing and rebuildability. Replace flat adapter output with typed event batches.                    |
+| Normalization must preserve semantic variety.                      | `src/types.ts:14-45` has flat turns and tool calls. Adapters drop branches, approvals, compaction, artifacts, event IDs, and some tool relations.            | Add typed events, explicit relations, source locators, capture policy, and semantic-loss receipts.                   |
+| Evidence, belief, policy, intervention, and outcome are different. | Evidence pointers, refinery candidates, accepted memory, and domain policy already exist. No intervention entity links delivery to later outcomes.           | Give each concept its own type and authority. Do not use one generic edge or status.                                 |
+| Claims need provenance, revision, and temporal validity.           | `src/experience-memory-store.ts:141-231` strongly verifies proposal and operator-review bytes. `AcceptedMemoryEntry` only supports `accepted` and `current`. | Preserve exact provenance. Add proposal, dispute, supersession, expiry, counterevidence, and valid-time transitions. |
+| Context injection is an intervention.                              | The startup hook emits a snapshot, and MCP returns a card. Neither path writes an intervention receipt.                                                      | Add the intervention ledger before broad personalization.                                                            |
+| Recall is a bounded resumable effect.                              | Current exact card recall is finite. Core retrieval limits are not one shared budget, and no stop reason exists.                                             | Keep cooperative recall first. Add a graded, structured recall runtime only after closed-loop measurement exists.    |
+| An advisor is an intrusive controller.                             | Role and orchestration analysis exist, but no live advisor protocol exists.                                                                                  | Keep advisor behavior in shadow mode. Only enforced policy can block. Learned insights remain advisory.              |
+| Multiple time scales need different authority.                     | Ingest, derive, refine, operator review, publication, and paired evaluation already run separately.                                                          | Formalize immediate, session, consolidation, and governance loops. Do not build one “dreaming” job.                  |
+| Provider-native resume is not portable.                            | `docs/cross-harness-continuity-findings.md:10-31,101-118` proves this boundary. The Pi bridge is experimental.                                               | Use fresh-session context delivery and pointer-rich handoffs. Never forge native provider stores.                    |
+| Closed-loop utility matters more than recall accuracy.             | The 2026-07-28 tracer passed delivery mechanics but did not establish promotion value.                                                                       | Expand only after shadow and crossover measurements show no gate regression.                                         |
 
 ## Theoretical ideas translated into product rules
 
-| Idea from the shared conversation | Product rule | Plans |
-| --- | --- | --- |
-| MAPE-K | Keep observation, analysis, planning, delivery, and shared knowledge as replaceable modules. | 001, 004, 005 |
-| Good Regulator | Store explicit, testable user, project, workflow, and agent-state claims. Do not hide them in embeddings. | 004 |
-| Requisite variety | Remove provider syntax differences. Preserve distinctions that change later decisions. Record every loss. | 001, 002 |
-| Blackboard architecture | Providers communicate through the context plane. They do not require pairwise integrations. | 001, 003, 005 |
-| State estimation | Treat inferred memories as uncertain, temporal, and revisable claims. | 004 |
-| W3C PROV concepts | Separate entities, derivation activities, and actors. Keep exact source and recipe hashes. | 001, 004 |
-| Second-order cybernetics | Record each context intervention because it changes later observations. | 005 |
-| Double-loop learning | Let evidence revise actions easily. Require stronger human authority for goals and policy. | 004, 005 |
-| Viable System Model | Apply authority and memory at user, project, repository, path, harness, and organization scopes. | 004, 005 |
-| Algebraic effects and structured concurrency | Recall can branch internally, but all branches must terminate and rejoin before one result returns. | 006 |
+| Idea from the shared conversation            | Product rule                                                                                              | Plans         |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------- |
+| MAPE-K                                       | Keep observation, analysis, planning, delivery, and shared knowledge as replaceable modules.              | 001, 004, 005 |
+| Good Regulator                               | Store explicit, testable user, project, workflow, and agent-state claims. Do not hide them in embeddings. | 004           |
+| Requisite variety                            | Remove provider syntax differences. Preserve distinctions that change later decisions. Record every loss. | 001, 002      |
+| Blackboard architecture                      | Providers communicate through the context plane. They do not require pairwise integrations.               | 001, 003, 005 |
+| State estimation                             | Treat inferred memories as uncertain, temporal, and revisable claims.                                     | 004           |
+| W3C PROV concepts                            | Separate entities, derivation activities, and actors. Keep exact source and recipe hashes.                | 001, 004      |
+| Second-order cybernetics                     | Record each context intervention because it changes later observations.                                   | 005           |
+| Double-loop learning                         | Let evidence revise actions easily. Require stronger human authority for goals and policy.                | 004, 005      |
+| Viable System Model                          | Apply authority and memory at user, project, repository, path, harness, and organization scopes.          | 004, 005      |
+| Algebraic effects and structured concurrency | Recall can branch internally, but all branches must terminate and rejoin before one result returns.       | 006           |
 
 ## Leverage assessment
 
@@ -120,11 +120,11 @@ The goal is portable, attributable improvement across agents. The goal is not ma
 
 ## Approach comparison
 
-| Approach | Benefit | Failure mode | Decision |
-| --- | --- | --- | --- |
-| Patch `Conversation` and `AcceptedMemoryEntry` | Small initial change | More optional fields cannot represent ordered events, typed relations, or intervention lineage | Reject |
-| Replace the whole corpus in one migration | Clean final state | High risk to hashes, evidence URIs, SQLite, derived artifacts, and current product surfaces | Reject |
-| Migrate at the adapter seam and project legacy views | One canonical event model with staged downstream cutover | Temporary projection work | **Use this approach** |
+| Approach                                             | Benefit                                                  | Failure mode                                                                                   | Decision              |
+| ---------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------- |
+| Patch `Conversation` and `AcceptedMemoryEntry`       | Small initial change                                     | More optional fields cannot represent ordered events, typed relations, or intervention lineage | Reject                |
+| Replace the whole corpus in one migration            | Clean final state                                        | High risk to hashes, evidence URIs, SQLite, derived artifacts, and current product surfaces    | Reject                |
+| Migrate at the adapter seam and project legacy views | One canonical event model with staged downstream cutover | Temporary projection work                                                                      | **Use this approach** |
 
 The compatibility projection is not a second authority. Adapters stop emitting `Conversation` directly. The projection can remain as a useful read model after migration.
 
@@ -140,14 +140,14 @@ Do not start Plan 001 until these conditions are true:
 
 ## Execution order and status
 
-| Plan | Title | Priority | Effort | Depends on | Status |
-| --- | --- | --- | --- | --- | --- |
-| [001](001-canonical-agent-events.md) | Make agent events the canonical evidence model | P1 | L | Existing source-lifecycle prerequisite | TODO |
-| [002](002-adapter-conformance-and-loss.md) | Enforce provider conformance and semantic-loss accounting | P1 | L | 001 | TODO |
-| [003](003-expand-provider-sources.md) | Add ChatGPT export and generic event import | P2 | L | 002 | TODO |
-| [004](004-governed-insight-ledger.md) | Add a governed temporal insight ledger | P1 | L | 002 | TODO |
-| [005](005-context-intervention-loop.md) | Connect context delivery to observed outcomes | P1 | L | 004 | TODO |
-| [006](006-bounded-recall-and-advisor.md) | Add bounded recall and shadow supervision | P3 | L | 005 and a positive closed-loop gate | TODO |
+| Plan                                       | Title                                                     | Priority | Effort | Depends on                             | Status |
+| ------------------------------------------ | --------------------------------------------------------- | -------- | ------ | -------------------------------------- | ------ |
+| [001](001-canonical-agent-events.md)       | Make agent events the canonical evidence model            | P1       | L      | Existing source-lifecycle prerequisite | DONE   |
+| [002](002-adapter-conformance-and-loss.md) | Enforce provider conformance and semantic-loss accounting | P1       | L      | 001                                    | DONE   |
+| [003](003-expand-provider-sources.md)      | Add ChatGPT export and generic event import               | P2       | L      | 002                                    | DONE   |
+| [004](004-governed-insight-ledger.md)      | Add a governed temporal insight ledger                    | P1       | L      | 002                                    | DONE   |
+| [005](005-context-intervention-loop.md)    | Connect context delivery to observed outcomes             | P1       | L      | 004                                    | TODO   |
+| [006](006-bounded-recall-and-advisor.md)   | Add bounded recall and shadow supervision                 | P3       | L      | 005 and a positive closed-loop gate    | TODO   |
 
 Plans 003 and 004 can run in parallel after Plan 002. Plan 005 needs only Plan 004.
 
@@ -165,14 +165,14 @@ flowchart LR
 
 ## Release stages
 
-| Stage | Agent exposure | Gate |
-| --- | --- | --- |
-| Offline replay | No live agent context | Event fidelity, loss accounting, and claim calibration |
-| Shadow context | Planner records proposed bundles but delivers nothing | Relevance, staleness, scope, and harmful-context review |
-| Evidence-only recall | Agents can request canonical evidence | Scope enforcement, budget, and evidence attribution |
-| Limited insight injection | Low-risk active claims and procedure pointers | Paired gate, correction, re-derivation, token, and latency results |
-| Bounded recursive recall | Multi-branch retrieval joins before one response | Termination, novelty, cancellation, and negative-transfer gates |
-| Shadow advisor | Advisor can observe and recommend only | Intervention utility and false-positive rate |
+| Stage                     | Agent exposure                                        | Gate                                                               |
+| ------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------ |
+| Offline replay            | No live agent context                                 | Event fidelity, loss accounting, and claim calibration             |
+| Shadow context            | Planner records proposed bundles but delivers nothing | Relevance, staleness, scope, and harmful-context review            |
+| Evidence-only recall      | Agents can request canonical evidence                 | Scope enforcement, budget, and evidence attribution                |
+| Limited insight injection | Low-risk active claims and procedure pointers         | Paired gate, correction, re-derivation, token, and latency results |
+| Bounded recursive recall  | Multi-branch retrieval joins before one response      | Termination, novelty, cancellation, and negative-transfer gates    |
+| Shadow advisor            | Advisor can observe and recommend only                | Intervention utility and false-positive rate                       |
 
 Do not enable an intrusive advisor from this roadmap. That requires a separate operator decision after Plan 006 produces evidence.
 
@@ -206,12 +206,12 @@ Do not enable an intrusive advisor from this roadmap. That requires a separate o
 
 These commands are the common final gates. Each plan also defines focused commands.
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Focused tests | `bun test test/<plan-specific>.test.ts` | Exit 0 and all focused tests pass |
-| Type checks | `bun run typecheck` | Exit 0 with no TypeScript errors |
-| Repository gate | `bun run check` | Exit 0 with tests, lint, format checks, bundles, and web build complete |
-| Nix package gate | `nix flake check --offline` | Exit 0 after inputs exist locally |
+| Purpose          | Command                                 | Expected result                                                         |
+| ---------------- | --------------------------------------- | ----------------------------------------------------------------------- |
+| Focused tests    | `bun test test/<plan-specific>.test.ts` | Exit 0 and all focused tests pass                                       |
+| Type checks      | `bun run typecheck`                     | Exit 0 with no TypeScript errors                                        |
+| Repository gate  | `bun run check`                         | Exit 0 with tests, lint, format checks, bundles, and web build complete |
+| Nix package gate | `nix flake check --offline`             | Exit 0 after inputs exist locally                                       |
 
 ## Roadmap review result
 

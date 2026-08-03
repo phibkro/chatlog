@@ -1,7 +1,10 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { canonicalEventBatch, type EventBatch } from "./events";
+import { eventBatchHash } from "./event-store";
 import type { Conversation } from "./types";
+import { ensureInsightProjection } from "./insight-projection";
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   return (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
@@ -45,18 +48,84 @@ export function openAnalysis(path: string): Database {
     call_id TEXT, name TEXT NOT NULL, arguments TEXT, output TEXT,
     PRIMARY KEY(content_hash, turn_index, call_index)
   )`);
-  db.run("CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(content, content_hash UNINDEXED, turn_index UNINDEXED, harness UNINDEXED, project UNINDEXED, tokenize='unicode61')");
+  db.run(
+    "CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(content, content_hash UNINDEXED, turn_index UNINDEXED, harness UNINDEXED, project UNINDEXED, tokenize='unicode61')",
+  );
   db.run(`CREATE TABLE IF NOT EXISTS active_sources (
     source_path TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
+    event_batch_hash TEXT,
+    projection_hash TEXT,
+    receipt_hash TEXT,
     updated_at TEXT NOT NULL
   )`);
+  if (!hasColumn(db, "active_sources", "event_batch_hash"))
+    db.run("ALTER TABLE active_sources ADD COLUMN event_batch_hash TEXT");
+  if (!hasColumn(db, "active_sources", "projection_hash"))
+    db.run("ALTER TABLE active_sources ADD COLUMN projection_hash TEXT");
+  if (!hasColumn(db, "active_sources", "receipt_hash"))
+    db.run("ALTER TABLE active_sources ADD COLUMN receipt_hash TEXT");
   db.run("CREATE INDEX IF NOT EXISTS active_sources_content_hash ON active_sources(content_hash)");
   db.run(`CREATE TABLE IF NOT EXISTS active_projection_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     manifest_sources_hash TEXT NOT NULL,
     reconciled_at TEXT NOT NULL
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS event_batches (
+    batch_hash TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    origin_kind TEXT NOT NULL,
+    origin_json TEXT NOT NULL,
+    partial_tail INTEGER NOT NULL,
+    event_count INTEGER NOT NULL,
+    semantic_loss_count INTEGER NOT NULL,
+    projection_hash TEXT
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS event_metadata (
+    event_id TEXT PRIMARY KEY,
+    batch_hash TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    occurred_at TEXT,
+    observed_at TEXT,
+    actor_kind TEXT NOT NULL,
+    actor_json TEXT NOT NULL,
+    scope_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    capture_disposition TEXT NOT NULL,
+    capture_reason TEXT,
+    origin_kind TEXT NOT NULL,
+    origin_json TEXT NOT NULL
+  )`);
+  db.run("CREATE INDEX IF NOT EXISTS event_metadata_batch ON event_metadata(batch_hash, sequence)");
+  db.run("CREATE INDEX IF NOT EXISTS event_metadata_kind ON event_metadata(kind)");
+  db.run(`CREATE TABLE IF NOT EXISTS event_relations (
+    event_id TEXT NOT NULL,
+    relation_name TEXT NOT NULL,
+    target_event_id TEXT NOT NULL,
+    PRIMARY KEY(event_id, relation_name, target_event_id)
+  )`);
+  db.run("CREATE INDEX IF NOT EXISTS event_relations_target ON event_relations(target_event_id)");
+  db.run(`CREATE TABLE IF NOT EXISTS event_sources (
+    event_id TEXT PRIMARY KEY,
+    batch_hash TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    native_session_id TEXT,
+    native_item_id TEXT,
+    record_position_json TEXT NOT NULL,
+    adapter_recipe TEXT NOT NULL,
+    capture_policy_version TEXT NOT NULL,
+    redacted_native_record_hash TEXT NOT NULL
+  )`);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS event_sources_path ON event_sources(source_path, native_item_id)",
+  );
+  db.run(
+    "CREATE VIEW IF NOT EXISTS source_to_events AS SELECT source_path, event_id, batch_hash, native_item_id, record_position_json FROM event_sources",
+  );
   db.run("DROP VIEW IF EXISTS current_token_usage");
   db.run("DROP VIEW IF EXISTS current_turns");
   db.run("DROP VIEW IF EXISTS current_conversations");
@@ -82,8 +151,86 @@ export function openAnalysis(path: string): Database {
       cached_input_tokens + cache_write_tokens AS cached_tokens,
       total_tokens AS reported_total_tokens
     FROM current_conversations`);
+  ensureInsightProjection(db);
   chmodSync(path, 0o600);
   return db;
+}
+
+export function indexEventBatch(
+  db: Database,
+  input: EventBatch,
+  batchHash = eventBatchHash(input),
+  projectionHash?: string,
+): boolean {
+  const batch = canonicalEventBatch(input);
+  if (db.query("SELECT 1 FROM event_batches WHERE batch_hash = ?").get(batchHash)) return false;
+  const insertBatch = db.prepare(`INSERT INTO event_batches
+    (batch_hash,schema_version,origin_kind,origin_json,partial_tail,event_count,semantic_loss_count,projection_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insertEvent = db.prepare(`INSERT OR REPLACE INTO event_metadata
+    (event_id,batch_hash,sequence,kind,occurred_at,observed_at,actor_kind,actor_json,scope_json,payload_json,capture_disposition,capture_reason,origin_kind,origin_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insertRelation = db.prepare(
+    "INSERT OR IGNORE INTO event_relations(event_id,relation_name,target_event_id) VALUES (?, ?, ?)",
+  );
+  const insertSource = db.prepare(`INSERT OR REPLACE INTO event_sources
+    (event_id,batch_hash,provider,harness,source_kind,source_path,native_session_id,native_item_id,record_position_json,adapter_recipe,capture_policy_version,redacted_native_record_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  db.transaction(() => {
+    insertBatch.run(
+      batchHash,
+      batch.schemaVersion,
+      batch.origin.kind,
+      JSON.stringify(batch.origin),
+      batch.partialTail ? 1 : 0,
+      batch.events.length,
+      batch.semanticLoss.length,
+      projectionHash ?? null,
+    );
+    for (const event of batch.events) {
+      insertEvent.run(
+        event.eventId,
+        batchHash,
+        event.sequence,
+        event.kind,
+        event.occurredAt ?? null,
+        event.observedAt ?? null,
+        event.actor.kind,
+        JSON.stringify(event.actor),
+        JSON.stringify(event.scope),
+        JSON.stringify(event.payload),
+        event.capture.disposition,
+        event.capture.reason ?? null,
+        event.origin.kind,
+        JSON.stringify(event.origin),
+      );
+      if (event.relations.parent)
+        insertRelation.run(event.eventId, "parent", event.relations.parent);
+      if (event.relations.branch)
+        insertRelation.run(event.eventId, "branch", event.relations.branch);
+      for (const relation of ["causedBy", "correlatesWith", "derivedFrom"] as const)
+        for (const target of event.relations[relation] ?? [])
+          insertRelation.run(event.eventId, relation, target);
+      if (event.origin.kind === "observed") {
+        const source = event.origin.source;
+        insertSource.run(
+          event.eventId,
+          batchHash,
+          source.provider,
+          source.harness,
+          source.sourceKind,
+          source.sourcePath,
+          source.nativeSessionId ?? null,
+          source.nativeItemId ?? null,
+          JSON.stringify(source.recordPosition),
+          source.adapterRecipe,
+          source.capturePolicyVersion,
+          source.redactedNativeRecordHash,
+        );
+      }
+    }
+  })();
+  return true;
 }
 
 export function indexConversation(
@@ -200,8 +347,7 @@ export function querySearch(db: Database, term: string, limit = 10): unknown[] {
 export function queryModels(db: Database): unknown[] {
   return db
     .query(`SELECT project, harness, model, count(*) sessions, sum(total_tokens) total_tokens
-    FROM current_conversations GROUP BY project, harness, model
-    ORDER BY sessions DESC, total_tokens DESC LIMIT 30`)
+    FROM current_conversations GROUP BY project, harness, model ORDER BY sessions DESC, total_tokens DESC LIMIT 30`)
     .all();
 }
 
@@ -210,8 +356,8 @@ export function queryTokenUsage(db: Database): unknown[] {
     .query(`SELECT provider, harness, count(*) sessions,
     sum(non_cached_tokens) non_cached_tokens, sum(cache_read_tokens) cache_read_tokens,
     sum(cache_write_tokens) cache_write_tokens, sum(cached_tokens) cached_tokens,
-    sum(reported_total_tokens) reported_total_tokens
-    FROM current_token_usage GROUP BY provider, harness ORDER BY sessions DESC`)
+    sum(reported_total_tokens) reported_total_tokens FROM current_token_usage
+    GROUP BY provider, harness ORDER BY sessions DESC`)
     .all();
 }
 
@@ -224,36 +370,27 @@ export function queryUsageOverTime(
   return db
     .query(`SELECT strftime('${format}', started_at) period, harness, model, count(*) sessions,
     sum(non_cached_tokens) non_cached_tokens, sum(cached_tokens) cached_tokens,
-    sum(reported_total_tokens) reported_total_tokens
-    FROM current_token_usage GROUP BY period, harness, model
-    ORDER BY period DESC, reported_total_tokens DESC LIMIT ?`)
+    sum(reported_total_tokens) reported_total_tokens FROM current_token_usage
+    GROUP BY period, harness, model ORDER BY period DESC, reported_total_tokens DESC LIMIT ?`)
     .all(limit);
 }
 
 export function queryToolFrequency(db: Database, limit = 30): unknown[] {
   return db
     .query(`SELECT c.harness, tc.name tool, count(*) calls,
-    count(DISTINCT tc.content_hash) sessions
-    FROM tool_calls tc JOIN current_conversations c USING(content_hash)
-    JOIN turns t ON t.content_hash=tc.content_hash AND t.turn_index=tc.turn_index
-    WHERE t.role='assistant'
+    count(DISTINCT tc.content_hash) sessions FROM tool_calls tc JOIN current_conversations c USING(content_hash)
+    JOIN turns t ON t.content_hash=tc.content_hash AND t.turn_index=tc.turn_index WHERE t.role='assistant'
     GROUP BY c.harness, tc.name ORDER BY calls DESC LIMIT ?`)
     .all(limit);
 }
 
 export function querySessionLengths(db: Database): unknown[] {
   return db
-    .query(`SELECT
-    CASE WHEN turn_count = 0 THEN '0'
-      WHEN turn_count <= 10 THEN '1-10'
-      WHEN turn_count <= 50 THEN '11-50'
-      WHEN turn_count <= 200 THEN '51-200'
-      WHEN turn_count <= 1000 THEN '201-1000'
-      ELSE '1001+' END turn_bucket,
-    count(*) sessions, round(avg(turn_count), 1) avg_turns,
-    min(turn_count) min_turns, max(turn_count) max_turns
-    FROM current_conversations GROUP BY turn_bucket
-    ORDER BY min(turn_count)`)
+    .query(`SELECT CASE WHEN turn_count = 0 THEN '0'
+      WHEN turn_count <= 10 THEN '1-10' WHEN turn_count <= 50 THEN '11-50'
+      WHEN turn_count <= 200 THEN '51-200' WHEN turn_count <= 1000 THEN '201-1000' ELSE '1001+' END turn_bucket,
+    count(*) sessions, round(avg(turn_count), 1) avg_turns, min(turn_count) min_turns, max(turn_count) max_turns
+    FROM current_conversations GROUP BY turn_bucket ORDER BY min(turn_count)`)
     .all();
 }
 

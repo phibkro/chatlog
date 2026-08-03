@@ -118,15 +118,15 @@ In this plan, the advisor cannot block, abort, recover, or mutate. Those actions
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Budget tests | `bun test test/recall-budget.test.ts` | Exit 0 |
-| Runtime tests | `bun test test/recall-runtime.test.ts` | Exit 0 |
-| Procedure tests | `bun test test/procedure-transfer.test.ts` | Exit 0 |
-| Advisor tests | `bun test test/advisor-shadow.test.ts` | Exit 0 |
-| MCP tests | `bun test test/mcp.test.ts test/context-outcomes.test.ts` | Exit 0 |
-| Prerequisite gate | `bun run gate:verify -- <evaluation-artifact>` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose           | Command                                                   | Expected result |
+| ----------------- | --------------------------------------------------------- | --------------- |
+| Budget tests      | `bun test test/recall-budget.test.ts`                     | Exit 0          |
+| Runtime tests     | `bun test test/recall-runtime.test.ts`                    | Exit 0          |
+| Procedure tests   | `bun test test/procedure-transfer.test.ts`                | Exit 0          |
+| Advisor tests     | `bun test test/advisor-shadow.test.ts`                    | Exit 0          |
+| MCP tests         | `bun test test/mcp.test.ts test/context-outcomes.test.ts` | Exit 0          |
+| Prerequisite gate | `bun run gate:verify -- <evaluation-artifact>`            | Exit 0          |
+| Full gate         | `bun run check`                                           | Exit 0          |
 
 ## Scope
 

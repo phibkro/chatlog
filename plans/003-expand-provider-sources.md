@@ -12,6 +12,7 @@
 - **Depends on**: `plans/002-adapter-conformance-and-loss.md`
 - **Category**: direction, migration
 - **Planned at**: commit `8ddee39`, 2026-08-03
+- **Status**: DONE (verified 2026-08-03)
 
 ## Why this matters
 
@@ -68,13 +69,13 @@ Unknown schema versions fail closed. Unknown event kinds use the Plan 002 opaque
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| ChatGPT tests | `bun test test/chatgpt-export.test.ts` | Exit 0 |
-| Generic event tests | `bun test test/generic-event-import.test.ts` | Exit 0 |
-| Source catalog tests | `bun test test/workbench.test.ts test/adapter-conformance.test.ts` | Exit 0 |
-| Type checks | `bun run typecheck` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose              | Command                                                            | Expected result |
+| -------------------- | ------------------------------------------------------------------ | --------------- |
+| ChatGPT tests        | `bun test test/chatgpt-export.test.ts`                             | Exit 0          |
+| Generic event tests  | `bun test test/generic-event-import.test.ts`                       | Exit 0          |
+| Source catalog tests | `bun test test/workbench.test.ts test/adapter-conformance.test.ts` | Exit 0          |
+| Type checks          | `bun run typecheck`                                                | Exit 0          |
+| Full gate            | `bun run check`                                                    | Exit 0          |
 
 ## Scope
 
@@ -263,15 +264,15 @@ Required generic cases:
 
 ## Done criteria
 
-- [ ] ChatGPT export preview is aggregate-only and creates no state.
-- [ ] ChatGPT import preserves branch relations and source provenance.
-- [ ] Generic JSONL means the versioned Chatlog event contract only.
-- [ ] Both imports use active-source authority and semantic-loss receipts.
-- [ ] Both imports are idempotent and recipe-aware.
-- [ ] Catalog status matches executable capability.
-- [ ] Personal-domain access stays excluded from default MCP policy.
-- [ ] `bun run check` exits 0.
-- [ ] `plans/README.md` marks Plan 003 `DONE`.
+- [x] ChatGPT export preview is aggregate-only and creates no state.
+- [x] ChatGPT import preserves branch relations and source provenance.
+- [x] Generic JSONL means the versioned Chatlog event contract only.
+- [x] Both imports use active-source authority and semantic-loss receipts.
+- [x] Both imports are idempotent and recipe-aware.
+- [x] Catalog status matches executable capability.
+- [x] Personal-domain access stays excluded from default MCP policy.
+- [x] `bun run check` exits 0.
+- [x] `plans/README.md` marks Plan 003 `DONE`.
 
 ## STOP conditions
 

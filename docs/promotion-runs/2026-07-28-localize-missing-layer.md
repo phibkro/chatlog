@@ -48,12 +48,12 @@ least one outcome or efficiency measure.
 
 ## Results
 
-| Pair | Control score | Treatment score | Control wall | Treatment wall | Control output | Treatment output |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 8 | 9 | 28,206 ms | 40,738 ms | 2,016 | 2,178 |
-| 2 | 8 | 10 | 30,427 ms | 25,411 ms | 2,235 | 1,885 |
-| 3 | 9 | 9 | 32,798 ms | 26,535 ms | 2,389 | 1,894 |
-| Median | 8 | 9 | 30,427 ms | 26,535 ms | 2,235 | 1,894 |
+| Pair   | Control score | Treatment score | Control wall | Treatment wall | Control output | Treatment output |
+| ------ | ------------: | --------------: | -----------: | -------------: | -------------: | ---------------: |
+| 1      |             8 |               9 |    28,206 ms |      40,738 ms |          2,016 |            2,178 |
+| 2      |             8 |              10 |    30,427 ms |      25,411 ms |          2,235 |            1,885 |
+| 3      |             9 |               9 |    32,798 ms |      26,535 ms |          2,389 |            1,894 |
+| Median |             8 |               9 |    30,427 ms |      26,535 ms |          2,235 |            1,894 |
 
 Median treatment improvements:
 

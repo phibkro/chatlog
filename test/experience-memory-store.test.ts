@@ -4,11 +4,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AcceptedMemoryEntry, AcceptedMemoryLedger } from "../src/experience-memory";
-import {
-  publishAcceptedMemory,
-  readPublishedMemory,
-  recallPublishedMemory,
-} from "../src/experience-memory-store";
+import { publishAcceptedMemory, readPublishedMemory } from "../src/experience-memory-store";
 
 function entry(id: string, alias: string): AcceptedMemoryEntry {
   return {
@@ -113,40 +109,22 @@ async function writeLedger(root: string, value: AcceptedMemoryLedger): Promise<s
   return path;
 }
 
-test("publishing is deterministic and pinned hashes retain their original cards", async () => {
+test("v1 publishing is disabled and requires an explicit v2 migration", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-memory-store-"));
-  const firstPath = await writeLedger(root, ledger(entry("memory-a", "C001")));
-  const first = await publishAcceptedMemory(root, firstPath);
-  const repeated = await publishAcceptedMemory(root, firstPath);
-  expect(first.ok).toBe(true);
-  expect(repeated.ok).toBe(true);
-  if (!first.ok || !repeated.ok) return;
-  expect(repeated.value.pointer).toEqual(first.value.pointer);
-
-  const secondPath = await writeLedger(root, ledger(entry("memory-b", "C002")));
-  const second = await publishAcceptedMemory(root, secondPath);
-  expect(second.ok).toBe(true);
-  if (!second.ok) return;
-  expect(second.value.pointer.snapshotHash).not.toBe(first.value.pointer.snapshotHash);
-
-  const current = await readPublishedMemory(root);
-  expect(current.ok && current.value.published.ledger.entries[0]!.id).toBe("memory-b");
-
-  const pinned = await recallPublishedMemory(root, first.value.pointer.snapshotHash, "memory-a");
-  expect(pinned.ok && pinned.value.lesson).toBe("lesson memory-a");
-  expect((await recallPublishedMemory(root, first.value.pointer.snapshotHash, "memory-b")).ok).toBe(
-    false,
-  );
+  const path = await writeLedger(root, ledger(entry("memory-a", "C001")));
+  const result = await publishAcceptedMemory(root, path);
+  expect(result.ok).toBe(false);
+  if (!result.ok)
+    expect(result.error.message).toContain("migrate and apply an insight ledger explicitly");
+  expect((await readPublishedMemory(root)).ok).toBe(false);
 });
 
 test("published snapshots fail closed when the requested hash is malformed", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-memory-store-invalid-"));
-  await writeLedger(root, ledger(entry("memory-a", "C001")));
-  expect((await publishAcceptedMemory(root)).ok).toBe(true);
   expect((await readPublishedMemory(root, "../current")).ok).toBe(false);
 });
 
-test("publishing fails closed when finalized source provenance is fabricated", async () => {
+test("disabled v1 publishing does not evaluate or publish fabricated provenance", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-memory-store-provenance-"));
   const value = ledger(entry("memory-a", "C001"));
   const path = await writeLedger(root, value);
@@ -154,5 +132,6 @@ test("publishing fails closed when finalized source provenance is fabricated", a
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   const result = await publishAcceptedMemory(root, path);
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.error.message).toContain("source-bound provenance");
+  if (!result.ok)
+    expect(result.error.message).toContain("v1 accepted-memory publishing is disabled");
 });

@@ -215,13 +215,11 @@ test("records the committed manifest transition when derivation fails", async ()
   await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
   const invalidHash = "0".repeat(64);
   await mkdir(join(root, "corpus", "objects", "00"), { recursive: true });
-  await writeFile(
-    join(root, "corpus", "objects", "00", `${invalidHash}.json`),
-    "{not valid JSON",
-  );
+  await writeFile(join(root, "corpus", "objects", "00", `${invalidHash}.json`), "{not valid JSON");
 
-  await expect(importAnthropicExport(source, root, { domain: "ideas" }))
-    .rejects.toThrow("import committed as receipt");
+  await expect(importAnthropicExport(source, root, { domain: "ideas" })).rejects.toThrow(
+    "import committed as receipt",
+  );
   const [receipt] = await listImportReceipts(root);
   expect(receipt).toMatchObject({
     status: "completed",
@@ -245,9 +243,9 @@ test("does not advance projection or write a receipt when manifest commit fails"
   const receiptsBefore = await listImportReceipts(root);
   const dbPath = join(root, "analysis", "chatlog.sqlite");
   const beforeDb = new Database(dbPath, { readonly: true });
-  const activeBefore = beforeDb.query(
-    "SELECT content_hash contentHash FROM current_conversations",
-  ).get();
+  const activeBefore = beforeDb
+    .query("SELECT content_hash contentHash FROM current_conversations")
+    .get();
   beforeDb.close();
 
   await writeFile(
@@ -255,16 +253,16 @@ test("does not advance projection or write a receipt when manifest commit fails"
     JSON.stringify([{ ...fixture, name: "A changed idea" }]),
   );
   await mkdir(`${manifestPath}.${process.pid}.tmp`);
-  await expect(importAnthropicExport(source, root, { domain: "ideas", derive: false }))
-    .rejects.toThrow();
+  await expect(
+    importAnthropicExport(source, root, { domain: "ideas", derive: false }),
+  ).rejects.toThrow();
 
   expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
   expect(await listImportReceipts(root)).toEqual(receiptsBefore);
   const afterDb = new Database(dbPath, { readonly: true });
-  expect(afterDb.query(
-    "SELECT content_hash contentHash FROM current_conversations",
-  ).get()).toEqual(activeBefore);
-  expect(afterDb.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 2 });
+  expect(afterDb.query("SELECT content_hash contentHash FROM current_conversations").get()).toEqual(
+    activeBefore,
+  );
+  expect(afterDb.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 2 });
   afterDb.close();
 });

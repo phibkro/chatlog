@@ -126,10 +126,7 @@ describe("Pi bridge", () => {
     for (const item of [conversation, current]) {
       const directory = join(root, "corpus", "objects", item.contentHash.slice(0, 2));
       await mkdir(directory, { recursive: true });
-      await writeFile(
-        join(directory, `${item.contentHash}.json`),
-        JSON.stringify(item),
-      );
+      await writeFile(join(directory, `${item.contentHash}.json`), JSON.stringify(item));
     }
     await writeFile(
       join(root, "corpus", "manifest.json"),
@@ -147,8 +144,9 @@ describe("Pi bridge", () => {
     db.close();
 
     const staleOutput = join(root, "bridge", "stale.jsonl");
-    await expect(emitPiBridge(root, hash, "history", staleOutput))
-      .rejects.toThrow("bridge conversation is not active");
+    await expect(emitPiBridge(root, hash, "history", staleOutput)).rejects.toThrow(
+      "bridge conversation is not active",
+    );
     expect(await Bun.file(staleOutput).exists()).toBe(false);
     const receipt = await emitPiBridge(
       root,

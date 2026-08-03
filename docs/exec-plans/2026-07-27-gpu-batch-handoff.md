@@ -40,12 +40,12 @@ about health and career. You need **emergent, specific** topics.
 `CHATLOG_DATA_ROOT=/srv/share/projects/chatlog` — 4,246 conversations,
 2024-10-31 → 2026-07-27:
 
-| harness | count | carries |
-|---|---|---|
-| claude-code | 3172 | technical work |
-| claude-web | 694 | **personal thinking** — health, career, an HMS sensor platform |
-| codex | 452 | technical work |
-| pi | 32 | technical work |
+| harness     | count | carries                                                        |
+| ----------- | ----- | -------------------------------------------------------------- |
+| claude-code | 3172  | technical work                                                 |
+| claude-web  | 694   | **personal thinking** — health, career, an HMS sensor platform |
+| codex       | 452   | technical work                                                 |
+| pi          | 32    | technical work                                                 |
 
 The 694 web conversations were imported 2026-07-27 and had never been in the
 same corpus as the code harnesses before. **A topic that bridges the personal
@@ -83,8 +83,8 @@ boilerplate?** Write the verdict to `derived/insights/`.
 Candidate `nix-dirty-or-untracked-input` reports ~117 occurrences across 19
 sessions. Its evidence is dominated by a subagent system prompt:
 
-> *"You are implementing part of hypr-session… The worktree is DIRTY with
-> unrelated changes — NEVER run git add/commit/push…"*
+> _"You are implementing part of hypr-session… The worktree is DIRTY with
+> unrelated changes — NEVER run git add/commit/push…"_
 
 That is a different sense of "dirty" and "git add" than the Nix flake gotcha the
 signature names. **It is a false positive.** Two approaches already failed to
@@ -94,7 +94,7 @@ catch it:
 - a hash-based verbatim-template gate — defeated by interpolated paths and
   branch names; 38 "distinct" snippets, one template
 
-An LLM reading for *meaning* is the first approach that can. **Quote the judge's
+An LLM reading for _meaning_ is the first approach that can. **Quote the judge's
 reasoning on this candidate specifically.** If it also passes it as genuine,
 that is the important negative result and must be reported, not buried.
 
@@ -108,12 +108,12 @@ ingest, not anonymised.
 
 `CHATLOG_RERANK_PROVIDER` selects the backend:
 
-| value | where the text goes |
-|---|---|
-| unset (default) | **local ollama** — never leaves the box |
-| `openai` / `anthropic` / `openrouter` | a hosted API |
+| value                                 | where the text goes                     |
+| ------------------------------------- | --------------------------------------- |
+| unset (default)                       | **local ollama** — never leaves the box |
+| `openai` / `anthropic` / `openrouter` | a hosted API                            |
 
-Local is the default *by design* and hosted is now explicit opt-in.
+Local is the default _by design_ and hosted is now explicit opt-in.
 
 **Operator decision, 2026-07-27: hosted is acceptable.** 3,866 of the 4,246
 conversations are claude-code or claude-web — Anthropic already holds them, so

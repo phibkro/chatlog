@@ -4,6 +4,11 @@ Status: **FROZEN on open of its PR** (operator authorized 2026-07-27: whole
 repo, Effect accepted as a trusted dependency). Revise this file explicitly if
 a build learning forces it; never drift silently.
 
+The governing dependency pin is now `4.0.0-beta.101`, moved deliberately from
+beta.98 because Foldkit `0.132.0` requires Effect `4.0.0-beta.101` as an exact
+peer. The local reference checkout below remains beta.98; it is
+mechanism-only evidence, not the repository's governing version.
+
 Author lane: chatlog. Bound worker: one engineer, one worktree, this spec only.
 
 ---
@@ -45,11 +50,11 @@ failure as a value.
 
    The first version of this constraint said "no transitive-dependency sprawl",
    which reads as though `effect` were near-zero-dep. It is not: measured at
-   `4.0.0-beta.98`, it pulls **21 packages**, including `msgpackr-extract` with
-   six platform-specific native binaries and a prebuild-download bin script,
-   plus `fast-check`, `kubernetes-types`, `find-my-way-ts`, `toml`, `yaml` and
-   `ini` — backing `unstable/http` and `unstable/cluster`, none of which this
-   repo imports.
+   the locked `4.0.0-beta.101`, it pulls **21 packages**, including
+   `msgpackr-extract` with six platform-specific native binaries and a
+   prebuild-download bin script, plus `fast-check`, `kubernetes-types`,
+   `find-my-way-ts`, `toml`, `yaml` and `ini` — backing `unstable/http` and
+   `unstable/cluster`, none of which this repo imports.
 
    That is inherent to the pinned beta, not something a migration adds. What
    matters, and what this constraint now requires, is that none of it reaches
@@ -64,6 +69,7 @@ failure as a value.
      operator's entire agent history — a security decision, not a build fix.
 
    Verified true at slice 1: build-time tree grew, runtime surface did not.
+
 5. **Pin the beta explicitly.** Effect v4 is a beta channel with breaking
    changes between releases. Pin an exact version in `package.json` — never a
    range, never `@beta` floating.
@@ -71,22 +77,23 @@ failure as a value.
 ## Reference material — READ BEFORE WRITING CODE
 
 A shallow clone of the v4 source lives at
-`/srv/share/projects/.reference/effect-smol` (rev `3a1128c`, version
-`4.0.0-beta.98`). Effect v4 postdates most model training data, so patterns
-recalled from memory will be v3. Work from these files, not from recall:
+`/srv/share/projects/.reference/effect-smol` (rev `3a1128c`, historical
+version `4.0.0-beta.98`). Effect v4 postdates most model training data, so
+patterns recalled from memory will be v3. Work from these files, not from recall:
 
-| Path | Use for |
-|---|---|
-| `.patterns/effect.md` | **The house style, and the anti-pattern list.** Explicit ❌/✅ pairs: never try-catch inside `Effect.gen`; always `return yield*` for terminal effects. |
-| `migration/error-handling.md` | The `catch*` renamings — `catchAll`→`catch`, `catchSome`→`catchFilter`, `catchSomeDefect` removed. |
-| `migration/*.md` | 11 topic guides: cause, generators, layer-memoization, runtime, schema, fiberref, forking. |
-| `MIGRATION.md` | The v3→v4 overview. |
-| `AGENTS.md` | Upstream's own instructions for agents in this codebase. |
-| `packages/effect/src/` | Ground truth when a doc is ambiguous. |
+| Path                          | Use for                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.patterns/effect.md`         | **The house style, and the anti-pattern list.** Explicit ❌/✅ pairs: never try-catch inside `Effect.gen`; always `return yield*` for terminal effects. |
+| `migration/error-handling.md` | The `catch*` renamings — `catchAll`→`catch`, `catchSome`→`catchFilter`, `catchSomeDefect` removed.                                                      |
+| `migration/*.md`              | 11 topic guides: cause, generators, layer-memoization, runtime, schema, fiberref, forking.                                                              |
+| `MIGRATION.md`                | The v3→v4 overview.                                                                                                                                     |
+| `AGENTS.md`                   | Upstream's own instructions for agents in this codebase.                                                                                                |
+| `packages/effect/src/`        | Ground truth when a doc is ambiguous.                                                                                                                   |
 
-Pin the exact version this reference was taken at. If a pattern here disagrees
-with anything in this spec, the reference wins on *mechanism* and this spec
-wins on *scope* — say so rather than silently choosing.
+The repository pins `4.0.0-beta.101`; the reference's beta.98 is retained only
+for migration mechanics. If a pattern here disagrees with anything in this
+spec, the reference wins on mechanism and this spec wins on scope — say so
+rather than silently choosing.
 
 **Values (soft):**
 
@@ -142,6 +149,7 @@ The PR is conformant iff all of these hold. Each is a command, not a claim.
    Note that `corpus/`, `derived/` and `analysis/` are gitignored working data.
    Their state on the real repo is irrelevant to the commit; only the A/B on
    frozen input carries proof.
+
 3. The no-throw ratchet baseline is **lower** than 112, and
    `scripts/no-throw-baseline.txt` records the new number.
 4. `grep -rn "redact(" src/` shows no call site removed relative to `main`.

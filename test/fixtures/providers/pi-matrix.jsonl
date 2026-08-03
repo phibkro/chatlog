@@ -1,0 +1,11 @@
+{"type":"session","id":"pi-fixture","cwd":"/synthetic/project","timestamp":"2026-08-01T00:00:00.000Z"}
+{"type":"session_info","id":"info-1","provider":"fixture-provider","timestamp":"2026-08-01T00:00:01.000Z"}
+{"type":"model_change","id":"model-1","provider":"fixture-provider","modelId":"model-fixture","timestamp":"2026-08-01T00:00:02.000Z"}
+{"type":"thinking_level_change","id":"thinking-level-1","level":"fixture","timestamp":"2026-08-01T00:00:03.000Z"}
+{"type":"message","id":"message-1","timestamp":"2026-08-01T00:00:04.000Z","message":{"id":"message-1","role":"assistant","provider":"fixture-provider","model":"model-fixture","content":[{"type":"text","text":"fixture text"},{"type":"thinking","thinking":"fixture reasoning"},{"type":"toolCall","id":"call-1","name":"fixture_tool","arguments":{"arg":"fixture"}},{"type":"toolResult","id":"result-1","toolCallId":"call-1","content":"fixture result"},{"type":"image","id":"image-1","data":"fixture-image"},{"type":"unknown_block","id":"unknown-block-1","marker":"sk-ant-inert-canary"}]}}
+{"type":"approval","id":"approval-1","toolCallId":"call-1","decision":"approved","timestamp":"2026-08-01T00:00:04.500Z"}
+{"type":"compaction","id":"compact-1","summary":"fixture compaction","timestamp":"2026-08-01T00:00:05.000Z"}
+{"type":"branch_summary","id":"branch-1","branchId":"branch-1","summary":"fixture branch","timestamp":"2026-08-01T00:00:06.000Z"}
+{"type":"custom","id":"custom-1","payload":"fixture custom","timestamp":"2026-08-01T00:00:07.000Z"}
+{"type":"message","id":"message-dangling","timestamp":"2026-08-01T00:00:09.000Z","message":{"id":"message-dangling","role":"assistant","content":[{"type":"toolResult","content":"fixture unresolved"}]}}
+{"type":"unknown_fixture_record","id":"unknown-1","payload":"sk-ant-inert-canary","timestamp":"2026-08-01T00:00:08.000Z"}

@@ -2,15 +2,30 @@ import { expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { indexConversation, openAnalysis, querySessionLengths, queryTokenUsage, queryToolFrequency, queryUsageOverTime } from "../src/analysis";
+import {
+  indexConversation,
+  openAnalysis,
+  querySessionLengths,
+  queryTokenUsage,
+  queryToolFrequency,
+  queryUsageOverTime,
+} from "../src/analysis";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 
 function conversation(overrides: Partial<Conversation>): Conversation {
   return {
-    id: "id", provider: "anthropic", harness: "claude-code", project: "/project",
-    cwd: "/project", model: "model", startedAt: "2026-07-01T00:00:00Z",
-    endedAt: "2026-07-01T00:01:00Z", turns: [], sourcePath: "/source", contentHash: "a".repeat(64),
+    id: "id",
+    provider: "anthropic",
+    harness: "claude-code",
+    project: "/project",
+    cwd: "/project",
+    model: "model",
+    startedAt: "2026-07-01T00:00:00Z",
+    endedAt: "2026-07-01T00:01:00Z",
+    turns: [],
+    sourcePath: "/source",
+    contentHash: "a".repeat(64),
     ...overrides,
   };
 }
@@ -18,13 +33,41 @@ function conversation(overrides: Partial<Conversation>): Conversation {
 test("separates provider-specific non-cached and cached token semantics", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chatlog-analysis-"));
   const db = openAnalysis(join(dir, "analysis.sqlite"));
-  indexConversation(db, conversation({
-    turns: [{ role: "assistant", content: "hello", tokens: { input: 10, output: 5, cachedInput: 20, cacheWrite: 30, total: 65 }, toolCalls: [{ name: "Read" }] }],
-  }), 1, 1);
-  indexConversation(db, conversation({
-    id: "codex", provider: "openai", harness: "codex", sourcePath: "/codex", contentHash: "b".repeat(64),
-    turns: [{ role: "assistant", content: "world", tokens: { input: 100, output: 20, cachedInput: 80, total: 120 }, toolCalls: [{ name: "exec_command" }] }],
-  }), 1, 1);
+  indexConversation(
+    db,
+    conversation({
+      turns: [
+        {
+          role: "assistant",
+          content: "hello",
+          tokens: { input: 10, output: 5, cachedInput: 20, cacheWrite: 30, total: 65 },
+          toolCalls: [{ name: "Read" }],
+        },
+      ],
+    }),
+    1,
+    1,
+  );
+  indexConversation(
+    db,
+    conversation({
+      id: "codex",
+      provider: "openai",
+      harness: "codex",
+      sourcePath: "/codex",
+      contentHash: "b".repeat(64),
+      turns: [
+        {
+          role: "assistant",
+          content: "world",
+          tokens: { input: 100, output: 20, cachedInput: 80, total: 120 },
+          toolCalls: [{ name: "exec_command" }],
+        },
+      ],
+    }),
+    1,
+    1,
+  );
   reconcileActiveSources(db, {
     "/source": { contentHash: "a".repeat(64) },
     "/codex": { contentHash: "b".repeat(64) },

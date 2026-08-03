@@ -9,11 +9,11 @@ an allow-list at agent retrieval boundaries.
 
 ## Default policy
 
-| Surface | Default domains | Reason |
-| --- | --- | --- |
-| Workbench | all locally indexed domains | Human-controlled evidence viewer |
-| Existing CLI | unchanged | Backward compatibility; operator invokes it directly |
-| MCP | `coding` | Safe default for autonomous coding agents |
+| Surface          | Default domains                          | Reason                                                        |
+| ---------------- | ---------------------------------------- | ------------------------------------------------------------- |
+| Workbench        | all locally indexed domains              | Human-controlled evidence viewer                              |
+| Existing CLI     | unchanged                                | Backward compatibility; operator invokes it directly          |
+| MCP              | `coding`                                 | Safe default for autonomous coding agents                     |
 | Hosted reranking | disabled unless `CHATLOG_ALLOW_EGRESS=1` | Bounded redacted egress requires per-invocation authorization |
 
 The MCP server reads `CHATLOG_MCP_DOMAINS` as a comma-separated allow-list.
@@ -44,23 +44,40 @@ domain cannot silently become visible after an import.
 An MCP caller can ask for a narrower subset of its configured domains but
 cannot request a wider one.
 
-## Personal exports
+## Personal exports and new source adapters
 
-Anthropic and ChatGPT exports should normally enter `personal`, `ideas`, or
+Anthropic and ChatGPT exports normally enter `personal`, `ideas`, or
 `research`, not `coding`, unless the operator deliberately labels the source
-otherwise.
+otherwise. The default MCP allow-list remains `coding`; importing a personal
+export does not widen it. A source configuration cannot widen a running MCP
+server's policy.
 
-The product currently supports preview and bounded import receipts. Before
-source lifecycle mutation is exposed, it must additionally support:
+ChatGPT preview and generic event preview are non-destructive aggregate reads.
+Explicit imports write only redacted, content-addressed canonical events and
+active-source/source receipts. ChatGPT graph imports retain alternate branches
+and declared parent relations without selecting a branch by order or time.
+Attachment metadata may be retained, but attachment bodies, account memories,
+custom instructions, projects, and provider files are outside this schema.
+
+Generic JSONL is accepted only when its first record is the versioned
+`chatlog/generic-events-v1` producer header and every following record is a
+validated observed Chatlog event or bounded batch. Arbitrary provider JSONL,
+Chatlog-derived origins, conflicting provenance, and unsupported versions fail
+closed. Workbench exposes source metadata and receipt summaries read-only; it
+does not expose a mutating HTTP import endpoint.
+
+Import receipts describe what was indexed using aggregate counts, policy and
+hashes only. They never grant a domain access permission or authorize hosted
+egress.
+
+## Lifecycle requirements
+
+Before source lifecycle mutation is exposed, Chatlog must support:
 
 - selective import and deletion by source;
 - domain reassignment with re-indexing;
 - local-first topic clustering.
 
-Import receipts describe what was indexed using aggregate counts, policy and
-hashes only. They deliberately exclude conversation content and do not grant a
-domain access permission.
-
 Hosted agents should inspect real personal content only after an explicit
 per-task decision. Synthetic fixtures are sufficient for implementation and
-review of the importer and access policy.
+review of importers and access policy.

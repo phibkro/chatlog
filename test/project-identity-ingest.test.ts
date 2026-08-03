@@ -4,8 +4,10 @@ import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ingest } from "../src/ingest";
+import { EVENT_ADAPTER_RECIPE, type EventBatch } from "../src/events";
 import { PROJECT_IDENTITY_RECIPE, projectOf } from "../src/project-identity";
-import type { AdaptResult, SourceAdapter, SourceFile } from "../src/types";
+import type { SourceAdapter, SourceFile } from "../src/types";
+import { syntheticEventBatch } from "./event-fixture";
 
 class FixtureAdapter implements SourceAdapter {
   readonly harness = "fixture";
@@ -22,26 +24,23 @@ class FixtureAdapter implements SourceAdapter {
     return [{ path: this.sourcePath, size: source.size, mtimeMs: source.mtimeMs }];
   }
 
-  async adapt(source: SourceFile): Promise<AdaptResult> {
+  async adapt(source: SourceFile): Promise<EventBatch> {
     this.adaptations++;
-    return {
-      partialTail: false,
-      conversation: {
-        id: "fixture-session",
-        provider: "fixture",
-        harness: this.harness,
-        project: this.canonicalIdentity ? projectOf(this.recordedCwd) : this.recordedCwd,
-        cwd: this.recordedCwd,
-        model: "fixture",
-        startedAt: "2026-07-27T12:00:00.000Z",
-        endedAt: "2026-07-27T12:01:00.000Z",
-        turns: [
-          { role: "user", content: "Check the repository identity recipe." },
-          { role: "assistant", content: "The fixture completed successfully." },
-        ],
-        sourcePath: source.path,
-      },
-    };
+    return syntheticEventBatch({
+      id: "fixture-session",
+      provider: "fixture",
+      harness: this.harness,
+      project: this.canonicalIdentity ? projectOf(this.recordedCwd) : this.recordedCwd,
+      cwd: this.recordedCwd,
+      model: "fixture",
+      startedAt: "2026-07-27T12:00:00.000Z",
+      endedAt: "2026-07-27T12:01:00.000Z",
+      turns: [
+        { role: "user", content: "Check the repository identity recipe." },
+        { role: "assistant", content: "The fixture completed successfully." },
+      ],
+      sourcePath: source.path,
+    });
   }
 }
 
@@ -80,6 +79,15 @@ test("project identity recipe changes invalidate unchanged-source ingestion skip
   const refreshedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
   expect(refreshedManifest.projectIdentityRecipe).toBe(PROJECT_IDENTITY_RECIPE);
   expect(refreshedManifest.sources[sourcePath].contentHash).not.toBe(legacyHash);
+
+  refreshedManifest.eventRecipe = "legacy-event-recipe";
+  await writeFile(manifestPath, `${JSON.stringify(refreshedManifest, null, 2)}\n`);
+  const third = await ingest([adapter], root);
+  expect(third.ingested.fixture).toBe(1);
+  expect(third.skipped.fixture).toBe(0);
+  expect(adapter.adaptations).toBe(3);
+  const eventRefreshedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  expect(eventRefreshedManifest.eventRecipe).toBe(EVENT_ADAPTER_RECIPE);
 
   const db = new Database(join(root, "analysis", "chatlog.sqlite"), {
     readonly: true,

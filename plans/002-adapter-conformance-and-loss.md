@@ -12,6 +12,7 @@
 - **Depends on**: `plans/001-canonical-agent-events.md`
 - **Category**: direction, tests, migration
 - **Planned at**: commit `8ddee39`, 2026-08-03
+- **Status**: DONE (verified 2026-08-03)
 
 ## Why this matters
 
@@ -53,13 +54,13 @@ An unknown but well-formed item is not malformed. Preserve it as opaque and nomi
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Conformance tests | `bun test test/adapter-conformance.test.ts` | Exit 0 |
-| Loss tests | `bun test test/semantic-loss.test.ts test/jsonl.test.ts` | Exit 0 |
-| Adapter regressions | `bun test test/anthropic-export.test.ts test/derive.test.ts` | Exit 0 |
-| Type checks | `bun run typecheck` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose             | Command                                                      | Expected result |
+| ------------------- | ------------------------------------------------------------ | --------------- |
+| Conformance tests   | `bun test test/adapter-conformance.test.ts`                  | Exit 0          |
+| Loss tests          | `bun test test/semantic-loss.test.ts test/jsonl.test.ts`     | Exit 0          |
+| Adapter regressions | `bun test test/anthropic-export.test.ts test/derive.test.ts` | Exit 0          |
+| Type checks         | `bun run typecheck`                                          | Exit 0          |
+| Full gate           | `bun run check`                                              | Exit 0          |
 
 ## Scope
 
@@ -226,15 +227,15 @@ Required negative cases:
 
 ## Done criteria
 
-- [ ] Every current allowlisted provider item is normalized or declared as loss.
-- [ ] Unknown well-formed items do not halt ingestion.
-- [ ] Malformed inputs still fail closed with path and position.
-- [ ] Production Claude, Codex, Pi, and Anthropic adapters have direct fixture tests.
-- [ ] Provider-equivalent sessions pass semantic query invariance.
-- [ ] Every successful source receipt is deterministic and content-addressed.
-- [ ] Opaque and reasoning events stay out of normal retrieval and insight extraction.
-- [ ] `bun run check` exits 0.
-- [ ] `plans/README.md` marks Plan 002 `DONE`.
+- [x] Every current allowlisted provider item is normalized or declared as loss.
+- [x] Unknown well-formed items do not halt ingestion.
+- [x] Malformed inputs still fail closed with path and position.
+- [x] Production Claude, Codex, Pi, and Anthropic adapters have direct fixture tests.
+- [x] Provider-equivalent sessions pass semantic query invariance.
+- [x] Every successful source receipt is deterministic and content-addressed.
+- [x] Opaque and reasoning events stay out of normal retrieval and insight extraction.
+- [x] `bun run check` exits 0.
+- [x] `plans/README.md` marks Plan 002 `DONE`.
 
 ## STOP conditions
 

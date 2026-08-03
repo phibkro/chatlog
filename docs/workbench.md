@@ -69,16 +69,19 @@ an existing judgment.
 ### Memory Lab write boundary
 
 Workbench remains read-only except for two narrow, packet-bound Memory Lab
-actions:
+actions, and those writes require an explicit server-side write capability:
 
 - `POST /api/memory-lab/draft` replaces one candidate review in the current
   local draft;
 - `POST /api/memory-lab/finalize` validates all rows and writes the locked
   operator-review file.
 
-Both endpoints require JSON plus `X-Chatlog-Memory-Lab: 1`, reject bodies over
-16 KiB, accept no paths, validate the exact current packet hash and aliases,
-and write atomically with mode `0600`. Only separated
+`GET /api/memory-lab` remains readable whenever Memory Lab is injected; it does
+not require the write capability.
+
+When the write capability is enabled, both endpoints require JSON plus
+`X-Chatlog-Memory-Lab: 1`, reject bodies over 16 KiB, accept no paths, validate
+the exact current packet hash and aliases, and write atomically with mode `0600`.
 `derived/adjudication/refinery/<hash>/public/` bundles with an exact
 packet-bound `proposals.json` are discoverable; legacy directories that
 co-locate private mapping data are ignored. Drafts use
@@ -87,6 +90,12 @@ co-locate private mapping data are ignored. Drafts use
 `answers.json` files are ignored and preserved. A malformed operator draft or
 final file fails closed rather than being overwritten. Finalized reviews cannot
 be edited through Workbench. Every other non-GET route still returns `405`.
+
+Loopback binds enable the Memory Lab write capability by default. Non-loopback
+binds keep it disabled, even when the caller supplies the write header.
+`CHATLOG_ALLOW_REMOTE=1` grants only permission to bind to a non-loopback host;
+it does not enable Memory Lab writes. Set `CHATLOG_MEMORY_LAB_WRITES=1` as an
+additional explicit opt-in when remote writes are required.
 
 ### Repository identity
 
@@ -146,6 +155,7 @@ Insight evidence is pointer-only and bounded. Each orchestration, role, or
 effectiveness finding includes at most three `chatlog://` pointers. Each
 refinery candidate includes at most two. The evidence dialog resolves one turn
 at a time. `/api/insights` does not embed derived snippets or complete turns.
+
 ### Prior Attempts
 
 Prior Attempts calls the existing local `agentAskLexical` computation and makes
@@ -278,13 +288,13 @@ Memory Lab draft/finalize actions described above.
 
 Environment variables:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `CHATLOG_DATA_ROOT` | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB |
-| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json` | Additional source catalog |
-| `CHATLOG_HOST` | `127.0.0.1` | Listen address |
-| `CHATLOG_PORT` | `4789` | Listen port |
-| `CHATLOG_ALLOW_REMOTE` | unset | Must equal `1` before a non-loopback bind |
+| Variable                | Default                                    | Purpose                                   |
+| ----------------------- | ------------------------------------------ | ----------------------------------------- |
+| `CHATLOG_DATA_ROOT`     | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB     |
+| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json`           | Additional source catalog                 |
+| `CHATLOG_HOST`          | `127.0.0.1`                                | Listen address                            |
+| `CHATLOG_PORT`          | `4789`                                     | Listen port                               |
+| `CHATLOG_ALLOW_REMOTE`  | unset                                      | Must equal `1` before a non-loopback bind |
 
 Remote access is deliberately opt-in. If access from another machine is needed,
 prefer a private overlay or authenticated reverse proxy rather than exposing
@@ -415,30 +425,69 @@ Domain reclassification, revocation, and physical purge remain CLI-only
 follow-up work. Their frozen safety contract is documented in
 `docs/exec-plans/active/0002-source-lifecycle.md`; Workbench remains read-only.
 
-ChatGPT exports and arbitrary harness JSONL appear as `planned` in the source
-catalog. They require explicit schema adapters before the UI will call them
-connected.
+ChatGPT exports and generic event JSONL are executable sources in the catalog.
+Their source cards expose the local path, selected domain, preview command,
+import command, read-only privacy statement, and last source-receipt summary.
+The catalog does not claim compatibility with OpenCode, Gemini, Goose, or
+arbitrary provider JSONL.
+
+### ChatGPT export graph
+
+Use the Chatlog CLI grammar for a local ZIP, extracted directory, or numbered
+conversation JSON member:
+
+```sh
+chatlog preview chatgpt /private/exports/chatgpt-data.zip personal
+chatlog import chatgpt /private/exports/chatgpt-data.zip personal
+```
+
+Preview is aggregate-only and writes no corpus object, event batch, SQLite
+projection, or receipt. The importer follows each conversation's declared
+`current_node` parent chain, retains every mapping node and alternate branch as
+canonical evidence, and refuses to guess when the current path is missing,
+cyclic, or dangling. Attachment pointers and metadata are retained without
+fetching file bodies. Account memories, custom instructions, projects, and
+file bodies are excluded.
+
+### Generic Chatlog event JSONL
+
+Generic JSONL is not best-effort provider parsing. The first line must be the
+versioned `chatlog/generic-events-v1` header with producer, provider, harness,
+domain, capture-policy, ordering, and SHA-256 identity declarations. Remaining
+lines are validated `AgentEventEnvelope` records or bounded batch envelopes.
+External origins must be `observed`; Chatlog-derived origins, unsupported
+versions, duplicate IDs, invalid relations, oversized records, and conflicting
+provenance fail closed.
+
+```sh
+chatlog preview generic /private/exports/events.jsonl coding
+chatlog import generic /private/exports/events.jsonl coding
+```
+
+Both importers use immutable event batches, active-source authority, final
+redaction, and content-addressed source receipts. Workbench exposes these
+receipts through read-only source data; it has no mutating HTTP import route.
 
 ## Agent access
 
 Workbench's JSON endpoints expose the same bounded views used by the UI:
 
-| Endpoint | Result |
-| --- | --- |
-| `/api/health` | Lightweight manifest-backed readiness and active-source count |
-| `/api/overview` | Corpus counts, recent sessions, project concentration |
-| `/api/projects` | Project activity and harness mix |
-| `/api/sessions?project=…` | Session metadata for a project |
-| `/api/search?q=…&limit=…` | Ranked local FTS results and evidence pointers |
-| `/api/prior-attempts?q=…` | Zero-egress chronological attempts from current content-role matches |
-| `/api/project-intelligence?project=…` | Exact current totals, bounded derived sample, then current sessions |
-| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads |
-| `/api/knowledge-candidate?id=…` | Read-only curation/evaluation detail with bounded evidence pointers |
-| `/api/themes?limit=…&scanLimit=…&topicLimit=…` | On-demand completed-cache clustering with exact-or-fail-closed bounds |
-| `/api/evidence?uri=chatlog://…` | One canonical redacted turn |
-| `/api/insights` | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
-| `/api/sources` | Connector state and import actions |
-| `/api/receipts?limit=…` | Newest bounded completed-import receipts |
+| Endpoint                                                 | Result                                                                                    |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/api/health`                                            | Lightweight manifest-backed readiness and active-source count                             |
+| `/api/overview`                                          | Corpus counts, recent sessions, project concentration                                     |
+| `/api/projects`                                          | Project activity and harness mix                                                          |
+| `/api/sessions?project=…`                                | Session metadata for a project                                                            |
+| `/api/search?q=…&limit=…`                                | Ranked local FTS results and evidence pointers                                            |
+| `/api/prior-attempts?q=…`                                | Zero-egress chronological attempts from current content-role matches                      |
+| `/api/project-intelligence?project=…`                    | Exact current totals, bounded derived sample, then current sessions                       |
+| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads                                |
+| `/api/knowledge-candidate?id=…`                          | Read-only curation/evaluation detail with bounded evidence pointers                       |
+| `/api/themes?limit=…&scanLimit=…&topicLimit=…`           | On-demand completed-cache clustering with exact-or-fail-closed bounds                     |
+| `/api/evidence?uri=chatlog://…`                          | One canonical redacted turn                                                               |
+| `/api/insights`                                          | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
+| `/api/sources`                                           | Connector state and import actions                                                        |
+| `/api/receipts?limit=…`                                  | Newest bounded completed-import receipts                                                  |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and
@@ -547,3 +596,17 @@ That boundary is intentional. Importers handle unstable provider formats,
 Chatlog owns durable normalized evidence, and the CLI/UI are replaceable views.
 There is no second conversation database to synchronize and no need to bake
 each provider into a custom agent harness.
+
+## Governed insight review
+
+Memory Lab remains a proposal/review surface. Previewing an insight transition
+(`POST /api/memory-lab/insight-preview`) reads the exact refinery candidate,
+blinded mapping, proposal bytes, finalized operator review, and active canonical
+evidence. It does not write a ledger or publish startup context.
+
+Applying (`POST /api/memory-lab/insight-apply`) is an explicit operator action
+and records one immutable v2 ledger transition. The service still requires
+memory-lab write mode and the `X-Chatlog-Memory-Lab: 1` header. Stale packet,
+proposal, review, evidence, or ledger hashes fail closed. Models can propose
+text and confidence, but cannot activate, dispute, supersede, expire, or retire
+an insight.

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { readEventBatch } from "../event-store";
 import { loadDerived, type DerivedConversation } from "../derive";
 import {
   DEFAULT_CONVERSATION_DOMAIN,
@@ -19,6 +20,14 @@ import { recallPublishedMemory } from "../experience-memory-store";
 
 const EVIDENCE_CHARACTER_LIMIT = 12_000;
 const EVIDENCE_UNAVAILABLE = "evidence not found or not permitted";
+
+export class McpDataError extends Error {
+  override readonly name = "McpDataError";
+}
+
+function evidenceUnavailable(): never {
+  throw new McpDataError(EVIDENCE_UNAVAILABLE);
+}
 
 export interface DomainPolicyView {
   configuredDomains: string[];
@@ -119,12 +128,10 @@ export class McpData {
   private assertProjection(expected?: ProjectionReceipt): ProjectionReceipt {
     const current = this.projectionGuard.assert(this.db);
     if (
-      expected
-      && (
-        current.manifestSourcesHash !== expected.manifestSourcesHash
-        || current.reconciledAt !== expected.reconciledAt
-        || current.activeSources !== expected.activeSources
-      )
+      expected &&
+      (current.manifestSourcesHash !== expected.manifestSourcesHash ||
+        current.reconciledAt !== expected.reconciledAt ||
+        current.activeSources !== expected.activeSources)
     ) {
       throw new ActiveProjectionDriftError(
         "active source projection changed while serving the request; retry",
@@ -150,7 +157,8 @@ export class McpData {
       JOIN turns t ON t.content_hash=f.content_hash AND t.turn_index=f.turn_index
       WHERE turns_fts MATCH ? AND t.role IN ('user', 'assistant')
       AND ${domain} IN (${placeholders})
-      ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, ...policy.effectiveDomains, limit) as any[];
+      ORDER BY bm25(turns_fts) LIMIT ?`)
+      .all(expression, ...policy.effectiveDomains, limit) as any[];
     const result = {
       query,
       policy,
@@ -167,11 +175,60 @@ export class McpData {
     const projection = this.assertProjection();
     const pointer = parseEvidenceUri(args.uri);
     const policy = this.policy(args.domains);
+    if ("eventId" in pointer) {
+      const indexed = this.db
+        .query(`SELECT c.content_hash contentHash, c.id sessionId, c.title,
+        ${this.domainSql()} domain, c.project, c.harness, c.model
+        FROM current_conversations c JOIN active_sources a
+        ON a.source_path = c.source_path AND a.content_hash = c.content_hash
+        WHERE a.event_batch_hash = ?`)
+        .get(pointer.batchHash) as {
+        contentHash: string;
+        sessionId: string;
+        title: string;
+        domain: string;
+        project: string;
+        harness: string;
+        model: string;
+      } | null;
+      if (!indexed) evidenceUnavailable();
+      let batch;
+      try {
+        batch = await readEventBatch(this.root, pointer.batchHash);
+      } catch {
+        evidenceUnavailable();
+      }
+      const event = batch.events.find((candidate) => candidate.eventId === pointer.eventId);
+      if (!event || !policy.effectiveDomains.includes(normalizeConversationDomain(indexed.domain)))
+        evidenceUnavailable();
+      if (event.kind === "model.reasoning.observed" || event.capture.disposition === "opaque")
+        evidenceUnavailable();
+      const content = JSON.stringify(event.payload);
+      this.assertProjection(projection);
+      return {
+        policy,
+        evidenceUri: pointer.uri,
+        conversationHash: indexed.contentHash,
+        sessionId: indexed.sessionId,
+        title: indexed.title,
+        domain: indexed.domain,
+        project: indexed.project,
+        harness: indexed.harness,
+        eventId: event.eventId,
+        eventKind: event.kind,
+        event: {
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+          payload: content.slice(0, EVIDENCE_CHARACTER_LIMIT),
+          fullLength: content.length,
+        },
+      };
+    }
     const indexed = this.db
       .query(`SELECT ${this.domainSql()} domain
       FROM current_conversations c WHERE c.content_hash = ?`)
       .get(pointer.contentHash) as { domain: string } | null;
-    if (!indexed) throw new Error(EVIDENCE_UNAVAILABLE);
+    if (!indexed) evidenceUnavailable();
 
     let conversation: Conversation;
     try {
@@ -188,7 +245,7 @@ export class McpData {
         ),
       ) as Conversation;
     } catch {
-      throw new Error(EVIDENCE_UNAVAILABLE);
+      evidenceUnavailable();
     }
 
     let objectDomain: string;
@@ -197,7 +254,7 @@ export class McpData {
         conversation.domain || DEFAULT_CONVERSATION_DOMAIN,
       );
     } catch {
-      throw new Error(EVIDENCE_UNAVAILABLE);
+      evidenceUnavailable();
     }
     if (
       typeof conversation.contentHash !== "string" ||
@@ -205,10 +262,10 @@ export class McpData {
       indexed.domain !== objectDomain ||
       !policy.effectiveDomains.includes(objectDomain)
     )
-      throw new Error(EVIDENCE_UNAVAILABLE);
+      evidenceUnavailable();
 
     const turn = conversation.turns[pointer.turnIndex];
-    if (!turn || !["user", "assistant"].includes(turn.role)) throw new Error(EVIDENCE_UNAVAILABLE);
+    if (!turn || !["user", "assistant"].includes(turn.role)) evidenceUnavailable();
     const fullLength = turn.content.length;
     const content = turn.content.slice(0, EVIDENCE_CHARACTER_LIMIT);
     const result = {
@@ -247,7 +304,8 @@ export class McpData {
       c.started_at startedAt, c.ended_at endedAt, c.turn_count turns
       FROM current_conversations c
       WHERE c.project = ? AND ${domain} IN (${placeholders})
-      ORDER BY c.ended_at DESC LIMIT ?`).all(project, ...policy.effectiveDomains, limit);
+      ORDER BY c.ended_at DESC LIMIT ?`)
+      .all(project, ...policy.effectiveDomains, limit);
     const result = { project, policy, sessions };
     this.assertProjection(projection);
     return result;

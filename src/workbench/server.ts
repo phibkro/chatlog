@@ -57,7 +57,11 @@ function memoryLabResponse<T>(result: MemoryLabResult<T>): Response {
   return result.ok ? json(result.value) : json({ error: result.error }, result.status);
 }
 
-async function memoryLabBody<T>(request: Request): Promise<MemoryLabResult<T>> {
+async function memoryLabBody<T>(
+  request: Request,
+  memoryLabWrites: boolean,
+): Promise<MemoryLabResult<T>> {
+  if (!memoryLabWrites) return { ok: false, status: 403, error: "memory lab writes disabled" };
   if (request.headers.get(MEMORY_LAB_WRITE_HEADER) !== "1")
     return { ok: false, status: 403, error: "memory lab write header required" };
   if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
@@ -98,6 +102,7 @@ export function workbenchHandler(
   data: WorkbenchData,
   publicRoot = resolve(import.meta.dir, "public"),
   memoryLab: MemoryLab | null = null,
+  memoryLabWrites = false,
 ) {
   return async function fetch(request: Request): Promise<Response> {
     try {
@@ -108,21 +113,34 @@ export function workbenchHandler(
       }
       if (url.pathname === "/api/memory-lab/draft" && request.method === "POST") {
         if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
-        const body = await memoryLabBody<unknown>(request);
+        const body = await memoryLabBody<unknown>(request, memoryLabWrites);
         return body.ok
           ? memoryLabResponse(await memoryLab.save(body.value))
           : memoryLabResponse(body);
       }
       if (url.pathname === "/api/memory-lab/finalize" && request.method === "POST") {
         if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
-        const body = await memoryLabBody<unknown>(request);
+        const body = await memoryLabBody<unknown>(request, memoryLabWrites);
         return body.ok
           ? memoryLabResponse(await memoryLab.finalize(body.value))
           : memoryLabResponse(body);
       }
+      if (url.pathname === "/api/memory-lab/insight-preview" && request.method === "POST") {
+        if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
+        const body = await memoryLabBody<unknown>(request, memoryLabWrites);
+        return body.ok
+          ? memoryLabResponse(await memoryLab.previewInsightTransition(body.value))
+          : memoryLabResponse(body);
+      }
+      if (url.pathname === "/api/memory-lab/insight-apply" && request.method === "POST") {
+        if (!memoryLab) return json({ error: "memory lab unavailable" }, 404);
+        const body = await memoryLabBody<unknown>(request, memoryLabWrites);
+        return body.ok
+          ? memoryLabResponse(await memoryLab.applyInsightTransition(body.value))
+          : memoryLabResponse(body);
+      }
       if (request.method !== "GET" && request.method !== "HEAD")
         return json({ error: "read-only workbench" }, 405);
-      const url = new URL(request.url);
       if (url.pathname === "/api/health") {
         const health = data.health();
         return json(health, health.ready ? 200 : 503);
@@ -142,7 +160,11 @@ export function workbenchHandler(
       if (url.pathname === "/api/themes") return json(await data.themes(url));
       if (url.pathname === "/api/insights") return json(await data.insights(url));
       if (url.pathname === "/api/sources") return json(await data.sources());
-      if (url.pathname === "/api/receipts") return json(await data.receipts(url.searchParams.get("limit")));
+      if (url.pathname === "/api/receipts")
+        return json(await data.receipts(url.searchParams.get("limit")));
+      if (url.pathname === "/api/source-receipts")
+        return json(await data.sourceReceipts(url.searchParams.get("limit")));
+      if (url.pathname === "/api/nominations") return json(await data.nominations());
       if (url.pathname === "/api/evidence") {
         const uri = url.searchParams.get("uri");
         if (!uri) return json({ error: "missing evidence URI" }, 400);
@@ -182,29 +204,40 @@ export function workbenchHandler(
 export interface WorkbenchBindConfig {
   host: string;
   port: number;
+  memoryLabWrites: boolean;
 }
 
 export function resolveBindConfig(
   env: Record<string, string | undefined> = process.env,
 ): WorkbenchBindConfig {
   const host = env.CHATLOG_HOST ?? "127.0.0.1";
-  if (!["127.0.0.1", "::1", "localhost"].includes(host) && env.CHATLOG_ALLOW_REMOTE !== "1") {
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
+  if (!loopback && env.CHATLOG_ALLOW_REMOTE !== "1") {
     throw new Error("Refusing non-loopback bind without CHATLOG_ALLOW_REMOTE=1");
   }
   const port = Number(env.CHATLOG_PORT ?? 4789);
   if (!Number.isInteger(port) || port < 1 || port > 65_535)
     throw new Error("CHATLOG_PORT must be an integer between 1 and 65535");
-  return { host, port };
+  return {
+    host,
+    port,
+    memoryLabWrites: loopback || env.CHATLOG_MEMORY_LAB_WRITES === "1",
+  };
 }
 
 if (import.meta.main) {
   const root = resolveDataRoot();
-  const { host, port } = resolveBindConfig();
+  const { host, port, memoryLabWrites } = resolveBindConfig();
   const data = new WorkbenchData(root);
   const server = Bun.serve({
     hostname: host,
     port,
-    fetch: workbenchHandler(data, resolve(import.meta.dir, "public"), new MemoryLab(root)),
+    fetch: workbenchHandler(
+      data,
+      resolve(import.meta.dir, "public"),
+      new MemoryLab(root),
+      memoryLabWrites,
+    ),
   });
   console.log(`Chatlog Workbench: ${server.url}`);
   console.log(`Data root: ${root}`);

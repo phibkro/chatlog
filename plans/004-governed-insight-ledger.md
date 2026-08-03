@@ -12,6 +12,7 @@
 - **Depends on**: `plans/002-adapter-conformance-and-loss.md`
 - **Category**: direction, migration
 - **Planned at**: commit `8ddee39`, 2026-08-03
+- **Status**: DONE (verified 2026-08-03)
 
 ## Why this matters
 
@@ -96,13 +97,13 @@ A ledger snapshot contains ordered transition events and the previous ledger has
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Insight schema tests | `bun test test/insight-ledger.test.ts` | Exit 0 |
-| Transition tests | `bun test test/insight-lifecycle.test.ts` | Exit 0 |
-| Migration tests | `bun test test/experience-memory-migration.test.ts` | Exit 0 |
-| Existing memory tests | `bun test test/refinery.test.ts test/refinery-judge.test.ts test/refinery-adjudication.test.ts test/memory-lab.test.ts test/experience-memory.test.ts test/experience-memory-store.test.ts` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose               | Command                                                                                                                                                                                     | Expected result |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Insight schema tests  | `bun test test/insight-ledger.test.ts`                                                                                                                                                      | Exit 0          |
+| Transition tests      | `bun test test/insight-lifecycle.test.ts`                                                                                                                                                   | Exit 0          |
+| Migration tests       | `bun test test/experience-memory-migration.test.ts`                                                                                                                                         | Exit 0          |
+| Existing memory tests | `bun test test/refinery.test.ts test/refinery-judge.test.ts test/refinery-adjudication.test.ts test/memory-lab.test.ts test/experience-memory.test.ts test/experience-memory-store.test.ts` | Exit 0          |
+| Full gate             | `bun run check`                                                                                                                                                                             | Exit 0          |
 
 ## Scope
 
@@ -335,16 +336,16 @@ Every test must assert an observable transition or rejection. Do not test source
 
 ## Done criteria
 
-- [ ] Proposal, review, acceptance, revision, dispute, supersession, expiry, and retirement are representable.
-- [ ] Every active insight has source-bound evidence and authority.
-- [ ] Confidence remains assessor-specific and evidence-linked.
-- [ ] Mixed, unjudged, rejected, disputed, expired, superseded, and stale revisions cannot compile.
-- [ ] The v1 accepted ledger migrates deterministically and remains recoverable.
-- [ ] The v1 publisher is removed after migration. No code dual-writes v1 and v2 ledgers.
-- [ ] Judge, review, ledger, and snapshot stages have freshness manifests.
-- [ ] Tier 1 remains below its hard limit and evidence-free.
-- [ ] `bun run check` exits 0.
-- [ ] `plans/README.md` marks Plan 004 `DONE`.
+- [x] Proposal, review, acceptance, revision, dispute, supersession, expiry, and retirement are representable.
+- [x] Every active insight has source-bound evidence and authority.
+- [x] Confidence remains assessor-specific and evidence-linked.
+- [x] Mixed, unjudged, rejected, disputed, expired, superseded, and stale revisions cannot compile.
+- [x] The v1 accepted ledger migrates deterministically and remains recoverable.
+- [x] The v1 publisher is removed after migration. No code dual-writes v1 and v2 ledgers.
+- [x] Judge, review, ledger, and snapshot stages have freshness manifests.
+- [x] Tier 1 remains below its hard limit and evidence-free.
+- [x] `bun run check` exits 0.
+- [x] `plans/README.md` marks Plan 004 `DONE`.
 
 ## STOP conditions
 

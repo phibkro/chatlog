@@ -6,8 +6,11 @@ const state = {
   sources: [],
   receipts: [],
   receiptError: null,
+  sourceReceipts: [],
+  sourceReceiptError: null,
+  nominations: [],
+  nominationError: null,
   candidateResult: null,
-  candidateError: null,
   candidateFilter: "all",
   candidateQuery: "",
   candidatePage: 1,
@@ -98,13 +101,15 @@ function evidenceRows(evidence, label) {
           <button type="button" class="evidence-row" data-evidence-uri="${escapeHtml(item.uri)}">
             <span>${escapeHtml(item.snippet || "Open evidence turn")}</span><i>↗</i>
           </button>
-          ${item.outcome || item.tools?.length
-            ? `<span class="evidence-item-meta">${item.outcome ? escapeHtml(item.outcome) : ""}${item.tools?.length ? ` · ${escapeHtml(item.tools.join(", "))}` : ""}</span>`
-            : ""
+          ${
+            item.outcome || item.tools?.length
+              ? `<span class="evidence-item-meta">${item.outcome ? escapeHtml(item.outcome) : ""}${item.tools?.length ? ` · ${escapeHtml(item.tools.join(", "))}` : ""}</span>`
+              : ""
           }
-          ${item.resultUri
-            ? `<button type="button" class="result-evidence-link" data-evidence-uri="${escapeHtml(item.resultUri)}">Result ↗</button>`
-            : ""
+          ${
+            item.resultUri
+              ? `<button type="button" class="result-evidence-link" data-evidence-uri="${escapeHtml(item.resultUri)}">Result ↗</button>`
+              : ""
           }
         </div>`,
       )
@@ -500,10 +505,11 @@ function renderInsights() {
   $("#effectiveness-result").innerHTML = effectiveness
     ? `
     <div class="experiment-verdict ${effectiveness.provenance?.fresh ? "" : "stale-insight"}">
-      <strong>${effectiveness.provenance?.fresh
-      ? `Recommendation: ${escapeHtml(effectiveness.metrics?.recommendation || "inspect")}`
-      : "Historical result — not current guidance"
-    }</strong>
+      <strong>${
+        effectiveness.provenance?.fresh
+          ? `Recommendation: ${escapeHtml(effectiveness.metrics?.recommendation || "inspect")}`
+          : "Historical result — not current guidance"
+      }</strong>
       <p>${escapeHtml(effectiveness.claim)}</p>
     </div>
     <div class="metric-pair">
@@ -529,8 +535,7 @@ function renderCandidates() {
     $("#knowledge-precision-gate").innerHTML = precisionGateContext(null);
     $("#refinery-provenance").innerHTML = provenanceContext(null);
     $("#candidate-result-meta").textContent = "Candidate review failed";
-    $("#candidate-list").innerHTML =
-      `<div class="empty">${escapeHtml(state.candidateError)}</div>`;
+    $("#candidate-list").innerHTML = `<div class="empty">${escapeHtml(state.candidateError)}</div>`;
     $("#candidate-page").textContent = "Page 1";
     $("#candidate-previous").disabled = true;
     $("#candidate-next").disabled = true;
@@ -613,19 +618,19 @@ async function openCandidate(id) {
         <p class="eyebrow">Observed frequency · signal, not decision</p>
         <div class="candidate-frequency-grid">
           ${[
-        ["Occurrences", frequency.occurrences],
-        ["Distinct wording", frequency.distinctSnippets],
-        ["Conversations", frequency.conversations],
-        ["Sessions", frequency.sessions],
-        ["Projects", frequency.projects],
-        ["Harnesses", frequency.harnesses],
-        ["Threshold", frequency.threshold],
-      ]
-        .map(
-          ([label, value]) =>
-            `<div><span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong></div>`,
-        )
-        .join("")}
+            ["Occurrences", frequency.occurrences],
+            ["Distinct wording", frequency.distinctSnippets],
+            ["Conversations", frequency.conversations],
+            ["Sessions", frequency.sessions],
+            ["Projects", frequency.projects],
+            ["Harnesses", frequency.harnesses],
+            ["Threshold", frequency.threshold],
+          ]
+            .map(
+              ([label, value]) =>
+                `<div><span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong></div>`,
+            )
+            .join("")}
         </div>
       </section>
       <section class="candidate-detail-section">
@@ -753,6 +758,18 @@ function renderSources() {
         ${source.previewCommand ? `<div class="source-command-label">Preview without writing</div><code class="source-command" title="Run from the Chatlog checkout">${escapeHtml(source.previewCommand)}</code>` : ""}
         ${source.importCommand ? `<div class="source-command-label">Import after review</div><code class="source-command" title="Run from the Chatlog checkout">${escapeHtml(source.importCommand)}</code>` : ""}
         <p class="source-privacy">${escapeHtml(source.privacy)}</p>
+        ${
+          source.lastReceiptSummary
+            ? `
+          <div class="source-receipt-summary">
+            <div class="source-command-label">Last source receipt</div>
+            <code title="${escapeHtml(source.lastReceiptSummary.receiptHash)}">${escapeHtml(source.lastReceiptSummary.receiptHash)}</code>
+            <span>${formatNumber(source.lastReceiptSummary.itemCounts?.sourceItems ?? 0)} source items · ${formatNumber(source.lastReceiptSummary.itemCounts?.opaqueItems ?? 0)} opaque · ${formatNumber(source.lastReceiptSummary.itemCounts?.policyOmissions ?? 0)} omissions${source.lastReceiptSummary.partialTail ? " · partial tail" : ""}</span>
+            <span>${escapeHtml(source.lastReceiptSummary.eventBatchHash)} batch · ${escapeHtml(source.lastReceiptSummary.conversationProjectionHash)} projection</span>
+            <span>Losses · ${escapeHtml(JSON.stringify(source.lastReceiptSummary.lossCounts || {}))}</span>
+          </div>`
+            : ""
+        }
       </div>
     </article>`,
     )
@@ -760,8 +777,8 @@ function renderSources() {
   $("#receipt-list").innerHTML = state.receiptError
     ? `<div class="empty">Receipt audit unavailable: ${escapeHtml(state.receiptError)}</div>`
     : state.receipts
-      .map(
-        (receipt) => `
+        .map(
+          (receipt) => `
     <div class="receipt-row">
       <span class="timeline-dot"></span>
       <div class="receipt-copy">
@@ -771,8 +788,41 @@ function renderSources() {
       </div>
       <span class="timeline-time">${relativeTime(receipt.completedAt)}</span>
     </div>`,
-      )
-      .join("") || `<div class="empty">No completed imports have receipts yet.</div>`;
+        )
+        .join("") || `<div class="empty">No completed imports have receipts yet.</div>`;
+  const sourceAudit = state.sourceReceiptError
+    ? `<div class="empty">Source receipt audit unavailable: ${escapeHtml(state.sourceReceiptError)}</div>`
+    : state.sourceReceipts.length
+      ? (() => {
+          const totals = state.sourceReceipts.reduce(
+            (sum, receipt) => ({
+              sourceItems: sum.sourceItems + (receipt.itemCounts?.sourceItems || 0),
+              opaque: sum.opaque + (receipt.itemCounts?.opaqueItems || 0),
+              omissions: sum.omissions + (receipt.itemCounts?.policyOmissions || 0),
+              partialTails: sum.partialTails + (receipt.partialTail ? 1 : 0),
+            }),
+            { sourceItems: 0, opaque: 0, omissions: 0, partialTails: 0 },
+          );
+          return `<div class="receipt-row source-receipt-aggregate">
+          <span class="timeline-dot"></span>
+          <div class="receipt-copy">
+            <strong>Source receipt aggregate</strong>
+            <span>${formatNumber(totals.sourceItems)} source items · ${formatNumber(totals.opaque)} opaque · ${formatNumber(totals.omissions)} omissions · ${formatNumber(totals.partialTails)} partial tails</span>
+            <code>${formatNumber(state.sourceReceipts.length)} immutable receipts</code>
+          </div>
+        </div>`;
+        })()
+      : `<div class="empty">No source receipts have been persisted yet.</div>`;
+  const nominationAudit = state.nominationError
+    ? `<div class="empty">Nomination audit unavailable: ${escapeHtml(state.nominationError)}</div>`
+    : `<div class="receipt-row nomination-aggregate">
+        <span class="timeline-dot"></span>
+        <div class="receipt-copy">
+          <strong>Unknown-shape nominations</strong>
+          <span>${formatNumber(state.nominations.length)} bounded maintenance nominations</span>
+        </div>
+      </div>`;
+  $("#receipt-list").insertAdjacentHTML("beforeend", `${sourceAudit}${nominationAudit}`);
 }
 
 async function load() {
@@ -797,6 +847,20 @@ async function load() {
     } catch (error) {
       state.receipts = [];
       state.receiptError = error.message;
+    }
+    try {
+      state.sourceReceipts = await api("/api/source-receipts?limit=100");
+      state.sourceReceiptError = null;
+    } catch (error) {
+      state.sourceReceipts = [];
+      state.sourceReceiptError = error.message;
+    }
+    try {
+      state.nominations = await api("/api/nominations");
+      state.nominationError = null;
+    } catch (error) {
+      state.nominations = [];
+      state.nominationError = error.message;
     }
     state.candidatePage = 1;
     try {

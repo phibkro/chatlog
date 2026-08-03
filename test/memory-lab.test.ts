@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { AdjudicationPacket, HumanAdjudicationAnswers } from "../src/refinery-adjudication";
 import type { MemoryProposalSet, OperatorReview } from "../src/workbench/memory-lab";
 import { MemoryLab } from "../src/workbench/memory-lab";
+import { WorkbenchData } from "../src/workbench/data";
+import { workbenchHandler } from "../src/workbench/server";
 
 async function fixture(): Promise<{
   root: string;
@@ -127,6 +129,103 @@ function reviewed(
 ): OperatorReview {
   return { status: "reviewed", judgment, valence, feedback };
 }
+
+test("Memory Lab HTTP reads stay available while writes require capability, header, and bounds", async () => {
+  const { root, packet, proposalSetHash } = await fixture();
+  const data = new WorkbenchData(root);
+  const lab = new MemoryLab(root);
+  const readOnly = workbenchHandler(data, undefined, lab);
+  const writable = workbenchHandler(data, undefined, lab, true);
+  const payload = {
+    packetHash: packet.packetHash,
+    proposalSetHash,
+    candidateAlias: "C001",
+    reviewerId: "operator",
+    review: reviewed("correct", "positive"),
+  };
+  try {
+    const read = await readOnly(new Request("http://localhost/api/memory-lab"));
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({
+      packet: { packetHash: packet.packetHash },
+      proposalSetHash,
+    });
+
+    const denied = await readOnly(
+      new Request("http://localhost/api/memory-lab/draft", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Chatlog-Memory-Lab": "1",
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: "memory lab writes disabled" });
+
+    const missingHeader = await writable(
+      new Request("http://localhost/api/memory-lab/draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    );
+    expect(missingHeader.status).toBe(403);
+    expect(await missingHeader.json()).toEqual({ error: "memory lab write header required" });
+
+    const wrongContentType = await writable(
+      new Request("http://localhost/api/memory-lab/draft", {
+        method: "POST",
+        headers: {
+          "content-type": "text/plain",
+          "X-Chatlog-Memory-Lab": "1",
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    expect(wrongContentType.status).toBe(415);
+    expect(await wrongContentType.json()).toEqual({
+      error: "memory lab writes require application/json",
+    });
+
+    const oversized = await writable(
+      new Request("http://localhost/api/memory-lab/draft", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Chatlog-Memory-Lab": "1",
+        },
+        body: JSON.stringify({ payload: "x".repeat(16 * 1024) }),
+      }),
+    );
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toEqual({ error: "memory lab request is too large" });
+
+    const saved = await writable(
+      new Request("http://localhost/api/memory-lab/draft", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Chatlog-Memory-Lab": "1",
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      reviews: { reviews: { C001: { judgment: "correct" } } },
+    });
+
+    const ordinaryMutation = await writable(
+      new Request("http://localhost/api/overview", { method: "POST" }),
+    );
+    expect(ordinaryMutation.status).toBe(405);
+    expect(await ordinaryMutation.json()).toEqual({ error: "read-only workbench" });
+  } finally {
+    data.close();
+  }
+});
 
 test("Memory Lab returns proposals and persists a separate exact operator-review ledger", async () => {
   const { root, directory, packet, proposalSet, proposalSetHash } = await fixture();

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { redact } from "../src/redact";
-import { canonicalizeConversation } from "../src/ingest";
+import { canonicalizeConversation } from "../src/conversation-projection";
 
 test("redacts common pasted credentials", () => {
   const input =

@@ -40,6 +40,7 @@
     "corpus",
     "derived",
     "analysis",
+    "memory",
     "node_modules",
     "src/workbench/public/memory",
     "plugins/chatlog-memory/scripts"

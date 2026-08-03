@@ -203,3 +203,40 @@ and a measurable reduction in re-derivation without a gate regression.
 - Fresh-session tests prove relevant recall and irrelevant non-recall in both
   supported harnesses.
 - Paired evaluation shows no gate regression before a memory is retained.
+
+## Governed insight ledger (v2)
+
+The accepted-memory ledger is a read-only rollback source after migration. The
+publication authority is the immutable v2 insight ledger under
+`memory/insight-ledgers/<sha256>.json`, addressed by
+`memory/insight-current.json`. SQLite tables are rebuildable read projections.
+
+An insight revision has a semantic kind, all scope axes, support and
+counterevidence URIs, observed and valid times, system record time, lifecycle
+status, relation fields, origin, human authority, derivation recipe/input
+hashes, assessor-specific confidence, and authoritative document references.
+Model proposals remain candidates. Only an explicit human/operator transition
+can activate, dispute, supersede, expire, or retire a revision.
+
+Every transition records its actor, authority, reason, source hashes, and prior
+ledger hash. Writes are serialized by `memory/insight-ledgers/.lock`, use
+content-addressed snapshots, and are atomic mode `0600` writes. Repeating the
+same idempotency key is a no-op; a stale prior ledger hash is rejected.
+
+The current pointer binds project identity, input event projection, source
+authority, recipe hashes, ledger hash, compiled state hash, and startup output
+hash. A read rejects altered ledger bytes, stale compiled output, or a binding
+mismatch. Tier 1 remains an evidence-free bounded routing index; Tier 2 and
+Tier 3 retain the complete revision and canonical evidence pointers.
+
+Use explicit `chatlog insight migrate` (dry-run), `chatlog insight preview`,
+`chatlog insight apply`, `chatlog insight current`, and
+`chatlog insight recompile` commands. Migration preserves v1 IDs, hashes, and
+legacy evidence URIs. A migration preview does not change private memory.
+`chatlog insight migrate --apply` is the only migration write.
+The v1 publication path is disabled.
+
+If active evidence or source authority changes, normal reads and transitions
+fail closed. `chatlog insight recompile` explicitly verifies the active evidence,
+rebuilds the compiled snapshot and SQLite projection, and advances the pointer.
+It does not change the lifecycle history.

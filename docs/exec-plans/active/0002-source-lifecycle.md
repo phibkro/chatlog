@@ -323,7 +323,7 @@ Implemented on 2026-07-24.
   dangling and modified artifacts,
   traversal attempts, stale analytics, and the Workbench 503 boundary.
   `bun run check` passes 49 tests with 313 assertions; `nix flake check
-  --offline` passes.
+--offline` passes.
 - Durable operation intents are now the next prerequisite for reclassification
   and revocation. A lifecycle writer must still regenerate or explicitly
   invalidate derived state before marking its intent complete.

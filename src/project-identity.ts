@@ -24,9 +24,7 @@ function existingDirectory(path: string): string | undefined {
 }
 
 function isMissing(error: unknown): boolean {
-  return (
-    typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function cachedProject(cacheKey: string, cwd: string): string | undefined {

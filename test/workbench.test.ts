@@ -2,18 +2,24 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { indexConversation, openAnalysis } from "../src/analysis";
+import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysis";
 import { deriveCorpus } from "../src/derive";
-import {
-  assertDerivedProjection,
-  type DerivedProjectionReceipt,
-} from "../src/derived-authority";
+import { assertDerivedProjection, type DerivedProjectionReceipt } from "../src/derived-authority";
+import { persistEventBatch } from "../src/event-store";
+import { eventEvidenceUri } from "../src/evidence-uri";
+import { capture, makeEvent, makeObservedSource } from "../src/events";
 import { WorkbenchData } from "../src/workbench/data";
 import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
+import {
+  buildSourceReceipt,
+  persistSourceReceipt,
+  persistUnknownShapeNominations,
+} from "../src/source-receipts";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 import { topicCacheKey, VAULT_TOPIC_RECIPE } from "../src/vault";
+import { syntheticEventBatch } from "./event-fixture";
 
 function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -27,8 +33,8 @@ function evidencePointers(
       index % 2 === 0
         ? `chatlog://conversation/${(index + 1).toString(16).repeat(64)}/turn/${index}`
         : {
-          uri: `chatlog://conversation/${(index + 1).toString(16).repeat(64)}/turn/${index}`,
-        },
+            uri: `chatlog://conversation/${(index + 1).toString(16).repeat(64)}/turn/${index}`,
+          },
     snippet: `derived snippet ${index}`,
   }));
 }
@@ -92,12 +98,7 @@ async function establishAuthority(
   await mkdir(join(root, "corpus"), { recursive: true });
   await Promise.all(
     conversations.map(async (conversation) => {
-      const directory = join(
-        root,
-        "corpus",
-        "objects",
-        conversation.contentHash.slice(0, 2),
-      );
+      const directory = join(root, "corpus", "objects", conversation.contentHash.slice(0, 2));
       await mkdir(directory, { recursive: true });
       await writeFile(
         join(directory, `${conversation.contentHash}.json`),
@@ -105,10 +106,7 @@ async function establishAuthority(
       );
     }),
   );
-  await writeFile(
-    join(root, "corpus", "manifest.json"),
-    JSON.stringify({ version: 1, sources }),
-  );
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   conversations.forEach((conversation, index) => indexConversation(db, conversation, index + 1, 1));
   reconcileActiveSources(db, sources);
@@ -186,9 +184,9 @@ async function writeTopicCache(
 }
 
 async function fileSnapshot(root: string): Promise<Record<string, string>> {
-  const paths = [
-    ...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true, dot: true }),
-  ].filter((path) => !path.endsWith("-shm")).toSorted();
+  const paths = [...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true, dot: true })]
+    .filter((path) => !path.endsWith("-shm"))
+    .toSorted();
   return Object.fromEntries(
     await Promise.all(
       paths.map(async (path) => [path, await readFile(join(root, path), "utf8")] as const),
@@ -309,12 +307,7 @@ async function slice2Fixture(): Promise<{
   db.close();
   await Promise.all(
     conversations.map(async (conversation) => {
-      const directory = join(
-        root,
-        "corpus",
-        "objects",
-        conversation.contentHash.slice(0, 2),
-      );
+      const directory = join(root, "corpus", "objects", conversation.contentHash.slice(0, 2));
       await mkdir(directory, { recursive: true });
       await writeFile(
         join(directory, `${conversation.contentHash}.json`),
@@ -322,10 +315,7 @@ async function slice2Fixture(): Promise<{
       );
     }),
   );
-  await writeFile(
-    join(root, "corpus", "manifest.json"),
-    JSON.stringify({ version: 1, sources }),
-  );
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
   await deriveCorpus(root);
   return { root, current, second, superseded };
 }
@@ -360,17 +350,82 @@ test("serves overview, local search, and canonical evidence from one corpus", as
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   indexConversation(db, superseded, 0, 1);
   indexConversation(db, conversation, 1, 1);
+  const { contentHash: _conversationHash, ...conversationProjection } = conversation;
+  const eventBatch = syntheticEventBatch(conversationProjection);
+  const sourceOrigin = eventBatch.events[0]!.origin;
+  if (sourceOrigin.kind !== "observed") throw new Error("synthetic event source is not observed");
+  const { redactedNativeRecordHash: _redactedNativeRecordHash, ...sourceBase } =
+    sourceOrigin.source;
+  const appendBlockedEvent = (
+    kind: "model.reasoning.observed" | "provider.opaque",
+    disposition: "normalized" | "opaque",
+    sequence: number,
+    parent: string,
+  ) =>
+    makeEvent({
+      kind,
+      sequence,
+      actor: { kind: "provider", name: conversation.harness },
+      scope: eventBatch.events[0]!.scope,
+      origin: {
+        kind: "observed",
+        source: makeObservedSource(
+          {
+            ...sourceBase,
+            nativeItemId: `${conversation.id}:blocked:${sequence}`,
+            recordPosition: { record: sequence },
+          },
+          { kind, secret: `blocked-${sequence}` },
+        ),
+      },
+      relations: { parent },
+      payload: {
+        kind,
+        secret: `blocked-${sequence}`,
+        ...(kind === "provider.opaque" ? { nativeItemKind: "synthetic-opaque" } : {}),
+      },
+      capture: capture(disposition),
+    });
+  const reasoningEvent = appendBlockedEvent(
+    "model.reasoning.observed",
+    "normalized",
+    eventBatch.events.length,
+    eventBatch.events.at(-1)!.eventId,
+  );
+  const opaqueEvent = appendBlockedEvent(
+    "provider.opaque",
+    "opaque",
+    eventBatch.events.length + 1,
+    reasoningEvent.eventId,
+  );
+  const restrictedEventBatch = {
+    ...eventBatch,
+    events: [...eventBatch.events, reasoningEvent, opaqueEvent],
+    sourceItemCount: eventBatch.sourceItemCount + 2,
+  };
+  const eventBatchHash = await persistEventBatch(root, restrictedEventBatch);
+  const sourceReceipt = buildSourceReceipt({
+    batch: restrictedEventBatch,
+    batchHash: eventBatchHash,
+    conversationProjectionHash: conversation.contentHash,
+  });
+  await persistSourceReceipt(root, sourceReceipt);
+  await persistUnknownShapeNominations(root, [restrictedEventBatch], sourceReceipt.source.hash);
+  indexEventBatch(db, restrictedEventBatch, eventBatchHash, conversation.contentHash);
   reconcileActiveSources(db, {
-    "/source": { contentHash: conversation.contentHash },
+    "/source": { contentHash: conversation.contentHash, eventBatchHash },
   });
   db.close();
   await mkdir(join(root, "corpus"), { recursive: true });
-  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
-    version: 1,
-    sources: {
-      "/source": { contentHash: conversation.contentHash },
-    },
-  }));
+  await writeFile(
+    join(root, "corpus", "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      sources: {
+        "/source": { contentHash: conversation.contentHash, eventBatchHash },
+      },
+    }),
+  );
   await mkdir(join(root, "corpus", "objects", "aa"), { recursive: true });
   await writeFile(
     join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`),
@@ -431,12 +486,46 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     turnIndex: 0,
     turn: { role: "user" },
   });
+  const eventUri = eventEvidenceUri(eventBatchHash, eventBatch.events[0]!.eventId);
+  const eventEvidence = await data.evidence(eventUri);
+  expect(eventEvidence).toMatchObject({
+    eventId: eventBatch.events[0]!.eventId,
+    eventKind: "session.started",
+  });
+  if (!eventEvidence || typeof eventEvidence !== "object" || !("event" in eventEvidence))
+    throw new Error("event evidence response is missing event data");
+  const eventPayload = eventEvidence.event;
+  if (!eventPayload || typeof eventPayload !== "object" || !("payload" in eventPayload))
+    throw new Error("event evidence response is missing its payload");
+  expect(eventPayload.payload).toContain('"sessionId":"session"');
+  await expect(
+    data.evidence(eventEvidenceUri(eventBatchHash, reasoningEvent.eventId)),
+  ).rejects.toThrow("Evidence not found");
+  await expect(
+    data.evidence(eventEvidenceUri(eventBatchHash, opaqueEvent.eventId)),
+  ).rejects.toThrow("Evidence not found");
   await expect(data.evidence(`chatlog://conversation/${staleHash}/turn/0`)).rejects.toThrow(
     "Evidence not found",
   );
 
   const handler = workbenchHandler(data);
   const healthResponse = await handler(new Request("http://localhost/api/health"));
+  const sourceReceiptsResponse = await handler(
+    new Request("http://localhost/api/source-receipts?limit=20"),
+  );
+  expect(sourceReceiptsResponse.status).toBe(200);
+  const sourceReceiptsBody = await sourceReceiptsResponse.json();
+  expect(sourceReceiptsBody).toMatchObject([
+    { itemCounts: { sourceItems: expect.any(Number) }, lossCounts: expect.any(Object) },
+  ]);
+  expect(JSON.stringify(sourceReceiptsBody)).not.toContain("blocked-");
+  const nominationsResponse = await handler(new Request("http://localhost/api/nominations"));
+  expect(nominationsResponse.status).toBe(200);
+  const nominationsBody = await nominationsResponse.json();
+  expect(nominationsBody).toEqual(
+    expect.arrayContaining([expect.objectContaining({ nativeItemKind: "synthetic-opaque" })]),
+  );
+  expect(JSON.stringify(nominationsBody)).not.toContain("blocked-");
   expect(healthResponse.status).toBe(200);
   expect(await healthResponse.json()).toEqual({ ready: true, activeSources: 1 });
   const overviewResponse = await handler(new Request("http://localhost/api/overview"));
@@ -518,9 +607,7 @@ test("Prior Attempts is zero-egress, chronological, current-only, and excludes d
     ]);
     expect(JSON.stringify(result)).not.toContain(superseded.id);
     expect(JSON.stringify(result)).not.toContain("tool-only-");
-    expect(result.sessions.every((session: any) => session.matchedEvidence.length <= 2)).toBe(
-      true,
-    );
+    expect(result.sessions.every((session: any) => session.matchedEvidence.length <= 2)).toBe(true);
     expect(result.sessions[0].attempts[0]).toMatchObject({
       outcome: "success",
       tools: ["Bash"],
@@ -547,9 +634,7 @@ test("Prior Attempts is zero-egress, chronological, current-only, and excludes d
         ),
       ),
     ).toBeLessThanOrEqual(360);
-    const matchedEvidence = (await data.evidence(
-      result.sessions[0].matchedEvidence[0].uri,
-    )) as any;
+    const matchedEvidence = (await data.evidence(result.sessions[0].matchedEvidence[0].uri)) as any;
     expect(matchedEvidence.sessionId).toBe(current.id);
     expect(["user", "assistant"]).toContain(matchedEvidence.turn.role);
     const response = await workbenchHandler(data)(
@@ -790,9 +875,7 @@ test("Knowledge Gaps review pages and searches every candidate without promoting
   const handler = workbenchHandler(data);
   try {
     const secondPageResponse = await handler(
-      new Request(
-        "http://localhost/api/knowledge-candidates?page=2&pageSize=10&type=all",
-      ),
+      new Request("http://localhost/api/knowledge-candidates?page=2&pageSize=10&type=all"),
     );
     expect(secondPageResponse.status).toBe(200);
     const secondPage = (await secondPageResponse.json()) as any;
@@ -830,18 +913,14 @@ test("Knowledge Gaps review pages and searches every candidate without promoting
     });
 
     const typeResponse = await handler(
-      new Request(
-        "http://localhost/api/knowledge-candidates?type=claude-md&pageSize=50",
-      ),
+      new Request("http://localhost/api/knowledge-candidates?type=claude-md&pageSize=50"),
     );
     const typed = (await typeResponse.json()) as any;
     expect(typed.pagination.total).toBe(11);
     expect(typed.items.every((candidate: any) => candidate.type === "claude-md")).toBe(true);
 
     const searchResponse = await handler(
-      new Request(
-        "http://localhost/api/knowledge-candidates?q=candidate-042&pageSize=50",
-      ),
+      new Request("http://localhost/api/knowledge-candidates?q=candidate-042&pageSize=50"),
     );
     const searched = (await searchResponse.json()) as any;
     expect(searched.items.map((candidate: any) => candidate.id)).toEqual(["candidate-042"]);
@@ -971,10 +1050,7 @@ test("Knowledge Gaps review fails closed when refinery authority is stale", asyn
   const data = new WorkbenchData(root);
   const handler = workbenchHandler(data);
   try {
-    for (const path of [
-      "/api/knowledge-candidates",
-      "/api/knowledge-candidate?id=candidate-000",
-    ]) {
+    for (const path of ["/api/knowledge-candidates", "/api/knowledge-candidate?id=candidate-000"]) {
       const response = await handler(new Request(`http://localhost${path}`));
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({
@@ -995,34 +1071,19 @@ test("experimental Themes explorer reports exact current completed-cache coverag
     root,
     currentHashes.map((contentHash, index) => authorityConversation(contentHash, index)),
   );
-  await writeTopicCache(
-    root,
-    currentHashes[0]!,
-    "model-a",
-    VAULT_TOPIC_RECIPE,
-    ["nix-flakes", "restic-backups"],
-  );
-  await writeTopicCache(
-    root,
-    currentHashes[1]!,
-    "model-a",
-    VAULT_TOPIC_RECIPE,
-    ["nix-flake", "career-planning"],
-  );
-  await writeTopicCache(
-    root,
-    staleHash,
-    "model-b",
-    "older-topic-recipe",
-    ["stale-topic-must-not-count"],
-  );
+  await writeTopicCache(root, currentHashes[0]!, "model-a", VAULT_TOPIC_RECIPE, [
+    "nix-flakes",
+    "restic-backups",
+  ]);
+  await writeTopicCache(root, currentHashes[1]!, "model-a", VAULT_TOPIC_RECIPE, [
+    "nix-flake",
+    "career-planning",
+  ]);
+  await writeTopicCache(root, staleHash, "model-b", "older-topic-recipe", [
+    "stale-topic-must-not-count",
+  ]);
   const malformedKey = "f".repeat(64);
-  const malformedDirectory = join(
-    root,
-    "analysis",
-    "vault-topic-cache",
-    malformedKey.slice(0, 2),
-  );
+  const malformedDirectory = join(root, "analysis", "vault-topic-cache", malformedKey.slice(0, 2));
   await mkdir(malformedDirectory, { recursive: true });
   await writeFile(join(malformedDirectory, `${malformedKey}.json`), "{malformed");
   const before = await fileSnapshot(root);
@@ -1073,9 +1134,7 @@ test("experimental Themes explorer reports exact current completed-cache coverag
         pairwiseComparisons: 6,
       },
     });
-    expect(result.clusterRecipe).toBe(
-      "vault-topic-token-set-jaccard-current-conversation-v1",
-    );
+    expect(result.clusterRecipe).toBe("vault-topic-token-set-jaccard-current-conversation-v1");
     expect(result.clusters[0]).toMatchObject({
       topic: "nix-flake",
       conversations: 2,
@@ -1137,9 +1196,7 @@ test("experimental Themes explorer reports exact current completed-cache coverag
     expect(fetchCalls).toBe(0);
     expect(await fileSnapshot(root)).toEqual(before);
 
-    const boundedResponse = await handler(
-      new Request("http://localhost/api/themes?scanLimit=2"),
-    );
+    const boundedResponse = await handler(new Request("http://localhost/api/themes?scanLimit=2"));
     const bounded = (await boundedResponse.json()) as any;
     expect(bounded.coverage).toMatchObject({
       exact: false,
@@ -1190,9 +1247,7 @@ test("experimental Themes explorer fails closed without a valid current projecti
   const missingRoot = await mkdtemp(join(tmpdir(), "chatlog-workbench-themes-missing-"));
   const missingData = new WorkbenchData(missingRoot);
   try {
-    const missing = (await missingData.themes(
-      new URL("http://localhost/api/themes"),
-    )) as any;
+    const missing = (await missingData.themes(new URL("http://localhost/api/themes"))) as any;
     expect(missing.coverage).toMatchObject({
       exact: false,
       reason: "projection-missing",
@@ -1212,9 +1267,7 @@ test("experimental Themes explorer fails closed without a valid current projecti
   );
   const malformedData = new WorkbenchData(malformedRoot);
   try {
-    const malformed = (await malformedData.themes(
-      new URL("http://localhost/api/themes"),
-    )) as any;
+    const malformed = (await malformedData.themes(new URL("http://localhost/api/themes"))) as any;
     expect(malformed.coverage).toMatchObject({
       exact: false,
       reason: "projection-invalid",
@@ -1265,14 +1318,10 @@ test("insights fail closed when authoritative artifacts are stale", async () => 
 
   const data = new WorkbenchData(root);
   try {
-    const response = await workbenchHandler(data)(
-      new Request("http://localhost/api/insights"),
-    );
+    const response = await workbenchHandler(data)(new Request("http://localhost/api/insights"));
     expect(response.status).toBe(503);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toContain(
-      "current artifact does not match the active derived projection",
-    );
+    expect(body.error).toContain("current artifact does not match the active derived projection");
     expect(JSON.stringify(body)).not.toContain("Old claim");
     expect(JSON.stringify(body)).not.toContain("Old result");
   } finally {
@@ -1280,11 +1329,16 @@ test("insights fail closed when authoritative artifacts are stale", async () => 
   }
 });
 
-test("Workbench bind policy defaults to loopback and requires an explicit remote override", () => {
-  expect(resolveBindConfig({})).toEqual({ host: "127.0.0.1", port: 4789 });
+test("Workbench bind policy keeps remote authority separate from Memory Lab writes", () => {
+  expect(resolveBindConfig({})).toEqual({
+    host: "127.0.0.1",
+    port: 4789,
+    memoryLabWrites: true,
+  });
   expect(resolveBindConfig({ CHATLOG_HOST: "::1", CHATLOG_PORT: "4790" })).toEqual({
     host: "::1",
     port: 4790,
+    memoryLabWrites: true,
   });
   expect(() => resolveBindConfig({ CHATLOG_HOST: "100.64.0.7" })).toThrow(
     "Refusing non-loopback bind",
@@ -1294,5 +1348,18 @@ test("Workbench bind policy defaults to loopback and requires an explicit remote
       CHATLOG_HOST: "100.64.0.7",
       CHATLOG_ALLOW_REMOTE: "1",
     }),
-  ).toEqual({ host: "100.64.0.7", port: 4789 });
+  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: false });
+  expect(
+    resolveBindConfig({
+      CHATLOG_HOST: "100.64.0.7",
+      CHATLOG_ALLOW_REMOTE: "1",
+      CHATLOG_MEMORY_LAB_WRITES: "1",
+    }),
+  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: true });
+  expect(() =>
+    resolveBindConfig({
+      CHATLOG_HOST: "100.64.0.7",
+      CHATLOG_MEMORY_LAB_WRITES: "1",
+    }),
+  ).toThrow("Refusing non-loopback bind");
 });

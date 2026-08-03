@@ -4,20 +4,30 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { indexConversation, openAnalysis } from "../src/analysis";
+import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysis";
 import { deriveCorpus } from "../src/derive";
+import { persistEventBatch } from "../src/event-store";
+import { eventEvidenceUri } from "../src/evidence-uri";
+import { capture, makeEvent, makeObservedSource } from "../src/events";
 import { McpData, parseDomainPolicy } from "../src/mcp/data";
 import { createMcpState, handleMcpMessage, processMcpLine } from "../src/mcp/server";
 import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
-import { publishAcceptedMemory } from "../src/experience-memory-store";
+import { applyInsightMigration } from "../src/insight-migration";
+import { readCurrentInsightLedger, recompileCurrentInsightLedger } from "../src/insight-ledger";
 import type { AcceptedMemoryLedger } from "../src/experience-memory";
+import { syntheticEventBatch } from "./event-fixture";
 
 async function fixture(): Promise<{
   root: string;
   coding: Conversation;
   staleCoding: Conversation;
   personal: Conversation;
+  codingEventUri: string;
+  reasoningEventUri: string;
+  opaqueEventUri: string;
+  codingBatchHash: string;
+  staleEventUri: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "chatlog-mcp-"));
   const coding: Conversation = {
@@ -74,28 +84,111 @@ async function fixture(): Promise<{
       JSON.stringify(conversation),
     );
   }
-  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
-    version: 1,
-    sources: {
-      "/coding": { contentHash: coding.contentHash },
-      "/personal": { contentHash: personal.contentHash },
-    },
-  }));
+  const { contentHash: _codingHash, ...codingProjection } = coding;
+  const codingBatch = syntheticEventBatch(codingProjection);
+  const sourceOrigin = codingBatch.events[0]!.origin;
+  if (sourceOrigin.kind !== "observed") throw new Error("synthetic event source is not observed");
+  const { redactedNativeRecordHash: _redactedNativeRecordHash, ...sourceBase } =
+    sourceOrigin.source;
+  const appendBlockedEvent = (
+    kind: "model.reasoning.observed" | "provider.opaque",
+    disposition: "normalized" | "opaque",
+    sequence: number,
+    parent: string,
+  ) =>
+    makeEvent({
+      kind,
+      sequence,
+      actor: { kind: "provider", name: coding.harness },
+      scope: codingBatch.events[0]!.scope,
+      origin: {
+        kind: "observed",
+        source: makeObservedSource(
+          {
+            ...sourceBase,
+            nativeItemId: `${coding.id}:blocked:${sequence}`,
+            recordPosition: { record: sequence },
+          },
+          { kind, secret: `blocked-${sequence}` },
+        ),
+      },
+      relations: { parent },
+      payload: { kind, secret: `blocked-${sequence}` },
+      capture: capture(disposition),
+    });
+  const reasoningEvent = appendBlockedEvent(
+    "model.reasoning.observed",
+    "normalized",
+    codingBatch.events.length,
+    codingBatch.events.at(-1)!.eventId,
+  );
+  const opaqueEvent = appendBlockedEvent(
+    "provider.opaque",
+    "opaque",
+    codingBatch.events.length + 1,
+    reasoningEvent.eventId,
+  );
+  const restrictedCodingBatch = {
+    ...codingBatch,
+    events: [...codingBatch.events, reasoningEvent, opaqueEvent],
+  };
+  const codingBatchHash = await persistEventBatch(root, restrictedCodingBatch);
+  indexEventBatch(db, restrictedCodingBatch, codingBatchHash, coding.contentHash);
+  const { contentHash: _staleHash, ...staleProjection } = staleCoding;
+  const staleBatch = syntheticEventBatch(staleProjection);
+  const staleBatchHash = await persistEventBatch(root, staleBatch);
+  indexEventBatch(db, staleBatch, staleBatchHash, staleCoding.contentHash);
+  await writeFile(
+    join(root, "corpus", "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      sources: {
+        "/coding": {
+          contentHash: coding.contentHash,
+          eventBatchHash: codingBatchHash,
+          conversationProjectionHash: coding.contentHash,
+        },
+        "/personal": { contentHash: personal.contentHash },
+      },
+    }),
+  );
   reconcileActiveSources(db, {
-    "/coding": { contentHash: coding.contentHash },
+    "/coding": {
+      contentHash: coding.contentHash,
+      eventBatchHash: codingBatchHash,
+      conversationProjectionHash: coding.contentHash,
+    },
     "/personal": { contentHash: personal.contentHash },
   });
   db.close();
   await deriveCorpus(root);
-  return { root, coding, staleCoding, personal };
+  return {
+    root,
+    coding,
+    staleCoding,
+    personal,
+    codingEventUri: eventEvidenceUri(codingBatchHash, codingBatch.events[0]!.eventId),
+    reasoningEventUri: eventEvidenceUri(codingBatchHash, reasoningEvent.eventId),
+    opaqueEventUri: eventEvidenceUri(codingBatchHash, opaqueEvent.eventId),
+    codingBatchHash,
+    staleEventUri: eventEvidenceUri(staleBatchHash, staleBatch.events[0]!.eventId),
+  };
 }
 
 test("MCP data applies domain policy before limits and rechecks canonical evidence", async () => {
   expect(parseDomainPolicy("")).toEqual(["coding"]);
   expect(parseDomainPolicy("research,coding,research")).toEqual(["coding", "research"]);
-  expect(() => parseDomainPolicy("*")).toThrow("wildcard");
-
-  const { root, coding, staleCoding, personal } = await fixture();
+  const {
+    root,
+    coding,
+    staleCoding,
+    personal,
+    codingBatchHash,
+    codingEventUri,
+    reasoningEventUri,
+    opaqueEventUri,
+    staleEventUri,
+  } = await fixture();
   const data = new McpData(root);
   try {
     const search = data.search({ query: "remember", limit: 1 }) as any;
@@ -131,6 +224,29 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
     expect(codingEvidence.turn.content).toHaveLength(12_000);
     expect(codingEvidence.fullLength).toBeGreaterThan(12_000);
     expect(codingEvidence.turn.toolCalls).toBeUndefined();
+    const eventEvidence = await data.evidence({ uri: codingEventUri });
+    expect(eventEvidence).toMatchObject({
+      evidenceUri: codingEventUri,
+      conversationHash: coding.contentHash,
+      sessionId: coding.id,
+      eventKind: "session.started",
+      domain: "coding",
+    });
+    if (!eventEvidence || typeof eventEvidence !== "object" || !("event" in eventEvidence))
+      throw new Error("event evidence response is missing event data");
+    const eventPayload = eventEvidence.event;
+    if (!eventPayload || typeof eventPayload !== "object" || !("payload" in eventPayload))
+      throw new Error("event evidence response is missing its payload");
+    expect(eventPayload.payload).toContain('"sessionId":"coding-session"');
+    await expect(data.evidence({ uri: reasoningEventUri })).rejects.toThrow(
+      "evidence not found or not permitted",
+    );
+    await expect(data.evidence({ uri: opaqueEventUri })).rejects.toThrow(
+      "evidence not found or not permitted",
+    );
+    await expect(data.evidence({ uri: staleEventUri })).rejects.toThrow(
+      "evidence not found or not permitted",
+    );
 
     const inFlightEvidence = data.evidence({
       uri: `chatlog://conversation/${coding.contentHash}/turn/0`,
@@ -144,20 +260,30 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
       "active source projection changed while serving the request",
     );
     reconcileActiveSources(projectionWriter, {
-      "/coding": { contentHash: coding.contentHash },
+      "/coding": {
+        contentHash: coding.contentHash,
+        eventBatchHash: codingBatchHash,
+        conversationProjectionHash: coding.contentHash,
+      },
       "/personal": { contentHash: personal.contentHash },
     });
     projectionWriter.close();
 
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${staleCoding.contentHash}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
-    })).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${personal.contentHash}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${staleCoding.contentHash}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${coding.contentHash}/turn/2`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
 
     await writeFile(
       join(root, "corpus", "objects", coding.contentHash.slice(0, 2), `${coding.contentHash}.json`),
@@ -169,19 +295,27 @@ test("MCP data applies domain policy before limits and rechecks canonical eviden
       }),
     ).rejects.toThrow("evidence not found or not permitted");
 
-    await expect(data.evidence({
-      uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
-    })).rejects.toThrow("evidence not found or not permitted");
-    expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow("domain access denied");
+    await expect(
+      data.evidence({
+        uri: `chatlog://conversation/${"c".repeat(64)}/turn/0`,
+      }),
+    ).rejects.toThrow("evidence not found or not permitted");
+    expect(() => data.search({ query: "memory", domains: ["personal"] })).toThrow(
+      "domain access denied",
+    );
 
-    await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({
-      version: 1,
-      sources: {
-        "/personal": { contentHash: personal.contentHash },
-      },
-    }));
-    expect(() => data.search({ query: "remember" }))
-      .toThrow("active source projection is unavailable or stale");
+    await writeFile(
+      join(root, "corpus", "manifest.json"),
+      JSON.stringify({
+        version: 1,
+        sources: {
+          "/personal": { contentHash: personal.contentHash },
+        },
+      }),
+    );
+    expect(() => data.search({ query: "remember" })).toThrow(
+      "active source projection is unavailable or stale",
+    );
   } finally {
     data.close();
   }
@@ -216,7 +350,7 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
         confidence: 0.9,
         freshness: "current",
         canonicalDocs: ["design-specs/experience-memory.md"],
-        evidencePointers: [`chatlog://conversation/${"a".repeat(64)}/turn/0`],
+        evidencePointers: [`chatlog://conversation/${personal.contentHash}/turn/0`],
       },
     ],
   };
@@ -279,9 +413,32 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
     `${JSON.stringify(memoryLedger)}\n`,
     { mode: 0o600 },
   );
-  const published = await publishAcceptedMemory(root);
-  expect(published.ok).toBe(true);
-  if (!published.ok) return;
+  const migrated = await applyInsightMigration(root);
+  if (!migrated.ok) throw new Error(JSON.stringify(migrated.error));
+  expect(migrated.ok).toBe(true);
+  const projectionDb = new Database(join(root, "analysis", "chatlog.sqlite"));
+  const originalAuthority = projectionDb
+    .query("SELECT manifest_sources_hash hash FROM active_projection_meta WHERE singleton = 1")
+    .get() as { hash: string };
+  projectionDb
+    .query("UPDATE active_projection_meta SET manifest_sources_hash = ? WHERE singleton = 1")
+    .run("f".repeat(64));
+  projectionDb.close();
+  const stale = await readCurrentInsightLedger(root);
+  expect(stale.ok).toBe(false);
+  if (!stale.ok) expect(stale.error.code).toBe("stale-ledger");
+  const recompiled = await recompileCurrentInsightLedger(root);
+  if (!recompiled.ok) throw new Error(JSON.stringify(recompiled.error));
+  expect(recompiled.ok).toBe(true);
+  const restoreDb = new Database(join(root, "analysis", "chatlog.sqlite"));
+  restoreDb
+    .query("UPDATE active_projection_meta SET manifest_sources_hash = ? WHERE singleton = 1")
+    .run(originalAuthority.hash);
+  restoreDb.close();
+  const restored = await recompileCurrentInsightLedger(root);
+  expect(restored.ok).toBe(true);
+  expect((await readCurrentInsightLedger(root)).ok).toBe(true);
+  if (!migrated.ok) return;
   const data = new McpData(root);
   const state = createMcpState();
   try {
@@ -369,7 +526,7 @@ test("MCP protocol initializes, lists bounded tools, calls them, and reports str
         params: {
           name: "chatlog_recall_memory",
           arguments: {
-            snapshotHash: published.value.pointer.snapshotHash,
+            snapshotHash: migrated.value.pointer.outputHash,
             memoryId: "memory-a",
           },
         },

@@ -128,3 +128,21 @@ second documentation hierarchy.
 Measured selection and disposition records live under `docs/promotion-runs/`.
 They are audit provenance, not promoted knowledge; rejected treatment artifacts
 remain evaluation fixtures only when needed to reproduce the measurement.
+
+## Governed insight publication
+
+Refinery, judge, blinded review, and the insight ledger are separate authority
+stages. `insight-assembler` verifies their exact hashes, packet mapping,
+finalized review, selected canonical evidence, semantic kind, and scope before
+returning a proposed command. It never writes the ledger.
+
+The v2 ledger records immutable revisions and explicit human transitions:
+accept, accept-with-correction, reject, dispute, resolve-dispute, supersede,
+expire, and retire. Model confidence is retained as one assessor record and
+cannot activate a claim. `chatlog insight preview` emits deterministic
+duplicate, contradiction, supersession, expiry, and scope-correction proposals;
+`chatlog insight apply` is the operator command boundary.
+
+`chatlog insight recompile` is a separate maintenance boundary.
+It rebuilds derived state after a verified evidence or source-authority change.
+It does not accept, reject, or revise an insight.

@@ -4,9 +4,11 @@ import { opendir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentAskLexical } from "../agent-query";
 import { loadDerived } from "../derive";
+import { readEventBatch } from "../event-store";
 import { parseEvidenceUri } from "../evidence-uri";
 import { listImportReceipts } from "../import-receipts";
 import { sourceCatalog } from "../source-catalog";
+import { listSourceReceipts, readUnknownShapeNominations } from "../source-receipts";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
@@ -44,6 +46,15 @@ function searchExpression(query: string): string {
 }
 
 const INSIGHT_EVIDENCE_LIMIT = 3;
+const EVIDENCE_EVENT_CHARACTER_LIMIT = 12_000;
+
+export class WorkbenchDataError extends Error {
+  override readonly name = "WorkbenchDataError";
+}
+
+function evidenceNotFound(message = "Evidence not found"): never {
+  throw new WorkbenchDataError(message);
+}
 const CANDIDATE_EVIDENCE_LIMIT = 2;
 const KNOWLEDGE_CANDIDATE_PAGE_SIZE = 20;
 const KNOWLEDGE_CANDIDATE_PAGE_SIZE_MAX = 50;
@@ -95,10 +106,7 @@ const KNOWLEDGE_PRECISION_GATE = {
 const KNOWLEDGE_REVIEW_NOTICE =
   "Review candidate only — not accepted, not promoted, and not classified as a project documentation gap.";
 
-function artifactFreshness(
-  currentHash: string,
-  current: CurrentDerivedArtifact,
-): InsightFreshness {
+function artifactFreshness(currentHash: string, current: CurrentDerivedArtifact): InsightFreshness {
   const artifactProjectionHash =
     typeof current.artifact?.inputProjectionHash === "string"
       ? current.artifact.inputProjectionHash
@@ -133,9 +141,7 @@ async function artifactMetadata(
   current: CurrentDerivedArtifact,
 ): Promise<{ processedAt: string | null }> {
   try {
-    const manifest = JSON.parse(
-      await readFile(join(root, "derived", manifestName), "utf8"),
-    );
+    const manifest = JSON.parse(await readFile(join(root, "derived", manifestName), "utf8"));
     if (
       manifest?.version !== 1 ||
       manifest.current?.contentHash !== current.contentHash ||
@@ -193,9 +199,9 @@ function boundedDecisionBoundary(value: unknown): unknown {
   const shape = (item: any) =>
     item
       ? {
-        claim: item.claim,
-        evidence: boundedEvidence(item.evidence),
-      }
+          claim: item.claim,
+          evidence: boundedEvidence(item.evidence),
+        }
       : null;
   return {
     grantsAutonomy: shape(boundary.grantsAutonomy),
@@ -302,10 +308,7 @@ function candidateDetail(candidate: any): Record<string, unknown> {
       keepRule: boundedText(evaluation.keepRule, 1_200),
       cutRule: boundedText(evaluation.cutRule, 1_200),
     },
-    evidence: boundedEvidence(
-      candidate.evidence,
-      KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX,
-    ),
+    evidence: boundedEvidence(candidate.evidence, KNOWLEDGE_CANDIDATE_DETAIL_EVIDENCE_MAX),
   };
 }
 
@@ -365,8 +368,7 @@ async function scanThemeCachePaths(
   try {
     rootDirectory = await opendir(cacheRoot);
   } catch (error: unknown) {
-    if (nodeErrorCode(error) === "ENOENT")
-      return { exact: true, paths, observedFiles: 0 };
+    if (nodeErrorCode(error) === "ENOENT") return { exact: true, paths, observedFiles: 0 };
     return { exact: false, paths, observedFiles: 0 };
   }
   let observedFiles = 0;
@@ -396,8 +398,7 @@ async function readThemeCacheEntry(
   item: ThemeCachePath,
 ): Promise<{ entry: ThemeCacheEntry | null; invalid: boolean }> {
   const match = /^([a-f0-9]{64})\.json$/.exec(item.filename);
-  if (!match || item.directory !== match[1]!.slice(0, 2))
-    return { entry: null, invalid: true };
+  if (!match || item.directory !== match[1]!.slice(0, 2)) return { entry: null, invalid: true };
   try {
     if ((await stat(item.path)).size > THEMES_CACHE_ENTRY_BYTES_MAX)
       return { entry: null, invalid: true };
@@ -483,12 +484,10 @@ export class WorkbenchData {
   private assertProjection(expected?: ProjectionReceipt): ProjectionReceipt {
     const current = this.projectionGuard.assert(this.requireDb());
     if (
-      expected
-      && (
-        current.manifestSourcesHash !== expected.manifestSourcesHash
-        || current.reconciledAt !== expected.reconciledAt
-        || current.activeSources !== expected.activeSources
-      )
+      expected &&
+      (current.manifestSourcesHash !== expected.manifestSourcesHash ||
+        current.reconciledAt !== expected.reconciledAt ||
+        current.activeSources !== expected.activeSources)
     ) {
       throw new ActiveProjectionDriftError(
         "active source projection changed while serving the request; retry",
@@ -504,16 +503,17 @@ export class WorkbenchData {
   }
 
   async overview(): Promise<unknown> {
-    if (!this.db) return {
-      ready: false,
-      root: this.root,
-      corpus: { sessions: 0, projects: 0, turns: 0, firstSession: null, lastSession: null },
-      harnesses: [],
-      domains: [],
-      projects: [],
-      recent: [],
-      tools: [],
-    };
+    if (!this.db)
+      return {
+        ready: false,
+        root: this.root,
+        corpus: { sessions: 0, projects: 0, turns: 0, firstSession: null, lastSession: null },
+        harnesses: [],
+        domains: [],
+        projects: [],
+        recent: [],
+        tools: [],
+      };
     const projection = this.assertProjection();
     const db = this.db;
     const corpus = db
@@ -527,10 +527,10 @@ export class WorkbenchData {
       .all();
     const domains = this.currentColumns.has("domain")
       ? db
-        .query(
-          `SELECT domain, count(*) sessions FROM current_conversations GROUP BY domain ORDER BY sessions DESC`,
-        )
-        .all()
+          .query(
+            `SELECT domain, count(*) sessions FROM current_conversations GROUP BY domain ORDER BY sessions DESC`,
+          )
+          .all()
       : [{ domain: "coding", sessions: (corpus as any).sessions }];
     const projects = db
       .query(`SELECT project, count(*) sessions, sum(turn_count) turns,
@@ -547,8 +547,18 @@ export class WorkbenchData {
     const tools = db
       .query(`SELECT tc.name, count(*) calls, count(DISTINCT tc.content_hash) sessions
       FROM tool_calls tc JOIN current_conversations c USING(content_hash)
-      GROUP BY tc.name ORDER BY calls DESC LIMIT 10`).all();
-    const result = { ready: true, root: this.root, corpus, harnesses, domains, projects, recent, tools };
+      GROUP BY tc.name ORDER BY calls DESC LIMIT 10`)
+      .all();
+    const result = {
+      ready: true,
+      root: this.root,
+      corpus,
+      harnesses,
+      domains,
+      projects,
+      recent,
+      tools,
+    };
     this.assertProjection(projection);
     return result;
   }
@@ -556,10 +566,12 @@ export class WorkbenchData {
   projects(limitValue: string | null): unknown[] {
     const projection = this.assertProjection();
     const limit = boundedInteger(limitValue, 50, 200);
-    const result = this.requireDb().query(`SELECT project, count(*) sessions, sum(turn_count) turns,
+    const result = this.requireDb()
+      .query(`SELECT project, count(*) sessions, sum(turn_count) turns,
       min(started_at) firstSeen, max(ended_at) lastSeen
       FROM current_conversations GROUP BY project
-      ORDER BY sessions DESC, turns DESC LIMIT ?`).all(limit) as unknown[];
+      ORDER BY sessions DESC, turns DESC LIMIT ?`)
+      .all(limit) as unknown[];
     this.assertProjection(projection);
     return result;
   }
@@ -586,11 +598,13 @@ export class WorkbenchData {
     const title = this.optionalColumn("title", "''");
     const domain = this.optionalColumn("domain", "'coding'");
     const sourceKind = this.optionalColumn("source_kind", "'session-log'");
-    const result = db.query(`SELECT c.content_hash contentHash, c.id, ${title} title, ${domain} domain,
+    const result = db
+      .query(`SELECT c.content_hash contentHash, c.id, ${title} title, ${domain} domain,
       ${sourceKind} sourceKind, c.project, c.harness, c.model, c.started_at startedAt,
       c.ended_at endedAt, c.turn_count turns
       FROM current_conversations c ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY c.ended_at DESC LIMIT ?`).all(...params) as unknown[];
+      ORDER BY c.ended_at DESC LIMIT ?`)
+      .all(...params) as unknown[];
     this.assertProjection(projection);
     return result;
   }
@@ -609,7 +623,8 @@ export class WorkbenchData {
       snippet(turns_fts, 0, '<mark>', '</mark>', ' … ', 32) snippet,
       -bm25(turns_fts) score
       FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
-      WHERE turns_fts MATCH ? ORDER BY bm25(turns_fts) LIMIT ?`).all(expression, limit) as any[];
+      WHERE turns_fts MATCH ? ORDER BY bm25(turns_fts) LIMIT ?`)
+      .all(expression, limit) as any[];
     const result = {
       query,
       expression,
@@ -629,16 +644,10 @@ export class WorkbenchData {
     const question = url.searchParams.get("q")?.trim() ?? "";
     const limit = boundedInteger(url.searchParams.get("limit"), 6, PRIOR_ATTEMPT_LIMIT);
     const candidateLimit = Math.min(PRIOR_ATTEMPT_LIMIT * 4, Math.max(limit * 4, 20));
-    const lexical = (await agentAskLexical(
-      db,
-      this.root,
-      question,
-      candidateLimit,
-      {
-        contentRolesOnly: true,
-        groupedSessionLoadLimit: candidateLimit,
-      },
-    )) as any;
+    const lexical = (await agentAskLexical(db, this.root, question, candidateLimit, {
+      contentRolesOnly: true,
+      groupedSessionLoadLimit: candidateLimit,
+    })) as any;
     const candidates = [];
     for (const session of lexical.sessions ?? []) {
       candidates.push({
@@ -708,10 +717,7 @@ export class WorkbenchData {
       egress: { performed: false, surface: "none" },
     };
     this.assertProjection(projection);
-    assertStableDerivedProjection(
-      derivedProjection,
-      await assertDerivedProjection(this.root),
-    );
+    assertStableDerivedProjection(derivedProjection, await assertDerivedProjection(this.root));
     return result;
   }
 
@@ -900,10 +906,7 @@ export class WorkbenchData {
       egress: { performed: false, surface: "none" },
     };
     this.assertProjection(projection);
-    assertStableDerivedProjection(
-      derivedProjection,
-      await assertDerivedProjection(this.root),
-    );
+    assertStableDerivedProjection(derivedProjection, await assertDerivedProjection(this.root));
     return result;
   }
 
@@ -917,11 +920,7 @@ export class WorkbenchData {
     )
       return Promise.reject(new Error(`unsupported knowledge candidate type: ${requestedType}`));
     const type = requestedType && requestedType !== "all" ? requestedType : null;
-    const page = boundedInteger(
-      url.searchParams.get("page"),
-      1,
-      KNOWLEDGE_CANDIDATE_PAGE_MAX,
-    );
+    const page = boundedInteger(url.searchParams.get("page"), 1, KNOWLEDGE_CANDIDATE_PAGE_MAX);
     const pageSize = boundedInteger(
       url.searchParams.get("pageSize"),
       KNOWLEDGE_CANDIDATE_PAGE_SIZE,
@@ -929,27 +928,31 @@ export class WorkbenchData {
     );
     const projection = this.assertProjection();
     const derivedProjection = await assertDerivedProjection(this.root);
-    const refinery = await loadProjectionBoundArtifact(
-      this.root,
-      "refinery-manifest.json",
-      {
-        optional: true,
-        projection: derivedProjection,
-        inputProjectionHash: derivedProjection.structureProjectionHash,
-      },
-    );
+    const refinery = await loadProjectionBoundArtifact(this.root, "refinery-manifest.json", {
+      optional: true,
+      projection: derivedProjection,
+      inputProjectionHash: derivedProjection.structureProjectionHash,
+    });
     const provenance = refinery
       ? artifactFreshness(derivedProjection.structureProjectionHash, refinery)
       : null;
     const normalizedQuery = query.toLowerCase();
-    const candidates = (Array.isArray(refinery?.artifact.candidates)
-      ? refinery.artifact.candidates
-      : []
+    const candidates = (
+      Array.isArray(refinery?.artifact.candidates) ? refinery.artifact.candidates : []
     ).filter((candidate: any) => {
       if (type && candidate.type !== type) return false;
       if (!normalizedQuery) return true;
-      return [candidate.id, candidate.title, candidate.signature, candidate.type, candidate.status]
-        .some((value) => String(value ?? "").toLowerCase().includes(normalizedQuery));
+      return [
+        candidate.id,
+        candidate.title,
+        candidate.signature,
+        candidate.type,
+        candidate.status,
+      ].some((value) =>
+        String(value ?? "")
+          .toLowerCase()
+          .includes(normalizedQuery),
+      );
     });
     const total = candidates.length;
     const offset = (page - 1) * pageSize;
@@ -986,10 +989,7 @@ export class WorkbenchData {
       egress: { performed: false, surface: "none" },
     };
     this.assertProjection(projection);
-    assertStableDerivedProjection(
-      derivedProjection,
-      await assertDerivedProjection(this.root),
-    );
+    assertStableDerivedProjection(derivedProjection, await assertDerivedProjection(this.root));
     return result;
   }
 
@@ -1000,20 +1000,14 @@ export class WorkbenchData {
       return Promise.reject(new Error("knowledge candidate id exceeds 200 characters"));
     const projection = this.assertProjection();
     const derivedProjection = await assertDerivedProjection(this.root);
-    const refinery = await loadProjectionBoundArtifact(
-      this.root,
-      "refinery-manifest.json",
-      {
-        optional: true,
-        projection: derivedProjection,
-        inputProjectionHash: derivedProjection.structureProjectionHash,
-      },
-    );
+    const refinery = await loadProjectionBoundArtifact(this.root, "refinery-manifest.json", {
+      optional: true,
+      projection: derivedProjection,
+      inputProjectionHash: derivedProjection.structureProjectionHash,
+    });
     if (!refinery) return Promise.reject(new Error("knowledge candidate artifact not found"));
     const metadata = await artifactMetadata(this.root, "refinery-manifest.json", refinery);
-    const candidate = (refinery.artifact.candidates ?? []).find(
-      (item: any) => item.id === id,
-    );
+    const candidate = (refinery.artifact.candidates ?? []).find((item: any) => item.id === id);
     if (!candidate) return Promise.reject(new Error(`knowledge candidate not found: ${id}`));
     const result = {
       candidate: candidateDetail(candidate),
@@ -1022,9 +1016,7 @@ export class WorkbenchData {
         contentHash: refinery.contentHash,
         inputProjectionHash: refinery.inputProjectionHash,
         recipeHash:
-          typeof refinery.artifact.recipeHash === "string"
-            ? refinery.artifact.recipeHash
-            : null,
+          typeof refinery.artifact.recipeHash === "string" ? refinery.artifact.recipeHash : null,
         processedAt: metadata.processedAt,
       },
       policy: {
@@ -1040,10 +1032,7 @@ export class WorkbenchData {
       egress: { performed: false, surface: "none" },
     };
     this.assertProjection(projection);
-    assertStableDerivedProjection(
-      derivedProjection,
-      await assertDerivedProjection(this.root),
-    );
+    assertStableDerivedProjection(derivedProjection, await assertDerivedProjection(this.root));
     return result;
   }
 
@@ -1074,8 +1063,7 @@ export class WorkbenchData {
       scope: "current-projection cached sample only",
       clusterRecipe: THEMES_CLUSTER_RECIPE,
       bounds: {
-        requestedScanLimit:
-          requestedScanLimit == null ? null : boundedText(requestedScanLimit, 32),
+        requestedScanLimit: requestedScanLimit == null ? null : boundedText(requestedScanLimit, 32),
         appliedScanLimit: scanLimit,
         maximumScanLimit: THEMES_CACHE_SCAN_MAX,
         maximumKeyComputations: THEMES_KEY_COMPUTATION_MAX,
@@ -1102,8 +1090,7 @@ export class WorkbenchData {
         ...base,
         coverage: {
           exact: false,
-          reason:
-            scan.observedFiles > scanLimit ? "cache-scan-bound-exceeded" : "cache-scan-error",
+          reason: scan.observedFiles > scanLimit ? "cache-scan-bound-exceeded" : "cache-scan-error",
           currentDenominator: projection.exact ? projection.hashes.length : null,
           currentCovered: null,
           percent: null,
@@ -1145,10 +1132,7 @@ export class WorkbenchData {
       variant.completedCacheEntries++;
       variantsById.set(id, variant);
     }
-    const incompleteCoverage = (
-      reason: string,
-      currentDenominator: number | null,
-    ): unknown => ({
+    const incompleteCoverage = (reason: string, currentDenominator: number | null): unknown => ({
       ...base,
       coverage: {
         exact: false,
@@ -1174,14 +1158,11 @@ export class WorkbenchData {
           currentCovered: null,
           coveragePercent: null,
         }))
-        .toSorted(
-          (a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe),
-        ),
+        .toSorted((a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe)),
       clusters: [],
       distribution: null,
     });
-    if (!projection.exact)
-      return incompleteCoverage(projection.reason, null);
+    if (!projection.exact) return incompleteCoverage(projection.reason, null);
     const keyComputations = projection.hashes.length * variantsById.size;
     if (keyComputations > THEMES_KEY_COMPUTATION_MAX)
       return incompleteCoverage("key-computation-bound-exceeded", projection.hashes.length);
@@ -1231,13 +1212,8 @@ export class WorkbenchData {
           ? Number(((variant.currentHashes.size / denominator) * 100).toFixed(1))
           : 0,
       }))
-      .toSorted(
-        (a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe),
-      );
-    if (
-      rawCounts.size > topicLimit ||
-      pairwiseComparisons > THEMES_PAIRWISE_COMPARISONS_MAX
-    )
+      .toSorted((a, b) => a.model.localeCompare(b.model) || a.recipe.localeCompare(b.recipe));
+    if (rawCounts.size > topicLimit || pairwiseComparisons > THEMES_PAIRWISE_COMPARISONS_MAX)
       return {
         ...base,
         coverage: {
@@ -1280,9 +1256,7 @@ export class WorkbenchData {
         members: cluster.members.slice(0, THEMES_CLUSTER_MEMBERS_MAX),
         totalMembers: cluster.members.length,
       }))
-      .toSorted(
-        (a, b) => b.conversations - a.conversations || a.topic.localeCompare(b.topic),
-      );
+      .toSorted((a, b) => b.conversations - a.conversations || a.topic.localeCompare(b.topic));
     const shared = allClusters.filter((cluster) => cluster.conversations >= 2);
     const singleton = allClusters.filter((cluster) => cluster.conversations === 1);
     return {
@@ -1329,10 +1303,56 @@ export class WorkbenchData {
   async evidence(uri: string): Promise<unknown> {
     const projection = this.assertProjection();
     const pointer = parseEvidenceUri(uri);
+    if ("eventId" in pointer) {
+      const indexed = this.requireDb()
+        .query(`SELECT c.content_hash contentHash, c.id sessionId, c.title,
+          COALESCE(c.domain, 'coding') domain, c.project, c.harness
+          FROM current_conversations c JOIN active_sources a
+          ON a.source_path = c.source_path AND a.content_hash = c.content_hash
+          WHERE a.event_batch_hash = ?`)
+        .get(pointer.batchHash) as {
+        contentHash: string;
+        sessionId: string;
+        title: string;
+        domain: string;
+        project: string;
+        harness: string;
+      } | null;
+      if (!indexed) evidenceNotFound();
+      let batch;
+      try {
+        batch = await readEventBatch(this.root, pointer.batchHash);
+      } catch {
+        evidenceNotFound();
+      }
+      const event = batch.events.find((candidate) => candidate.eventId === pointer.eventId);
+      if (!event) evidenceNotFound();
+      if (event.kind === "model.reasoning.observed" || event.capture.disposition === "opaque")
+        evidenceNotFound();
+      const content = JSON.stringify(event.payload);
+      const result = {
+        conversationHash: indexed.contentHash,
+        sessionId: indexed.sessionId,
+        title: indexed.title ?? "",
+        domain: indexed.domain,
+        project: indexed.project,
+        harness: indexed.harness,
+        eventId: event.eventId,
+        eventKind: event.kind,
+        event: {
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+          payload: content.slice(0, EVIDENCE_EVENT_CHARACTER_LIMIT),
+          fullLength: content.length,
+        },
+      };
+      this.assertProjection(projection);
+      return result;
+    }
     const current = this.requireDb()
       .query("SELECT 1 FROM current_conversations WHERE content_hash = ?")
       .get(pointer.contentHash);
-    if (!current) throw new Error("Evidence not found");
+    if (!current) evidenceNotFound();
     const conversation = JSON.parse(
       await readFile(
         join(
@@ -1346,7 +1366,7 @@ export class WorkbenchData {
       ),
     ) as Conversation;
     const turn = conversation.turns[pointer.turnIndex];
-    if (!turn) throw new Error("Evidence turn not found");
+    if (!turn) evidenceNotFound("Evidence turn not found");
     const result = {
       conversationHash: pointer.contentHash,
       sessionId: conversation.id,
@@ -1380,11 +1400,9 @@ export class WorkbenchData {
       }),
     ]);
     const effectivenessCurrent = rolesCurrent
-      ? await loadCurrentDerivedArtifact(
-        this.root,
-        "orchestration-effectiveness-manifest.json",
-        { optional: true },
-      )
+      ? await loadCurrentDerivedArtifact(this.root, "orchestration-effectiveness-manifest.json", {
+          optional: true,
+        })
       : null;
     if (
       effectivenessCurrent &&
@@ -1409,14 +1427,14 @@ export class WorkbenchData {
       : null;
     const effectivenessFreshness = effectivenessCurrent
       ? {
-        fresh: true,
-        status: "fresh" as const,
-        reason: "role-profile-match",
-        currentProjectionHash: derivedProjection.contentHash,
-        roleProfileContentHash: effectiveness.roleProfileContentHash,
-        currentRoleProfileContentHash: rolesCurrent?.contentHash ?? null,
-        artifactInputProjectionHash: effectivenessCurrent.inputProjectionHash,
-      }
+          fresh: true,
+          status: "fresh" as const,
+          reason: "role-profile-match",
+          currentProjectionHash: derivedProjection.contentHash,
+          roleProfileContentHash: effectiveness.roleProfileContentHash,
+          currentRoleProfileContentHash: rolesCurrent?.contentHash ?? null,
+          artifactInputProjectionHash: effectivenessCurrent.inputProjectionHash,
+        }
       : null;
     const result = {
       projection: {
@@ -1425,73 +1443,75 @@ export class WorkbenchData {
       },
       orchestration: lean?.finding
         ? {
-          provenance: leanFreshness,
-          claim: lean.finding.claim,
-          evidence: boundedEvidence(lean.finding.evidence),
-          decisionBoundary: boundedDecisionBoundary(lean.finding.decisionBoundary),
-          inventories: (lean.inventories ?? []).map((item: any) => ({
-            pole: item.pole,
-            signal: item.signal,
-            claim: item.claim,
-            matchingTurns: item.matchingTurns,
-            conversations: item.conversations,
-          })),
-        }
+            provenance: leanFreshness,
+            claim: lean.finding.claim,
+            evidence: boundedEvidence(lean.finding.evidence),
+            decisionBoundary: boundedDecisionBoundary(lean.finding.decisionBoundary),
+            inventories: (lean.inventories ?? []).map((item: any) => ({
+              pole: item.pole,
+              signal: item.signal,
+              claim: item.claim,
+              matchingTurns: item.matchingTurns,
+              conversations: item.conversations,
+            })),
+          }
         : null,
       roles: roles
         ? {
-          provenance: rolesFreshness,
-          inferredCounts: roles.inferredCounts,
-          profiles: (roles.profiles ?? []).map((profile: any) => ({
-            role: profile.role,
-            highConfidenceSessions: profile.highConfidenceSessions,
-            classifiedChoices: profile.classifiedChoices,
-            autonomyChoiceRate: profile.autonomyChoiceRate,
-            claim: profile.claim,
-            signalCounts: profile.signalCounts,
-            evidence: boundedEvidence(profile.evidence),
-          })),
-        }
+            provenance: rolesFreshness,
+            inferredCounts: roles.inferredCounts,
+            profiles: (roles.profiles ?? []).map((profile: any) => ({
+              role: profile.role,
+              highConfidenceSessions: profile.highConfidenceSessions,
+              classifiedChoices: profile.classifiedChoices,
+              autonomyChoiceRate: profile.autonomyChoiceRate,
+              claim: profile.claim,
+              signalCounts: profile.signalCounts,
+              evidence: boundedEvidence(profile.evidence),
+            })),
+          }
         : null,
       effectiveness: effectiveness?.ranking
         ? {
-          provenance: effectivenessFreshness,
-          claim: effectiveness.ranking.claim,
-          winner: effectiveness.ranking.winner,
-          loser: effectiveness.ranking.loser,
-          role: effectiveness.ranking.role,
-          metrics: effectiveness.ranking.metrics,
-          evidence: boundedEvidence(effectiveness.ranking.evidence),
-        }
+            provenance: effectivenessFreshness,
+            claim: effectiveness.ranking.claim,
+            winner: effectiveness.ranking.winner,
+            loser: effectiveness.ranking.loser,
+            role: effectiveness.ranking.role,
+            metrics: effectiveness.ranking.metrics,
+            evidence: boundedEvidence(effectiveness.ranking.evidence),
+          }
         : null,
       refinery: refinery
         ? {
-          provenance: refineryFreshness,
-          threshold: refinery.threshold,
-          policy: refinery.policy,
-          candidateCount: Array.isArray(refinery.candidates) ? refinery.candidates.length : 0,
-          candidates:
-            url?.searchParams.get("candidateLimit") === "0"
-              ? []
-              : (refinery.candidates ?? []).map((candidate: any) => ({
-                id: candidate.id,
-                type: candidate.type,
-                signature: candidate.signature,
-                title: candidate.title,
-                status: candidate.status,
-                frequency: candidate.frequency,
-                evidence: boundedEvidence(candidate.evidence, CANDIDATE_EVIDENCE_LIMIT),
-              })),
-        }
+            provenance: refineryFreshness,
+            threshold: refinery.threshold,
+            policy: refinery.policy,
+            candidateCount: Array.isArray(refinery.candidates) ? refinery.candidates.length : 0,
+            candidates:
+              url?.searchParams.get("candidateLimit") === "0"
+                ? []
+                : (refinery.candidates ?? []).map((candidate: any) => ({
+                    id: candidate.id,
+                    type: candidate.type,
+                    signature: candidate.signature,
+                    title: candidate.title,
+                    status: candidate.status,
+                    frequency: candidate.frequency,
+                    evidence: boundedEvidence(candidate.evidence, CANDIDATE_EVIDENCE_LIMIT),
+                  })),
+          }
         : null,
     };
     this.assertProjection(projection);
     const finalDerivedProjection = await assertDerivedProjection(this.root);
     if (
-      finalDerivedProjection.contentHash !== derivedProjection.contentHash
-      || finalDerivedProjection.structureProjectionHash !== derivedProjection.structureProjectionHash
+      finalDerivedProjection.contentHash !== derivedProjection.contentHash ||
+      finalDerivedProjection.structureProjectionHash !== derivedProjection.structureProjectionHash
     )
-      throw new DerivedProjectionDriftError("derived projection changed while serving the request; retry");
+      throw new DerivedProjectionDriftError(
+        "derived projection changed while serving the request; retry",
+      );
     return result;
   }
 
@@ -1501,5 +1521,13 @@ export class WorkbenchData {
 
   receipts(limitValue: string | null): Promise<unknown[]> {
     return listImportReceipts(this.root, boundedInteger(limitValue, 20, 100));
+  }
+
+  sourceReceipts(limitValue: string | null): Promise<unknown[]> {
+    return listSourceReceipts(this.root, boundedInteger(limitValue, 20, 100));
+  }
+
+  nominations(): Promise<unknown[]> {
+    return readUnknownShapeNominations(this.root);
   }
 }

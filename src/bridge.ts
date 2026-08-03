@@ -252,8 +252,14 @@ async function atomicPrivateWrite(path: string, text: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
-export async function emitPiBridge(root: string, hash: string, mode: PiBridgeMode, outputPath?: string): Promise<BridgeReceipt> {
-  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("bridge requires a 64-character lowercase conversation hash");
+export async function emitPiBridge(
+  root: string,
+  hash: string,
+  mode: PiBridgeMode,
+  outputPath?: string,
+): Promise<BridgeReceipt> {
+  if (!/^[a-f0-9]{64}$/.test(hash))
+    throw new Error("bridge requires a 64-character lowercase conversation hash");
   return withIngestLock(root, async () => {
     const db = new Database(join(root, "analysis", "chatlog.sqlite"), {
       readonly: true,
@@ -262,33 +268,40 @@ export async function emitPiBridge(root: string, hash: string, mode: PiBridgeMod
     const guard = new ActiveProjectionGuard(root);
     try {
       const projection = guard.assert(db);
-      const active = db.query(
-        "SELECT 1 FROM current_conversations WHERE content_hash = ?",
-      ).get(hash);
+      const active = db
+        .query("SELECT 1 FROM current_conversations WHERE content_hash = ?")
+        .get(hash);
       if (!active) throw new Error("bridge conversation is not active");
       const canonicalPath = join(root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`);
       const conversation = JSON.parse(await readFile(canonicalPath, "utf8")) as Conversation;
-      if (conversation.contentHash !== hash) throw new Error(`${canonicalPath}: filename/content hash mismatch`);
+      if (conversation.contentHash !== hash)
+        throw new Error(`${canonicalPath}: filename/content hash mismatch`);
       let derived: DerivedConversation | undefined;
       if (mode === "summary") {
         const path = join(root, "derived", "objects", hash.slice(0, 2), `${hash}.json`);
         derived = JSON.parse(await readFile(path, "utf8")) as DerivedConversation;
-        if (derived.conversationHash !== hash) throw new Error(`${path}: filename/content hash mismatch`);
+        if (derived.conversationHash !== hash)
+          throw new Error(`${path}: filename/content hash mismatch`);
       }
       const currentProjection = guard.assert(db);
       if (
-        currentProjection.manifestSourcesHash !== projection.manifestSourcesHash
-        || currentProjection.reconciledAt !== projection.reconciledAt
-        || currentProjection.activeSources !== projection.activeSources
+        currentProjection.manifestSourcesHash !== projection.manifestSourcesHash ||
+        currentProjection.reconciledAt !== projection.reconciledAt ||
+        currentProjection.activeSources !== projection.activeSources
       ) {
         throw new ActiveProjectionDriftError(
           "active source projection changed while emitting bridge; retry",
         );
       }
       const built = serializePiBridge(conversation, mode, derived);
-      const path = resolve(outputPath ?? join(root, "bridge", "pi", mode, hash.slice(0, 2), `${hash}.jsonl`));
+      const path = resolve(
+        outputPath ?? join(root, "bridge", "pi", mode, hash.slice(0, 2), `${hash}.jsonl`),
+      );
       await atomicPrivateWrite(path, built.text);
-      return { ...built.receipt, target: { ...built.receipt.target, path, contentHash: sha256(built.text) } };
+      return {
+        ...built.receipt,
+        target: { ...built.receipt.target, path, contentHash: sha256(built.text) },
+      };
     } finally {
       db.close();
     }

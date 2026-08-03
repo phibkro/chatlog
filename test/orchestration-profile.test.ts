@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { classifyOrchestrationTurn, deriveOrchestrationProfile, loadOrchestrationProfile, resolveOrchestrationPointer, type OrchestrationLabel } from "../src/orchestration-profile";
+import {
+  classifyOrchestrationTurn,
+  deriveOrchestrationProfile,
+  loadOrchestrationProfile,
+  resolveOrchestrationPointer,
+  type OrchestrationLabel,
+} from "../src/orchestration-profile";
 import { deriveCorpus } from "../src/derive";
 import type { Conversation } from "../src/types";
 
@@ -68,7 +74,8 @@ test("orchestration lean is local, evidence-bound, validated, and content-idempo
   }
   await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
   await deriveCorpus(root);
-  const labelsPath = join(root, "labels.json"); await writeFile(labelsPath, JSON.stringify(labels));
+  const labelsPath = join(root, "labels.json");
+  await writeFile(labelsPath, JSON.stringify(labels));
 
   const first = await deriveOrchestrationProfile(root, labelsPath);
   const second = await deriveOrchestrationProfile(root, labelsPath);

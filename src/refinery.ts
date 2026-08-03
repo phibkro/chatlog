@@ -139,7 +139,7 @@ function externalReferences(text: string): string[] {
       const url = new URL(raw);
       const segment = url.pathname.split("/").filter(Boolean)[0];
       refs.add(segment ? `${url.hostname}/${segment}` : url.hostname);
-    } catch { }
+    } catch {}
   return [...refs];
 }
 function cleanProject(project: string): string {
@@ -388,25 +388,42 @@ function aggregate(observations: Observation[], threshold: number): PromotionCan
 }
 
 export async function refineCorpus(root: string, threshold = 3): Promise<RefinerySummary> {
-  if (!Number.isInteger(threshold) || threshold < 3) throw new Error("refinery threshold must be an integer >= 3");
+  if (!Number.isInteger(threshold) || threshold < 3)
+    throw new Error("refinery threshold must be an integer >= 3");
   const derivedDir = join(root, "derived");
   const projection = await assertDerivedProjection(root);
   const inputProjectionHash = projection.structureProjectionHash;
-  const recipeHash = hash(await Bun.file(import.meta.path).text()); const manifestPath = join(derivedDir, "refinery-manifest.json");
-  let manifest: RefineryManifest = { version: 1 }; try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  const recipeHash = hash(await Bun.file(import.meta.path).text());
+  const manifestPath = join(derivedDir, "refinery-manifest.json");
+  let manifest: RefineryManifest = { version: 1 };
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   const prior = manifest.current;
-  if (prior?.inputProjectionHash === inputProjectionHash && prior.recipeHash === recipeHash && prior.threshold === threshold) {
+  if (
+    prior?.inputProjectionHash === inputProjectionHash &&
+    prior.recipeHash === recipeHash &&
+    prior.threshold === threshold
+  ) {
     try {
       const current = await loadCurrentDerivedArtifact<RefineryArtifact>(
         root,
         "refinery-manifest.json",
       );
       if (
-        current
-        && current.inputProjectionHash === inputProjectionHash
-        && current.artifact.inputProjectionHash === inputProjectionHash
+        current &&
+        current.inputProjectionHash === inputProjectionHash &&
+        current.artifact.inputProjectionHash === inputProjectionHash
       ) {
-        return { inputConversations: projection.conversations, candidates: current.artifact.candidates.length, processed: false, artifactPath: join(derivedDir, prior.artifactPath), contentHash: prior.contentHash };
+        return {
+          inputConversations: projection.conversations,
+          candidates: current.artifact.candidates.length,
+          processed: false,
+          artifactPath: join(derivedDir, prior.artifactPath),
+          contentHash: prior.contentHash,
+        };
       }
     } catch (error) {
       if (!(error instanceof DerivedProjectionDriftError)) throw error;

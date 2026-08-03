@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AcceptedMemoryEntry, AcceptedMemoryLedger } from "../src/experience-memory";
-import { publishAcceptedMemory } from "../src/experience-memory-store";
+import { applyInsightMigration } from "../src/insight-migration";
+import { readPublishedMemory } from "../src/experience-memory-store";
 import { projectOf } from "../src/project-identity";
 
 function ledger(root: string, id: string, alias: string): AcceptedMemoryLedger {
@@ -94,9 +95,12 @@ async function publish(root: string, id: string, alias: string): Promise<string>
     `${JSON.stringify(value, null, 2)}\n`,
     { mode: 0o600 },
   );
-  const result = await publishAcceptedMemory(root);
+  const result = await applyInsightMigration(root);
+  if (!result.ok) throw new Error(JSON.stringify(result.error));
   expect(result.ok).toBe(true);
-  return result.ok ? result.value.pointer.snapshotHash : "";
+  const published = await readPublishedMemory(root);
+  if (!published.ok) throw new Error(JSON.stringify(published.error));
+  return result.ok ? result.value.pointer.outputHash : "";
 }
 
 async function runHook(

@@ -45,12 +45,17 @@ test("agent queries return bounded structure and dereference pointers on demand"
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   try {
     const staleHash = "d".repeat(64);
-    indexConversation(db, {
-      ...conversation,
-      contentHash: staleHash,
-      endedAt: "2026-06-30T00:01:00Z",
-      turns: [{ role: "user", content: "Superseded historical content." }],
-    }, 0, 1);
+    indexConversation(
+      db,
+      {
+        ...conversation,
+        contentHash: staleHash,
+        endedAt: "2026-06-30T00:01:00Z",
+        turns: [{ role: "user", content: "Superseded historical content." }],
+      },
+      0,
+      1,
+    );
     indexConversation(db, conversation, 1, 1);
     reconcileActiveSources(db, { "/source": { contentHash: hash } });
     await deriveCorpus(root);
@@ -60,9 +65,11 @@ test("agent queries return bounded structure and dereference pointers on demand"
     expect(search.hits).toHaveLength(1);
     expect(search.hits[0].snippet).toContain("[DuckDB]");
     expect(search.hits[0].pointer.uri).toBe(`chatlog://conversation/${hash}/turn/0`);
-    expect((await agentGet(db, root, hash.slice(0, 12), 0) as any).turn.content).toContain("DuckDB");
+    expect(((await agentGet(db, root, hash.slice(0, 12), 0)) as any).turn.content).toContain(
+      "DuckDB",
+    );
     await expect(agentGet(db, root, staleHash, 0)).rejects.toThrow("conversation not found");
-    const grok = await agentGrok(db, root, "DuckDB", 1) as any;
+    const grok = (await agentGrok(db, root, "DuckDB", 1)) as any;
     expect(grok.sessions[0].shape.turns).toBe(3);
     expect(grok.sessions[0].turns).toBeUndefined();
     expect(grok.sessions[0].conversation).toBeUndefined();
@@ -148,13 +155,13 @@ test("agentAskLexical filters roles and caps grouped sessions before derived loa
       contentHash: (index + 1).toString(16).repeat(64),
       turns: contentRoleMatch
         ? [
-          { role: "user", content: `bounded probe content match ${index}` },
-          { role: "assistant", content: "Completed." },
-        ]
+            { role: "user", content: `bounded probe content match ${index}` },
+            { role: "assistant", content: "Completed." },
+          ]
         : [
-          { role: "user", content: "Routine maintenance." },
-          { role: "tool", content: `bounded probe tool-only match ${index}` },
-        ],
+            { role: "user", content: "Routine maintenance." },
+            { role: "tool", content: `bounded probe tool-only match ${index}` },
+          ],
     };
   });
   const byHash = new Map(
@@ -176,10 +183,7 @@ test("agentAskLexical filters roles and caps grouped sessions before derived loa
       );
     }),
   );
-  await writeFile(
-    join(root, "corpus", "manifest.json"),
-    JSON.stringify({ version: 1, sources }),
-  );
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
   for (const conversation of conversations) indexConversation(db, conversation, 1, 1);
   reconcileActiveSources(db, sources);
   await deriveCorpus(root);

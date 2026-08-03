@@ -1,7 +1,21 @@
 import { createHash } from "node:crypto";
 import { chmod, link, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { validateAdjudicationAnswers, type AdjudicationPacket } from "../refinery-adjudication";
+import {
+  validateAdjudicationAnswers,
+  type AdjudicationPacket,
+  type AdjudicationPrivateManifest,
+  type HumanAdjudicationAnswers,
+} from "../refinery-adjudication";
+import { assembleInsightCommand } from "../insight-assembler";
+import {
+  applyInsightCommand,
+  readCurrentInsightLedger,
+  readInsightPublicationContext,
+  type InsightCommandInput,
+} from "../insight-ledger";
+import { loadRefinery } from "../refinery";
+import type { InsightTransitionCommand } from "../insights";
 
 const PACKET_GLOB = "*/public/packet.json";
 const MAX_REVIEWER_ID = 80;
@@ -85,6 +99,33 @@ export interface MemoryLabFinalizeInput {
   reviewerId: string;
 }
 
+export interface MemoryLabInsightTransitionInput {
+  packetHash: string;
+  proposalSetHash: string;
+  candidateId: string;
+  reviewerId: string;
+  projectIdentity: string;
+  correctedProposition?: string;
+  correctedProcedure?: string | null;
+  priorLedgerHash?: string | null;
+  transitionCommand?: InsightTransitionCommand;
+  recordedAt?: string;
+}
+
+export interface MemoryLabInsightPreview {
+  command: InsightCommandInput;
+  changedStartupContext: boolean;
+  currentStatus:
+    | "candidate"
+    | "active"
+    | "rejected"
+    | "disputed"
+    | "superseded"
+    | "expired"
+    | "retired"
+    | "none";
+}
+
 export type MemoryLabResult<T> =
   | { ok: true; value: T }
   | { ok: false; status: number; error: string };
@@ -94,6 +135,8 @@ interface PacketFiles {
   packet: AdjudicationPacket;
   proposalSet: MemoryProposalSet;
   proposalSetHash: string;
+  adjudicationAnswers?: HumanAdjudicationAnswers;
+  adjudicationAnswersHash?: string;
 }
 
 type JsonFileResult =
@@ -457,15 +500,22 @@ export class MemoryLab {
     const inspected = await Promise.all(
       candidates.map(async (candidate) => {
         const directory = resolve(candidate.path, "..");
-        const [packetResult, templateResult, proposalResult] = await Promise.all([
+        const [packetResult, templateResult, proposalResult, answerResult] = await Promise.all([
           jsonFile(candidate.path),
           jsonFile(join(directory, "answers.template.json")),
           hashedJsonFile(join(directory, "proposals.json")),
+          hashedJsonFile(join(directory, "answers.json")),
         ]);
-        return { directory, packetResult, templateResult, proposalResult };
+        return { directory, packetResult, templateResult, proposalResult, answerResult };
       }),
     );
-    for (const { directory, packetResult, templateResult, proposalResult } of inspected) {
+    for (const {
+      directory,
+      packetResult,
+      templateResult,
+      proposalResult,
+      answerResult,
+    } of inspected) {
       if (
         packetResult.status !== "found" ||
         templateResult.status !== "found" ||
@@ -477,6 +527,10 @@ export class MemoryLab {
       if (!answerTemplate(packet, templateResult.value)) continue;
       const proposals = proposalSet(packet, proposalResult.value);
       if (!proposals) continue;
+      const answers =
+        answerResult.status === "found"
+          ? validateAdjudicationAnswers(packet, answerResult.value, true)
+          : undefined;
       return {
         ok: true,
         value: {
@@ -484,6 +538,9 @@ export class MemoryLab {
           packet,
           proposalSet: proposals,
           proposalSetHash: proposalResult.hash,
+          ...(answers?.ok && answerResult.status === "found"
+            ? { adjudicationAnswers: answers.answers, adjudicationAnswersHash: answerResult.hash }
+            : {}),
         },
       };
     }
@@ -637,5 +694,164 @@ export class MemoryLab {
       return { ok: false, status: 500, error: "memory lab reviews could not be finalized" };
     }
     return { ok: true, value: view(files.value, validated, true) };
+  }
+  async previewInsightTransition(
+    value: unknown,
+  ): Promise<MemoryLabResult<MemoryLabInsightPreview>> {
+    if (!objectRow(value))
+      return { ok: false, status: 400, error: "invalid insight transition preview request" };
+    const input = value as Partial<MemoryLabInsightTransitionInput>;
+    if (
+      typeof input.packetHash !== "string" ||
+      typeof input.proposalSetHash !== "string" ||
+      typeof input.candidateId !== "string" ||
+      typeof input.reviewerId !== "string" ||
+      typeof input.projectIdentity !== "string"
+    )
+      return {
+        ok: false,
+        status: 400,
+        error:
+          "insight transition preview requires packet, proposal, candidate, reviewer, and project identity",
+      };
+    const files = await this.packetFiles();
+    if (!files.ok) return files;
+    if (input.packetHash !== files.value.packet.packetHash)
+      return {
+        ok: false,
+        status: 409,
+        error: "memory lab packet changed; reload before previewing insight transition",
+      };
+    if (input.proposalSetHash !== files.value.proposalSetHash)
+      return {
+        ok: false,
+        status: 409,
+        error: "memory lab proposals changed; reload before previewing insight transition",
+      };
+    const current = await this.current(files.value);
+    if (!current.ok) return current;
+    if (!current.value.finalized)
+      return {
+        ok: false,
+        status: 409,
+        error: "finalize the operator review before previewing an insight transition",
+      };
+    const reviewBytes = await hashedJsonFile(join(files.value.directory, "operator-reviews.json"));
+    if (reviewBytes.status !== "found")
+      return { ok: false, status: 409, error: "finalized operator review bytes are unavailable" };
+    const manifestResult = await jsonFile(
+      join(
+        resolve(this.root),
+        "derived",
+        "adjudication",
+        "refinery-private",
+        input.packetHash,
+        "manifest.json",
+      ),
+    );
+    if (manifestResult.status !== "found" || !objectRow(manifestResult.value))
+      return { ok: false, status: 409, error: "private blinded mapping is unavailable" };
+    let refinery;
+    try {
+      refinery = await loadRefinery(this.root);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 409,
+        error: `refinery artifact unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    const candidate = refinery.candidates.find((row) => row.id === input.candidateId);
+    if (!candidate) return { ok: false, status: 404, error: "refinery candidate not found" };
+    const currentLedger = await readCurrentInsightLedger(this.root);
+    const currentStatus = currentLedger.ok
+      ? (currentLedger.value.projection.current[candidate.id]?.status ?? "none")
+      : "none";
+    if (!files.value.adjudicationAnswers || !files.value.adjudicationAnswersHash)
+      return { ok: false, status: 409, error: "finalized adjudication answers are unavailable" };
+    const publicationContext = await readInsightPublicationContext(this.root);
+    if (!publicationContext)
+      return { ok: false, status: 409, error: "active source projection is unavailable" };
+    if (!publicationContext.ok)
+      return { ok: false, status: 409, error: publicationContext.error.message };
+    const assembled = assembleInsightCommand({
+      projectIdentity: input.projectIdentity,
+      candidate,
+      refinery,
+      packet: files.value.packet,
+      privateManifest: manifestResult.value as unknown as AdjudicationPrivateManifest,
+      proposalSet: files.value.proposalSet,
+      operatorReviews: current.value.reviews,
+      adjudicationAnswers: files.value.adjudicationAnswers,
+      proposalSetHash: files.value.proposalSetHash,
+      operatorReviewHash: reviewBytes.hash,
+      adjudicationAnswersHash: files.value.adjudicationAnswersHash,
+      actor: { id: input.reviewerId, kind: "operator" },
+      correctedProposition: input.correctedProposition,
+      correctedProcedure: input.correctedProcedure,
+      transitionCommand:
+        input.transitionCommand ??
+        (input.correctedProposition !== undefined || input.correctedProcedure !== undefined
+          ? "accept-with-correction"
+          : currentStatus === "disputed"
+            ? "resolve-dispute"
+            : "accept"),
+      priorLedgerHash: currentLedger.ok ? currentLedger.value.ledger.ledgerHash : null,
+      priorRevisionId: currentLedger.ok
+        ? (currentLedger.value.projection.current[candidate.id]?.revisionId ?? null)
+        : null,
+      inputProjectionHash: publicationContext.value.inputProjectionHash,
+      sourceAuthorityHash: publicationContext.value.sourceAuthorityHash,
+      activeEvidence: publicationContext.value.activeEvidence,
+      recordedAt: input.recordedAt,
+    });
+    if (!assembled.ok)
+      return {
+        ok: false,
+        status: 409,
+        error: `${assembled.error.code}: ${assembled.error.message}`,
+      };
+    if (
+      assembled.value.revision.supportEvidence.some(
+        (uri) => !publicationContext.value.activeEvidence.has(uri),
+      )
+    )
+      return {
+        ok: false,
+        status: 409,
+        error: "selected evidence is not active in the canonical source projection",
+      };
+    return {
+      ok: true,
+      value: {
+        command: assembled.value,
+        changedStartupContext: assembled.value.revision.status === "active",
+        currentStatus,
+      },
+    };
+  }
+
+  applyInsightTransition(
+    value: unknown,
+  ): Promise<MemoryLabResult<{ preview: MemoryLabInsightPreview; applied: unknown }>> {
+    const operation: Promise<
+      MemoryLabResult<{ preview: MemoryLabInsightPreview; applied: unknown }>
+    > = this.writeQueue.then(async () => {
+      const preview = await this.previewInsightTransition(value);
+      if (!preview.ok) return { ok: false as const, status: preview.status, error: preview.error };
+      const applied = await applyInsightCommand(this.root, preview.value.command);
+      if (!applied.ok)
+        return {
+          ok: false as const,
+          status: 409,
+          error: `${applied.error.code}: ${applied.error.message}`,
+        };
+      return { ok: true as const, value: { preview: preview.value, applied: applied.value } };
+    });
+    this.writeQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 }

@@ -42,9 +42,7 @@ export function serializeCurrentProjection(
   return hashes.map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n";
 }
 
-function currentConversationHashes(
-  sources: Record<string, { contentHash: string }>,
-): string[] {
+function currentConversationHashes(sources: Record<string, { contentHash: string }>): string[] {
   return [...new Set(Object.values(sources).map((entry) => entry.contentHash))].sort();
 }
 
@@ -62,40 +60,54 @@ export async function assertDerivedProjection(root: string): Promise<DerivedProj
     const corpus = await loadCorpusManifest(root);
     const expectedText = serializeCurrentProjection(corpus.sources);
     const expectedHash = sha256(expectedText);
-    const manifest = JSON.parse(
-      await readFile(join(root, "derived", "manifest.json"), "utf8"),
-    );
+    const manifest = JSON.parse(await readFile(join(root, "derived", "manifest.json"), "utf8"));
     const projection = manifest.currentProjection;
     const actualText = await readFile(derivedPath(root, projection?.path), "utf8");
     if (
-      manifest?.version !== 1
-      || typeof manifest.recipeHash !== "string"
-      || projection.path !== "current-hashes.jsonl"
-      || projection.contentHash !== expectedHash
-      || sha256(actualText) !== expectedHash
-      || actualText !== expectedText
+      manifest?.version !== 1 ||
+      typeof manifest.recipeHash !== "string" ||
+      projection.path !== "current-hashes.jsonl" ||
+      projection.contentHash !== expectedHash ||
+      sha256(actualText) !== expectedHash ||
+      actualText !== expectedText
     ) {
       throw new DerivedProjectionDriftError();
     }
     const conversationHashes = currentConversationHashes(corpus.sources);
-    const structures = conversationHashes.map((conversationHash) => {
-      const structure = manifest.conversations?.[conversationHash]?.derivedArtifacts?.structure;
-      if (
-        structure?.path !== `objects/${conversationHash.slice(0, 2)}/${conversationHash}.json`
-        || !/^[a-f0-9]{64}$/.test(structure?.contentHash ?? "")
-      ) {
-        throw new DerivedProjectionDriftError(
-          `derived manifest has no valid structure artifact for ${conversationHash}`,
-        );
-      }
-      return [conversationHash, structure.contentHash];
-    });
+    const structures = await Promise.all(
+      conversationHashes.map(async (conversationHash) => {
+        const structure = manifest.conversations?.[conversationHash]?.derivedArtifacts?.structure;
+        if (
+          structure?.path !== `objects/${conversationHash.slice(0, 2)}/${conversationHash}.json` ||
+          !/^[a-f0-9]{64}$/.test(structure?.contentHash ?? "")
+        ) {
+          throw new DerivedProjectionDriftError(
+            `derived manifest has no valid structure artifact for ${conversationHash}`,
+          );
+        }
+        let structureText: string;
+        try {
+          structureText = await readFile(derivedPath(root, structure.path), "utf8");
+        } catch {
+          throw new DerivedProjectionDriftError(
+            "derived object coverage does not match the active projection",
+          );
+        }
+        if (sha256(structureText) !== structure.contentHash)
+          throw new DerivedProjectionDriftError(
+            "derived object coverage does not match the active projection",
+          );
+        return [conversationHash, structure.contentHash];
+      }),
+    );
     return {
       contentHash: expectedHash,
-      structureProjectionHash: sha256(JSON.stringify({
-        recipeHash: manifest.recipeHash,
-        structures,
-      })),
+      structureProjectionHash: sha256(
+        JSON.stringify({
+          recipeHash: manifest.recipeHash,
+          structures,
+        }),
+      ),
       conversations: conversationHashes.length,
       conversationHashes,
     };
@@ -112,9 +124,7 @@ export async function loadCurrentDerivedArtifact<T = any>(
 ): Promise<CurrentDerivedArtifact<T> | null> {
   let manifest: any;
   try {
-    manifest = JSON.parse(
-      await readFile(join(root, "derived", manifestName), "utf8"),
-    );
+    manifest = JSON.parse(await readFile(join(root, "derived", manifestName), "utf8"));
   } catch (error: any) {
     if (options.optional && error?.code === "ENOENT") return null;
     throw new DerivedProjectionDriftError(`${manifestName}: current artifact is unavailable`, {
@@ -127,7 +137,9 @@ export async function loadCurrentDerivedArtifact<T = any>(
     const current = manifest.current;
     const artifactText = await readFile(derivedPath(root, current.artifactPath), "utf8");
     if (!/^[a-f0-9]{64}$/.test(current.contentHash) || sha256(artifactText) !== current.contentHash)
-      throw new DerivedProjectionDriftError(`${manifestName}: current artifact failed integrity validation`);
+      throw new DerivedProjectionDriftError(
+        `${manifestName}: current artifact failed integrity validation`,
+      );
     return {
       artifact: JSON.parse(artifactText) as T,
       contentHash: current.contentHash,
@@ -150,13 +162,14 @@ export async function loadProjectionBoundArtifact<T = any>(
     inputProjectionHash?: string;
   } = {},
 ): Promise<CurrentDerivedArtifact<T> | null> {
-  const projection = options.projection ?? await assertDerivedProjection(root);
+  const projection = options.projection ?? (await assertDerivedProjection(root));
   const inputProjectionHash = options.inputProjectionHash ?? projection.contentHash;
   const current = await loadCurrentDerivedArtifact<T>(root, manifestName, options);
-  if (current && (
-    current.inputProjectionHash !== inputProjectionHash
-    || artifactInputProjectionHash(current.artifact) !== inputProjectionHash
-  )) {
+  if (
+    current &&
+    (current.inputProjectionHash !== inputProjectionHash ||
+      artifactInputProjectionHash(current.artifact) !== inputProjectionHash)
+  ) {
     throw new DerivedProjectionDriftError(
       `${manifestName}: current artifact does not match the active derived projection`,
     );

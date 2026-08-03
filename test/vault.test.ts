@@ -125,7 +125,9 @@ test("conversationTitle falls back to the first user line when untitled", () => 
 
 test("noteFilename is date-prefixed, slugified, hash-suffixed, and never leaks the raw secret", () => {
   const filename = noteFilename(conversation);
-  expect(filename).toBe(`20260718-fix-the-restic-backup-with-api-key-redacted-secret-${hash.slice(0, 8)}.md`);
+  expect(filename).toBe(
+    `20260718-fix-the-restic-backup-with-api-key-redacted-secret-${hash.slice(0, 8)}.md`,
+  );
   expect(filename).not.toContain("supersecretvalue");
 });
 
@@ -156,12 +158,14 @@ test("extractTopics caches by conversation content hash — a second run makes n
   let calls = 0;
   const mockFetch = (async (_url: any, _init: any) => {
     calls++;
-    return new Response(
-      JSON.stringify({ response: '["restic-check-weekly", "nix-flakes"]' }),
-      { status: 200 },
-    );
+    return new Response(JSON.stringify({ response: '["restic-check-weekly", "nix-flakes"]' }), {
+      status: 200,
+    });
   }) as typeof fetch;
-  const first = await extractTopics(root, conversation, { fetchImpl: mockFetch, model: "test-model" });
+  const first = await extractTopics(root, conversation, {
+    fetchImpl: mockFetch,
+    model: "test-model",
+  });
   expect(first.ok).toBe(true);
   expect(first.cached).toBe(false);
   expect(first.topics).toEqual(["restic-check-weekly", "nix-flakes"]);
@@ -175,7 +179,10 @@ test("extractTopics caches by conversation content hash — a second run makes n
   );
   expect(cached).toMatchObject({ model: "test-model", recipe: VAULT_TOPIC_RECIPE });
 
-  const second = await extractTopics(root, conversation, { fetchImpl: mockFetch, model: "test-model" });
+  const second = await extractTopics(root, conversation, {
+    fetchImpl: mockFetch,
+    model: "test-model",
+  });
   expect(second.cached).toBe(true);
   expect(second.topics).toEqual(["restic-check-weekly", "nix-flakes"]);
   expect(calls).toBe(1);
@@ -189,15 +196,22 @@ test("extractTopics fails soft (no throw) on a non-JSON model response", async (
   const root = await mkdtemp(join(tmpdir(), "chatlog-vault-badresponse-"));
   const mockFetch = (async (_url: any, _init: any) =>
     new Response(JSON.stringify({ response: "I refuse." }), { status: 200 })) as typeof fetch;
-  const result = await extractTopics(root, conversation, { fetchImpl: mockFetch, model: "test-model" });
+  const result = await extractTopics(root, conversation, {
+    fetchImpl: mockFetch,
+    model: "test-model",
+  });
   expect(result.ok).toBe(false);
   expect(result.reason).toBeTruthy();
 });
 
 test("extractTopics fails soft on an ollama HTTP error", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-vault-httperr-"));
-  const mockFetch = (async (_url: any, _init: any) => new Response("model not found", { status: 404 })) as typeof fetch;
-  const result = await extractTopics(root, conversation, { fetchImpl: mockFetch, model: "test-model" });
+  const mockFetch = (async (_url: any, _init: any) =>
+    new Response("model not found", { status: 404 })) as typeof fetch;
+  const result = await extractTopics(root, conversation, {
+    fetchImpl: mockFetch,
+    model: "test-model",
+  });
   expect(result.ok).toBe(false);
   expect(result.reason).toContain("404");
 });

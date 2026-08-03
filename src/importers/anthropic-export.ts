@@ -1,19 +1,38 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
-import { indexConversation, openAnalysis } from "../analysis";
+import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
+import { projectConversation } from "../conversation-projection";
 import { deriveCorpus, type DeriveSummary } from "../derive";
 import { normalizeConversationDomain } from "../domain";
-import { canonicalizeConversation } from "../ingest";
+import { persistEventBatch } from "../event-store";
 import {
-  manifestSourcesHash,
-  writeImportReceipt,
-  type ImportReceipt,
-} from "../import-receipts";
-import { withIngestLock } from "../lock";
+  capture,
+  makeEvent,
+  makeObservedBatchOrigin,
+  makeObservedSource,
+  makeSemanticLoss,
+  redactedHash,
+  type AgentEventEnvelope,
+  type EventBatch,
+} from "../events";
 import { redact } from "../redact";
+import { manifestSourcesHash, writeImportReceipt, type ImportReceipt } from "../import-receipts";
+import { withIngestLock } from "../lock";
 import { refineCorpus, type RefinerySummary } from "../refinery";
 import { reconcileSourceAuthority } from "../source-authority";
-import type { Conversation, ConversationDomain, ToolCall, Turn } from "../types";
+import {
+  buildSourceReceipt,
+  persistSourceReceipt,
+  persistUnknownShapeNominations,
+} from "../source-receipts";
+import type { Conversation, ConversationDomain } from "../types";
+export class AnthropicExportError extends Error {
+  readonly code = "anthropic-export-invalid";
+}
+
+function failClosed(message: string, cause?: unknown): never {
+  throw new AnthropicExportError(message, cause === undefined ? undefined : { cause });
+}
 
 interface ExportContentBlock {
   type?: string;
@@ -25,6 +44,7 @@ interface ExportContentBlock {
   content?: unknown;
   display_content?: unknown;
   is_error?: boolean;
+  approval?: string;
 }
 
 interface ExportMessage {
@@ -43,13 +63,26 @@ interface ExportConversation {
   summary?: string;
   created_at?: string;
   updated_at?: string;
+  branch_id?: string;
   chat_messages?: ExportMessage[];
 }
 
 interface CorpusManifest {
   version: 1;
   redactionRecipe?: string;
-  sources: Record<string, { size: number; mtimeMs: number; contentHash: string }>;
+  projectIdentityRecipe?: string;
+  eventRecipe?: string;
+  sources: Record<
+    string,
+    {
+      size: number;
+      mtimeMs: number;
+      contentHash: string;
+      eventBatchHash?: string;
+      conversationProjectionHash?: string;
+      receiptHash?: string;
+    }
+  >;
 }
 
 export interface AnthropicImportOptions {
@@ -114,7 +147,7 @@ async function readExportJson(path: string, member: string): Promise<string> {
   const info = await stat(source);
   if (info.isDirectory()) return readFile(join(source, member), "utf8");
   if (extname(source).toLowerCase() !== ".zip")
-    throw new Error("Anthropic export must be a directory or .zip archive");
+    failClosed("Anthropic export must be a directory or .zip archive");
 
   const child = Bun.spawn(["unzip", "-p", source, member], {
     stdout: "pipe",
@@ -126,7 +159,7 @@ async function readExportJson(path: string, member: string): Promise<string> {
     child.exited,
   ]);
   if (exitCode !== 0)
-    throw new Error(`cannot read ${member} from Anthropic export: ${redact(error.trim())}`);
+    failClosed(`cannot read ${member} from Anthropic export: ${redact(error.trim())}`);
   return text;
 }
 
@@ -161,16 +194,155 @@ function attachmentSummary(message: ExportMessage): string[] {
   return parts;
 }
 
-export function adaptAnthropicConversation(
+export function adaptAnthropicEventBatch(
   sourcePath: string,
   item: ExportConversation,
   domain: ConversationDomain = "general",
-): Omit<Conversation, "contentHash"> {
-  if (!item.uuid) throw new Error(`${sourcePath}: conversation without uuid`);
-  const turns: Turn[] = [];
-  const toolCalls = new Map<string, ToolCall>();
+): EventBatch {
+  if (!item.uuid) failClosed(`${sourcePath}: conversation without uuid`);
+  const resolvedSource = `${resolve(sourcePath)}#conversations/${item.uuid}`;
+  const sessionId = item.uuid;
+  const records: unknown[] = [item, ...(item.chat_messages ?? [])];
+  const sourceBase = {
+    provider: "anthropic",
+    harness: "claude-web",
+    sourceKind: "anthropic-data-export",
+    nativeSessionId: sessionId,
+    sourcePath: resolvedSource,
+    adapterRecipe: "chatlog-anthropic-export-events-v2",
+    capturePolicyVersion: "chatlog-redacted-capture-v1",
+  };
+  const events: AgentEventEnvelope[] = [];
+  const semanticLoss: EventBatch["semanticLoss"][number][] = [];
+  const toolEvents = new Map<string, AgentEventEnvelope>();
 
-  for (const message of item.chat_messages ?? []) {
+  const loss = (
+    code:
+      | "capture-policy-omission"
+      | "provider-field-unsupported"
+      | "encrypted-content-unavailable"
+      | "attachment-body-excluded"
+      | "reasoning-excluded-from-projection"
+      | "unknown-well-formed-item"
+      | "partial-live-tail"
+      | "relation-target-missing",
+    reason: string,
+    sourceItemKind: string,
+    sourceLocator: string,
+    recordIndex: number,
+    recoverable: boolean,
+  ): void => {
+    semanticLoss.push(
+      makeSemanticLoss({
+        code,
+        reason,
+        provider: sourceBase.provider,
+        harness: sourceBase.harness,
+        sourceItemKind,
+        sourceLocator,
+        count: 1,
+        adapterRecipe: sourceBase.adapterRecipe,
+        capturePolicyVersion: sourceBase.capturePolicyVersion,
+        recoverable,
+        sourcePath: resolvedSource,
+        recordPosition: { record: recordIndex },
+        nativeItemId: sourceLocator,
+      }),
+    );
+  };
+  let previous: AgentEventEnvelope | undefined;
+  const add = (
+    kind: AgentEventEnvelope["kind"],
+    record: unknown,
+    recordIndex: number,
+    payload: Record<string, unknown>,
+    options: {
+      nativeItemId: string;
+      occurredAt?: string;
+      relations?: Record<string, unknown>;
+      actor?: AgentEventEnvelope["actor"];
+      capture?: ReturnType<typeof capture>;
+      scope?: AgentEventEnvelope["scope"];
+    },
+  ): AgentEventEnvelope => {
+    const source = makeObservedSource(
+      {
+        ...sourceBase,
+        nativeItemId: options.nativeItemId,
+        recordPosition: { record: recordIndex },
+      },
+      record,
+    );
+    const event = makeEvent({
+      kind,
+      sequence: events.length,
+      ...(options.occurredAt ? { occurredAt: options.occurredAt } : {}),
+      actor: options.actor ?? { kind: "provider", name: "claude-web" },
+      scope: { sessionId, project: "Claude Web", ...options.scope },
+      origin: { kind: "observed", source },
+      relations: options.relations ?? {},
+      payload,
+      capture: options.capture ?? capture("normalized"),
+    });
+    events.push(event);
+    previous = event;
+    return event;
+  };
+
+  const startedAt = item.created_at ?? item.updated_at ?? new Date(0).toISOString();
+  add(
+    "session.started",
+    item,
+    0,
+    {
+      id: sessionId,
+      sessionId,
+      provider: "anthropic",
+      harness: "claude-web",
+      title: redact(item.name || item.summary || "Untitled Claude conversation"),
+      domain: normalizeConversationDomain(domain),
+      sourceKind: "anthropic-data-export",
+      project: "Claude Web",
+      cwd: "",
+      model: "(export does not identify model)",
+      resumeId: sessionId,
+    },
+    { nativeItemId: `session:${sessionId}`, occurredAt: startedAt },
+  );
+  if (item.branch_id) {
+    const branchCreated = add(
+      "branch.created",
+      item,
+      0,
+      { branchId: item.branch_id, summary: "export branch" },
+      {
+        nativeItemId: `${item.branch_id}:created`,
+        ...(item.updated_at ? { occurredAt: item.updated_at } : {}),
+        relations: { parent: previous!.eventId },
+        scope: { branchId: item.branch_id },
+        actor: { kind: "provider", name: "claude-web" },
+      },
+    );
+    add(
+      "branch.selected",
+      item,
+      0,
+      { branchId: item.branch_id },
+      {
+        nativeItemId: `${item.branch_id}:selected`,
+        ...(item.updated_at ? { occurredAt: item.updated_at } : {}),
+        relations: { causedBy: [branchCreated.eventId], parent: branchCreated.eventId },
+        scope: { branchId: item.branch_id },
+        actor: { kind: "provider", name: "claude-web" },
+      },
+    );
+  }
+
+  for (const [messageIndex, message] of (item.chat_messages ?? []).entries()) {
+    const recordIndex = messageIndex + 1;
+    const eventCountBefore = events.length;
+    const lossCountBefore = semanticLoss.length;
+    const messageId = message.uuid ?? `${sessionId}:message:${messageIndex}`;
     const role =
       message.sender === "human"
         ? "user"
@@ -181,54 +353,175 @@ export function adaptAnthropicConversation(
     if (!text.length && typeof message.text === "string" && message.text.trim())
       text.push(redact(message.text));
     text.push(...attachmentSummary(message));
-
-    const calls: ToolCall[] = [];
-    for (const block of message.content ?? []) {
-      if (block.type === "tool_use") {
-        const call: ToolCall = {
-          id: block.id,
-          name: redact(block.name ?? "tool"),
-          arguments: safeJson(block.input),
-        };
-        calls.push(call);
-        if (block.id) toolCalls.set(block.id, call);
-      } else if (block.type === "tool_result" && block.tool_use_id) {
-        const call = toolCalls.get(block.tool_use_id);
-        if (call) call.output = resultText(block);
+    const blocks = message.content ?? [];
+    const toolUseBlocks = blocks.filter((block) => block.type === "tool_use");
+    for (const [blockIndex, block] of blocks.entries()) {
+      if (
+        !block.type ||
+        ["text", "thinking", "tool_use", "tool_result", "image", "document"].includes(block.type)
+      ) {
+        if (block.type === "image" || block.type === "document")
+          loss(
+            "attachment-body-excluded",
+            `Anthropic export ${block.type} attachment body was not captured`,
+            block.type,
+            `${messageId}:block:${blockIndex}`,
+            recordIndex,
+            true,
+          );
+        continue;
       }
+      loss(
+        "unknown-well-formed-item",
+        `Anthropic export content block type ${block.type} was omitted by the adapter`,
+        block.type,
+        `${messageId}:block:${blockIndex}`,
+        recordIndex,
+        true,
+      );
     }
-
-    if (text.length || calls.length) {
-      turns.push({
-        role,
-        content: text.join("\n").trim(),
-        ...(message.created_at ? { at: message.created_at } : {}),
-        ...(calls.length ? { toolCalls: calls } : {}),
-      });
+    if (blocks.some((block) => block.type === "thinking"))
+      loss(
+        "reasoning-excluded-from-projection",
+        "Anthropic Web export thinking is intentionally excluded by capture policy.",
+        "thinking",
+        messageId,
+        recordIndex,
+        true,
+      );
+    let messageEvent: AgentEventEnvelope | undefined;
+    if (text.length || toolUseBlocks.length) {
+      messageEvent = add(
+        "message.created",
+        message,
+        recordIndex,
+        { role, content: text.join("\n").trim(), messageId },
+        {
+          nativeItemId: messageId,
+          ...(message.created_at ? { occurredAt: message.created_at } : {}),
+          ...(previous ? { relations: { parent: previous.eventId } } : {}),
+          actor: {
+            kind: role === "user" ? "human" : role === "assistant" ? "assistant" : "unknown",
+          },
+        },
+      );
     }
+    for (const [blockIndex, block] of blocks.entries()) {
+      if (block.type === "tool_use") {
+        const callId = block.id ?? `${messageId}:tool:${blockIndex}`;
+        const callEvent = add(
+          "tool.call.proposed",
+          message,
+          recordIndex,
+          {
+            id: callId,
+            callId,
+            name: redact(block.name ?? "tool"),
+            arguments: safeJson(block.input),
+          },
+          {
+            nativeItemId: `${callId}:proposal`,
+            ...(message.created_at ? { occurredAt: message.created_at } : {}),
+            relations: {
+              causedBy: [messageEvent?.eventId ?? previous!.eventId],
+              parent: messageEvent?.eventId ?? previous!.eventId,
+            },
+            actor: { kind: "assistant", name: redact(block.name ?? "tool") },
+          },
+        );
+        toolEvents.set(callId, callEvent);
+        const approval = block.approval?.toLowerCase();
+        if (approval === "approved" || approval === "denied")
+          add(
+            approval === "approved" ? "tool.call.approved" : "tool.call.denied",
+            message,
+            recordIndex,
+            { callId, decision: approval },
+            {
+              nativeItemId: `${callId}:approval`,
+              ...(message.created_at ? { occurredAt: message.created_at } : {}),
+              relations: { causedBy: [callEvent.eventId], parent: callEvent.eventId },
+              actor: { kind: "human" },
+            },
+          );
+      }
+      if (block.type === "tool_result" && block.tool_use_id) {
+        const callEvent = toolEvents.get(block.tool_use_id);
+        if (!callEvent)
+          loss(
+            "relation-target-missing",
+            "Anthropic tool result did not identify a previously observed tool call",
+            "tool_result",
+            block.tool_use_id,
+            recordIndex,
+            true,
+          );
+        add(
+          "tool.result.observed",
+          message,
+          recordIndex,
+          {
+            callId: block.tool_use_id,
+            output: resultText(block),
+            ...(block.is_error ? { isError: true } : {}),
+          },
+          {
+            nativeItemId: `${messageId}:result:${blockIndex}`,
+            ...(message.created_at ? { occurredAt: message.created_at } : {}),
+            relations: callEvent
+              ? { causedBy: [callEvent.eventId], parent: callEvent.eventId }
+              : { parent: previous?.eventId ?? events[0]!.eventId },
+            actor: { kind: "tool", name: "tool_result" },
+          },
+        );
+      }
+      if (block.type === "tool_result" && !block.tool_use_id)
+        loss(
+          "relation-target-missing",
+          "Anthropic tool result did not include a tool-use identifier",
+          "tool_result",
+          `${messageId}:result:${blockIndex}`,
+          recordIndex,
+          true,
+        );
+    }
+    if (events.length === eventCountBefore && semanticLoss.length === lossCountBefore)
+      loss(
+        "capture-policy-omission",
+        "Anthropic export message contained no capturable content",
+        "message",
+        messageId,
+        recordIndex,
+        true,
+      );
   }
-
-  const timestamps = turns
-    .map((turn) => turn.at)
-    .filter((value): value is string => Boolean(value))
-    .toSorted();
-  const fallback = item.created_at ?? item.updated_at ?? new Date(0).toISOString();
+  add(
+    "session.ended",
+    item,
+    0,
+    { id: sessionId },
+    {
+      nativeItemId: `session:${sessionId}:ended`,
+      ...(item.updated_at ? { occurredAt: item.updated_at } : {}),
+      ...(previous ? { relations: { parent: previous.eventId } } : {}),
+    },
+  );
   return {
-    id: item.uuid,
-    title: redact(item.name || item.summary || "Untitled Claude conversation"),
-    provider: "anthropic",
-    harness: "claude-web",
-    domain: normalizeConversationDomain(domain),
-    sourceKind: "anthropic-data-export",
-    project: "Claude Web",
-    cwd: "",
-    model: "(export does not identify model)",
-    startedAt: timestamps[0] ?? fallback,
-    endedAt: timestamps.at(-1) ?? item.updated_at ?? fallback,
-    turns,
-    resumeId: item.uuid,
-    sourcePath: `${resolve(sourcePath)}#conversations/${item.uuid}`,
+    schemaVersion: 1,
+    origin: makeObservedBatchOrigin(sourceBase, redactedHash(records)),
+    events,
+    semanticLoss,
+    partialTail: false,
+    sourceItemCount: records.length,
   };
+}
+
+export function adaptAnthropicConversation(
+  sourcePath: string,
+  item: ExportConversation,
+  domain: ConversationDomain = "general",
+): Conversation {
+  return projectConversation(adaptAnthropicEventBatch(sourcePath, item, domain));
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {
@@ -242,11 +535,11 @@ async function atomicWrite(path: string, text: string): Promise<void> {
 async function loadManifest(path: string): Promise<CorpusManifest> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as CorpusManifest;
-    if (parsed.version !== 1 || !parsed.sources) throw new Error("unsupported corpus manifest");
+    if (parsed.version !== 1 || !parsed.sources) failClosed("unsupported corpus manifest");
     return parsed;
   } catch (error: any) {
     if (error?.code === "ENOENT") return { version: 1, sources: {} };
-    throw error;
+    failClosed(error instanceof Error ? error.message : String(error), error);
   }
 }
 
@@ -261,7 +554,7 @@ export async function previewAnthropicExport(
   const exportText = await readExportJson(resolved, "conversations.json");
   const conversations = JSON.parse(exportText) as ExportConversation[];
   if (!Array.isArray(conversations))
-    throw new Error("Anthropic conversations.json must contain an array");
+    failClosed("Anthropic conversations.json must contain an array");
 
   const manifest = await loadManifest(join(root, "corpus", "manifest.json"));
   const proposed: Array<{ sourcePath: string; contentHash: string }> = [];
@@ -284,7 +577,7 @@ export async function previewAnthropicExport(
   for (const item of conversations) {
     let conversation: Conversation;
     try {
-      conversation = canonicalizeConversation(adaptAnthropicConversation(resolved, item, domain));
+      conversation = adaptAnthropicConversation(resolved, item, domain);
     } catch {
       invalid++;
       continue;
@@ -328,11 +621,8 @@ export async function previewAnthropicExport(
         );
         domainOnly =
           previousDomain !== domain &&
-          JSON.stringify({
-            ...previousConversation,
-            domain,
-            contentHash: conversation.contentHash,
-          }) === JSON.stringify(conversation);
+          adaptAnthropicConversation(resolved, item, previousDomain).contentHash ===
+            previous.contentHash;
       } catch {
         // A missing prior object means preview cannot prove this is a
         // domain-only change, so it remains conservatively "changed".
@@ -415,7 +705,8 @@ export async function importAnthropicExport(
     const exportText = await readExportJson(resolved, "conversations.json");
     const sourceContentHash = sha256(exportText);
     const conversations = JSON.parse(exportText) as ExportConversation[];
-    if (!Array.isArray(conversations)) throw new Error("Anthropic conversations.json must contain an array");
+    if (!Array.isArray(conversations))
+      failClosed("Anthropic conversations.json must contain an array");
 
     const corpusDir = join(root, "corpus");
     const manifestPath = join(corpusDir, "manifest.json");
@@ -443,12 +734,24 @@ export async function importAnthropicExport(
           summary.attachments += message.attachments?.length ?? 0;
           summary.files += message.files?.length ?? 0;
         }
-        const conversation = canonicalizeConversation(
-          adaptAnthropicConversation(resolved, item, domain),
-        );
+        const batch = adaptAnthropicEventBatch(resolved, item, domain);
+        const batchHash = await persistEventBatch(root, batch);
+        const conversation = projectConversation(batch);
+        const sourceReceipt = buildSourceReceipt({
+          batch,
+          batchHash,
+          conversationProjectionHash: conversation.contentHash,
+        });
+        await persistSourceReceipt(root, sourceReceipt);
+        await persistUnknownShapeNominations(root, [batch], sourceReceipt.source.hash);
         summary.turns += conversation.turns.length;
         const previous = manifest.sources[conversation.sourcePath];
-        if (previous?.contentHash === conversation.contentHash) {
+        if (
+          previous?.contentHash === conversation.contentHash &&
+          previous.eventBatchHash === batchHash &&
+          previous.conversationProjectionHash === conversation.contentHash &&
+          previous.receiptHash === sourceReceipt.receiptHash
+        ) {
           summary.skipped++;
           continue;
         }
@@ -463,11 +766,15 @@ export async function importAnthropicExport(
         );
         if (!(await Bun.file(objectPath).exists()))
           await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
+        indexEventBatch(db, batch, batchHash, conversation.contentHash);
         indexConversation(db, conversation, source.mtimeMs, source.size);
         manifest.sources[conversation.sourcePath] = {
           size: source.size,
           mtimeMs: source.mtimeMs,
           contentHash: conversation.contentHash,
+          eventBatchHash: batchHash,
+          conversationProjectionHash: conversation.contentHash,
+          receiptHash: sourceReceipt.receiptHash,
         };
         summary.imported++;
       }
@@ -512,19 +819,15 @@ export async function importAnthropicExport(
         unchanged: summary.skipped,
       },
       deriveEnabled: options.derive !== false,
-      derivationStatus: options.derive === false
-        ? "not-requested"
-        : derivationError
-          ? "failed"
-          : "completed",
+      derivationStatus:
+        options.derive === false ? "not-requested" : derivationError ? "failed" : "completed",
       derived: summary.derived,
       refinery: summary.refinery,
     });
     if (derivationError) {
-      const message = derivationError instanceof Error
-        ? derivationError.message
-        : String(derivationError);
-      throw new Error(
+      const message =
+        derivationError instanceof Error ? derivationError.message : String(derivationError);
+      failClosed(
         `import committed as receipt ${receipt.receiptId}, but derivation failed: ${redact(message)}`,
       );
     }

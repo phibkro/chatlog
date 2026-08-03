@@ -12,6 +12,7 @@
 - **Depends on**: the active-source projection and receipts in `docs/exec-plans/active/0002-source-lifecycle.md`
 - **Category**: direction, migration
 - **Planned at**: commit `8ddee39`, 2026-08-03
+- **Status**: DONE (verified 2026-08-03)
 
 ## Why this matters
 
@@ -123,12 +124,12 @@ Relations must keep `parent`, `branch`, `causedBy`, `correlatesWith`, and `deriv
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Focused event tests | `bun test test/events.test.ts test/conversation-projection.test.ts` | Exit 0 |
-| Adapter regression | `bun test test/anthropic-export.test.ts test/project-identity-ingest.test.ts test/derive.test.ts test/analysis.test.ts` | Exit 0 |
-| Type checks | `bun run typecheck` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose             | Command                                                                                                                 | Expected result |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Focused event tests | `bun test test/events.test.ts test/conversation-projection.test.ts`                                                     | Exit 0          |
+| Adapter regression  | `bun test test/anthropic-export.test.ts test/project-identity-ingest.test.ts test/derive.test.ts test/analysis.test.ts` | Exit 0          |
+| Type checks         | `bun run typecheck`                                                                                                     | Exit 0          |
+| Full gate           | `bun run check`                                                                                                         | Exit 0          |
 
 ## Scope
 
@@ -285,17 +286,17 @@ Add contract tests for accepted transitions and at least one rejection. Include 
 
 ## Done criteria
 
-- [ ] Every current production adapter returns `EventBatch`.
-- [ ] No production adapter or importer constructs a canonical `Conversation` outside `src/conversation-projection.ts`.
-- [ ] `adaptAnthropicConversation` and `importAnthropicExport` use the event-batch and projection path.
-- [ ] Every event has deterministic identity and warranted origin provenance.
-- [ ] Tool proposal, approval, execution, and result are different events.
-- [ ] Reasoning does not enter ordinary message FTS.
-- [ ] `Conversation` is generated from events and passes existing consumer tests.
-- [ ] Active-source checks cover event and conversation projections.
-- [ ] `bun run check` exits 0.
-- [ ] `nix flake check --offline` exits 0.
-- [ ] `plans/README.md` marks Plan 001 `DONE`.
+- [x] Every current production adapter returns `EventBatch`.
+- [x] No production adapter or importer constructs a canonical `Conversation` outside `src/conversation-projection.ts`.
+- [x] `adaptAnthropicConversation` and `importAnthropicExport` use the event-batch and projection path.
+- [x] Every event has deterministic identity and warranted origin provenance.
+- [x] Tool proposal, approval, execution, and result are different events.
+- [x] Reasoning does not enter ordinary message FTS.
+- [x] `Conversation` is generated from events and passes existing consumer tests.
+- [x] Active-source checks cover event and conversation projections.
+- [x] `bun run check` exits 0.
+- [x] `nix flake check --offline` exits 0.
+- [x] `plans/README.md` marks Plan 001 `DONE`.
 
 ## STOP conditions
 

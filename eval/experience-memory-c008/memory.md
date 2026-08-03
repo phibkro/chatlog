@@ -18,4 +18,3 @@ path vs configuration.
 
 Action: Localize the missing layer—disk, Git index, HEAD tree, object store,
 store path, or configuration—before applying a fix.
-

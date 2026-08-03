@@ -20,11 +20,12 @@ export class JsonlParseError extends Data.TaggedError("JsonlParseError")<{
 export const readJsonLines = Effect.fnUntraced(function* <E = never>(
   path: string,
   visit: (record: unknown, line: number) => Effect.Effect<void, E>,
-): Effect.fn.Return<{ partialTail: boolean; lines: number }, JsonlParseError | E> {
+): Effect.fn.Return<{ partialTail: boolean; lines: number; records: number }, JsonlParseError | E> {
   const reader = Bun.file(path).stream().getReader();
   const decoder = new TextDecoder();
   let pending = "";
   let lineNo = 0;
+  let records = 0;
   for (;;) {
     const { done, value } = yield* Effect.promise(() => reader.read());
     if (done) break;
@@ -40,18 +41,20 @@ export const readJsonLines = Effect.fnUntraced(function* <E = never>(
       } catch (error) {
         return yield* Effect.fail(new JsonlParseError({ path, line: lineNo, cause: error }));
       }
+      records++;
       yield* visit(record, lineNo);
     }
   }
   pending += decoder.decode();
-  if (!pending.trim()) return { partialTail: false, lines: lineNo };
+  if (!pending.trim()) return { partialTail: false, lines: lineNo, records };
   lineNo++;
   let record: unknown;
   try {
     record = JSON.parse(pending);
   } catch {
-    return { partialTail: true, lines: lineNo };
+    return { partialTail: true, lines: lineNo, records: records + 1 };
   }
+  records++;
   yield* visit(record, lineNo);
-  return { partialTail: false, lines: lineNo };
+  return { partialTail: false, lines: lineNo, records };
 });

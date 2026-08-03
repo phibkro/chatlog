@@ -257,19 +257,18 @@ export async function queryUndocumented(
       topic,
       frequency: candidate.frequency,
       rederivationCost: candidate.frequency.occurrences * candidate.frequency.sessions,
-      evidence: evidence
-        .slice(0, 3)
-        .map((item) => ({
-          project: item.project,
-          sessionId: item.sessionId,
-          harness: item.harness,
-          pointer: item.pointer,
-        })),
+      evidence: evidence.slice(0, 3).map((item) => ({
+        project: item.project,
+        sessionId: item.sessionId,
+        harness: item.harness,
+        pointer: item.pointer,
+      })),
     };
     if (match) documented.push({ ...row, matchedIn: match.file, matchedOn: match.terms });
     else undocumented.push(row);
   }
-  const byCost = (a: UndocumentedRow, b: UndocumentedRow) => b.rederivationCost - a.rederivationCost;
+  const byCost = (a: UndocumentedRow, b: UndocumentedRow) =>
+    b.rederivationCost - a.rederivationCost;
   return {
     project: normalizedProject,
     docsSearched: docs.map((doc) => doc.path),

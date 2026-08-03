@@ -1,0 +1,10 @@
+{"type":"session_meta","timestamp":"2026-08-01T11:00:00.000Z","payload":{"id":"codex-synthetic","cwd":"/tmp/project","model_provider":"openai"}}
+{"type":"turn_context","timestamp":"2026-08-01T11:00:00.500Z","payload":{"id":"turn-1","cwd":"/tmp/project","model":"codex-test"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:01.000Z","payload":{"type":"agent_message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"Run the check."},{"type":"encrypted_content","data":"provider-encrypted"},{"type":"input_image","image_url":"synthetic-image"},{"type":"image","image_url":"synthetic-image"},{"type":"computer_initialize_state","screen":"synthetic-state"},{"type":"computer_screenshot","image_url":"synthetic-image"}]}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:02.000Z","payload":{"type":"local_shell_call","id":"call-1","call_id":"call-1","name":"shell","arguments":"{\"cmd\":\"false\"}","status":"failed"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:03.000Z","payload":{"type":"function_call_output","id":"result-1","call_id":"call-1","output":"exit 1","status":"failed"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:03.500Z","payload":{"type":"local_shell_call","id":"call-2","call_id":"call-2","name":"shell","arguments":"{\"cmd\":\"false\"}","status":"completed"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:03.750Z","payload":{"type":"function_call_output","id":"result-2","call_id":"call-2","output":"exit 1","status":"failed"}}
+{"type":"event_msg","timestamp":"2026-08-01T11:00:03.800Z","payload":{"type":"token_count","id":"tokens-1","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"cached_input_tokens":1,"reasoning_output_tokens":0,"total_tokens":11}}}}
+{"type":"event_msg","timestamp":"2026-08-01T11:00:03.900Z","payload":{"type":"token_count","id":"tokens-2","info":{"total_token_usage":{"input_tokens":18,"output_tokens":4,"cached_input_tokens":3,"reasoning_output_tokens":1,"total_tokens":26}}}}
+{"type":"compacted","timestamp":"2026-08-01T11:00:04.000Z","payload":{"id":"compact-1","summary":"prior context"}}

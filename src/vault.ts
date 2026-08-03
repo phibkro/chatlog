@@ -125,7 +125,9 @@ export function clusterTopics(counts: Map<string, number>): TopicClustering {
   }
   return {
     canonicalOf,
-    clusters: clusters.toSorted((a, b) => b.count - a.count || a.canonical.localeCompare(b.canonical)),
+    clusters: clusters.toSorted(
+      (a, b) => b.count - a.count || a.canonical.localeCompare(b.canonical),
+    ),
   };
 }
 
@@ -368,7 +370,9 @@ export function conversationTitle(conversation: Conversation): string {
 
 function safeDate(iso: string): string {
   const parsed = new Date(iso);
-  return Number.isNaN(parsed.valueOf()) ? "00000000" : parsed.toISOString().slice(0, 10).replace(/-/g, "");
+  return Number.isNaN(parsed.valueOf())
+    ? "00000000"
+    : parsed.toISOString().slice(0, 10).replace(/-/g, "");
 }
 
 export function noteFilename(conversation: Conversation): string {
@@ -519,7 +523,9 @@ async function mapPool<T, R>(
       results[index] = await fn(items[index]!);
     }
   }
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker));
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker),
+  );
   return results;
 }
 
@@ -609,7 +615,9 @@ export async function emitVault(
       distinctRawTopics: counts.size,
       distinctCanonicalTopics: clusters.length,
       topicHubsWritten: hubBacklinks.size,
-      top20: clusters.slice(0, 20).map((cluster) => ({ topic: cluster.canonical, count: cluster.count })),
+      top20: clusters
+        .slice(0, 20)
+        .map((cluster) => ({ topic: cluster.canonical, count: cluster.count })),
     },
     harnessCounts,
   };

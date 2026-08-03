@@ -26,4 +26,3 @@ omitted one safety boundary:
 
 The revision makes the complete safety sequence succinct and general rather
 than adding a Git-specific repair recipe to always-on memory.
-

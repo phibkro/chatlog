@@ -54,4 +54,3 @@ Return a concise incident decision containing:
 Do not recommend deleting or recreating the configuration, resetting either
 worktree, garbage collection, recloning over the current checkout, or copying
 an unverified object into the repository.
-

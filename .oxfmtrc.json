@@ -7,7 +7,9 @@
     "corpus/**",
     "derived/**",
     "analysis/**",
+    "memory/**",
     "node_modules/**",
-    "src/workbench/public/memory/**"
+    "src/workbench/public/memory/**",
+    "plugins/chatlog-memory/scripts/**"
   ]
 }

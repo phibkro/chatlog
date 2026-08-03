@@ -28,22 +28,33 @@ import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestr
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
+import { importChatGPTExport, previewChatGPTExport } from "./importers/chatgpt-export";
+import { importGenericEvents, previewGenericEvents } from "./importers/generic-events";
 import { normalizeConversationDomain } from "./domain";
 import { resolveDataRoot } from "./data-root";
 import { listImportReceipts } from "./import-receipts";
-import { withIngestLock } from "./lock";
+import { listSourceReceipts, readUnknownShapeNominations } from "./source-receipts";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
   loadCorpusManifest,
   reconcileSourceAuthority,
 } from "./source-authority";
+import { withIngestLock } from "./lock";
 import { emitVault } from "./vault";
 import {
   publishAcceptedMemory,
   readPublishedMemory,
   recallPublishedMemory,
 } from "./experience-memory-store";
+import { applyInsightMigration, previewInsightMigration } from "./insight-migration";
+import {
+  applyInsightCommand,
+  readCurrentInsightLedger,
+  recompileCurrentInsightLedger,
+} from "./insight-ledger";
+import { proposeInsightConsolidations } from "./insight-compiler";
+import type { InsightCommandInput } from "./insight-ledger";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolveDataRoot();
@@ -58,46 +69,96 @@ const localAdapters = () => {
 if (command === "ingest") {
   console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
 } else if (command === "preview") {
-  if (subcommand !== "anthropic" || !args[0])
-    throw new Error("usage: chatlog preview anthropic <export.zip|directory> [domain]");
+  if (!subcommand || !args[0])
+    throw new Error("usage: chatlog preview <anthropic|chatgpt|generic> <export-path> [domain]");
   const domain = normalizeConversationDomain(
-    args[1] && !args[1].startsWith("--") ? args[1] : "general",
+    args[1] && !args[1].startsWith("--")
+      ? args[1]
+      : subcommand === "chatgpt"
+        ? "personal"
+        : "general",
   );
-  console.log(JSON.stringify(await previewAnthropicExport(args[0], root, { domain }), null, 2));
+  const result =
+    subcommand === "anthropic"
+      ? await previewAnthropicExport(args[0], root, { domain })
+      : subcommand === "chatgpt"
+        ? await previewChatGPTExport(args[0], root, { domain })
+        : subcommand === "generic"
+          ? await previewGenericEvents(args[0], root, { domain })
+          : (() => {
+              throw new Error(
+                "usage: chatlog preview <anthropic|chatgpt|generic> <export-path> [domain]",
+              );
+            })();
+  console.log(JSON.stringify(result, null, 2));
 } else if (command === "import") {
-  if (subcommand !== "anthropic" || !args[0])
+  if (!subcommand || !args[0])
     throw new Error(
-      "usage: chatlog import anthropic <export.zip|directory> [domain] [--no-derive]",
+      "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive]",
     );
   const domain = normalizeConversationDomain(
-    args[1] && !args[1].startsWith("--") ? args[1] : "general",
+    args[1] && !args[1].startsWith("--")
+      ? args[1]
+      : subcommand === "chatgpt"
+        ? "personal"
+        : "general",
   );
-  console.log(JSON.stringify(await importAnthropicExport(args[0], root, {
-    domain,
-    derive: !args.includes("--no-derive"),
-  }), null, 2));
+  const options = { domain, derive: !args.includes("--no-derive") };
+  const result =
+    subcommand === "anthropic"
+      ? await importAnthropicExport(args[0], root, options)
+      : subcommand === "chatgpt"
+        ? await importChatGPTExport(args[0], root, options)
+        : subcommand === "generic"
+          ? await importGenericEvents(args[0], root, options)
+          : (() => {
+              throw new Error(
+                "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive]",
+              );
+            })();
+  console.log(JSON.stringify(result, null, 2));
 } else if (command === "receipts") {
-  if (subcommand && subcommand !== "imports" && !/^\d+$/.test(subcommand))
-    throw new Error("usage: chatlog receipts [imports] [limit]");
-  const limitText = subcommand === "imports" ? args[0] : subcommand;
+  if (
+    subcommand &&
+    subcommand !== "imports" &&
+    subcommand !== "sources" &&
+    subcommand !== "nominations" &&
+    !/^\d+$/.test(subcommand)
+  )
+    throw new Error("usage: chatlog receipts [imports|sources|nominations] [limit]");
+  const limitText =
+    subcommand === "imports" || subcommand === "sources" || subcommand === "nominations"
+      ? args[0]
+      : subcommand;
   if (limitText && !/^[1-9]\d*$/.test(limitText))
     throw new Error("receipt limit must be a positive integer");
   const limit = Number(limitText ?? 20);
   if (!Number.isSafeInteger(limit) || limit > 200)
     throw new Error("receipt limit must be at most 200");
-  console.log(JSON.stringify(await listImportReceipts(root, limit), null, 2));
+  const output =
+    subcommand === "sources"
+      ? await listSourceReceipts(root, limit)
+      : subcommand === "nominations"
+        ? await readUnknownShapeNominations(root)
+        : await listImportReceipts(root, limit);
+  console.log(JSON.stringify(output, null, 2));
 } else if (command === "source") {
-  if (subcommand !== "reconcile" || args.length)
-    throw new Error("usage: chatlog source reconcile");
-  console.log(JSON.stringify(await withIngestLock(root, async () => {
-    const manifest = await loadCorpusManifest(root);
-    const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
-    try {
-      return await reconcileSourceAuthority(root, db, manifest.sources);
-    } finally {
-      db.close();
-    }
-  }), null, 2));
+  if (subcommand !== "reconcile" || args.length) throw new Error("usage: chatlog source reconcile");
+  console.log(
+    JSON.stringify(
+      await withIngestLock(root, async () => {
+        const manifest = await loadCorpusManifest(root);
+        const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+        try {
+          return await reconcileSourceAuthority(root, db, manifest.sources);
+        } finally {
+          db.close();
+        }
+      }),
+      null,
+      2,
+    ),
+  );
 } else if (command === "derive") {
   console.log(
     JSON.stringify(
@@ -121,8 +182,15 @@ if (command === "ingest") {
       if (!args[0]) throw new Error("usage: bun run query search <fts-expression> [limit]");
       output = agentSearch(db, args[0], Number(args[1] ?? 20));
     } else if (subcommand === "semantic") {
-      if (!args[0]) throw new Error("usage: bun run query semantic <topic> [limit] [candidate-limit]");
-      output = await agentSemanticSearch(db, root, args[0], Number(args[1] ?? 10), Number(args[2] ?? 40));
+      if (!args[0])
+        throw new Error("usage: bun run query semantic <topic> [limit] [candidate-limit]");
+      output = await agentSemanticSearch(
+        db,
+        root,
+        args[0],
+        Number(args[1] ?? 10),
+        Number(args[2] ?? 40),
+      );
     } else if (subcommand === "get") {
       if (!args[0]) throw new Error("usage: bun run query get <session-id-or-hash> [turn-index]");
       output = await agentGet(db, root, args[0], args[1] == null ? undefined : Number(args[1]));
@@ -130,10 +198,14 @@ if (command === "ingest") {
       if (!args[0]) throw new Error("usage: bun run query grok <topic> [limit]");
       output = await agentGrok(db, root, args[0], Number(args[1] ?? 10));
     } else if (subcommand === "ask") {
-      if (!args[0]) throw new Error('usage: bun run query ask "what did I try last time for X" [limit]');
+      if (!args[0])
+        throw new Error('usage: bun run query ask "what did I try last time for X" [limit]');
       output = await agentAsk(db, root, args[0], Number(args[1] ?? 10));
     } else if (subcommand === "ask-lexical") {
-      if (!args[0]) throw new Error('usage: bun run query ask-lexical "what did I try last time for X" [limit]');
+      if (!args[0])
+        throw new Error(
+          'usage: bun run query ask-lexical "what did I try last time for X" [limit]',
+        );
       output = await agentAskLexical(db, root, args[0], Number(args[1] ?? 10));
     } else if (subcommand === "project") {
       if (!args[0]) throw new Error("usage: bun run query project <exact-project-path>");
@@ -142,7 +214,15 @@ if (command === "ingest") {
       const derivation = await deriveOrchestrationProfile(root);
       const roleDerivation = await deriveRoleSegmentation(root);
       const effectivenessDerivation = await deriveEffectivenessRanking(root);
-      output = { derivation, report: await loadOrchestrationProfile(root), roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) }, effectiveness: { derivation: effectivenessDerivation, report: await loadEffectivenessRanking(root) } };
+      output = {
+        derivation,
+        report: await loadOrchestrationProfile(root),
+        roleSegmentation: { derivation: roleDerivation, report: await loadRoleSegmentation(root) },
+        effectiveness: {
+          derivation: effectivenessDerivation,
+          report: await loadEffectivenessRanking(root),
+        },
+      };
     } else if (subcommand === "refinery") {
       output = await agentRefinery(root, args[0], Number(args[1] ?? 30));
     } else if (subcommand === "undocumented") {
@@ -172,16 +252,21 @@ if (command === "ingest") {
     else if (subcommand === "tokens") output = await duckTokenUsage(root);
     else if (subcommand === "usage-time") {
       const bucket = (args[0] ?? "month") as "day" | "month";
-      if (bucket !== "day" && bucket !== "month") throw new Error("usage: bun run query usage-time [day|month] [limit]");
+      if (bucket !== "day" && bucket !== "month")
+        throw new Error("usage: bun run query usage-time [day|month] [limit]");
       output = await duckUsageOverTime(root, bucket, Number(args[1] ?? 60));
-    } else if (subcommand === "tools") output = await duckToolFrequency(root, Number(args[0] ?? 30));
+    } else if (subcommand === "tools")
+      output = await duckToolFrequency(root, Number(args[0] ?? 30));
     else if (subcommand === "lengths") output = await duckSessionLengths(root);
-    else throw new Error("usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|undocumented|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>");
+    else
+      throw new Error(
+        "usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|undocumented|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>",
+      );
     const currentProjection = projectionGuard.assert(db);
     if (
-      currentProjection.manifestSourcesHash !== projection.manifestSourcesHash
-      || currentProjection.reconciledAt !== projection.reconciledAt
-      || currentProjection.activeSources !== projection.activeSources
+      currentProjection.manifestSourcesHash !== projection.manifestSourcesHash ||
+      currentProjection.reconciledAt !== projection.reconciledAt ||
+      currentProjection.activeSources !== projection.activeSources
     ) {
       throw new ActiveProjectionDriftError(
         "active source projection changed while serving the query; retry",
@@ -233,6 +318,66 @@ if (command === "ingest") {
   if (typeof result === "object" && result !== null && "ok" in result && result.ok === false) {
     process.exitCode = 1;
   }
+} else if (command === "insight") {
+  let result: unknown;
+  if (subcommand === "migrate") {
+    const ledgerPath = args.find((argument) => !argument.startsWith("--"));
+    result = args.includes("--apply")
+      ? await applyInsightMigration(root, ledgerPath ? { ledgerPath: resolve(ledgerPath) } : {})
+      : await previewInsightMigration(root, ledgerPath ? { ledgerPath: resolve(ledgerPath) } : {});
+  } else if (subcommand === "preview") {
+    const current = await readCurrentInsightLedger(root);
+    result = current.ok
+      ? {
+          ok: true,
+          value: {
+            current: current.value,
+            consolidations: proposeInsightConsolidations(current.value.projection),
+          },
+        }
+      : current;
+  } else if (subcommand === "current") {
+    const current = await readCurrentInsightLedger(root);
+    result = current.ok
+      ? args.includes("--history")
+        ? {
+            ok: true,
+            value: { pointer: current.value.pointer, history: current.value.ledger.transitions },
+          }
+        : {
+            ok: true,
+            value: { pointer: current.value.pointer, current: current.value.projection.current },
+          }
+      : current;
+  } else if (subcommand === "recompile") {
+    result = await recompileCurrentInsightLedger(root);
+  } else if (subcommand === "apply") {
+    if (!args[0]) {
+      result = {
+        ok: false,
+        error: {
+          code: "invalid-insight-command",
+          message: "usage: chatlog insight apply <command.json>|migrate",
+        },
+      };
+    } else if (args[0] === "migrate") {
+      result = await applyInsightMigration(root);
+    } else {
+      const commandInput = (await Bun.file(resolve(args[0])).json()) as InsightCommandInput;
+      result = await applyInsightCommand(root, commandInput);
+    }
+  } else {
+    result = {
+      ok: false,
+      error: {
+        code: "invalid-insight-command",
+        message: "usage: chatlog insight <migrate|preview|apply|current|recompile>",
+      },
+    };
+  }
+  console.log(JSON.stringify(result, null, 2));
+  if (typeof result === "object" && result !== null && "ok" in result && result.ok === false)
+    process.exitCode = 1;
 } else if (command === "vault") {
   const outputDir = resolve(
     subcommand && !subcommand.startsWith("--")
@@ -246,6 +391,6 @@ if (command === "ingest") {
   console.log(JSON.stringify(await emitVault(root, outputDir, { limit, since }), null, 2));
 } else {
   throw new Error(
-    "usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|memory|vault>",
+    "usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|memory|insight|vault>",
   );
 }

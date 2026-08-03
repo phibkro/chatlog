@@ -39,10 +39,10 @@ re-derivation, and treatment added 31 median non-cached tokens.
 Two serialized hosted Fable 5, medium-effort batches reviewed the candidate
 evidence. They were proposal generators, not an acceptance authority:
 
-| Batch | Aliases | Session | API time | Cost | Result |
-| --- | --- | --- | ---: | ---: | --- |
-| 1 | C004, C009, C015, C017, C028 | `159a6ee4-0ae7-46f1-b4f3-ab0ab47163f9` | 70.805 s | $2.980731 | all determinate |
-| 2 | C008, C018, C023, C030 | `db1f3356-b901-42f6-91de-c89dfb9ed148` | 60.639 s | $2.056846 | all determinate |
+| Batch | Aliases                      | Session                                | API time |      Cost | Result          |
+| ----- | ---------------------------- | -------------------------------------- | -------: | --------: | --------------- |
+| 1     | C004, C009, C015, C017, C028 | `159a6ee4-0ae7-46f1-b4f3-ab0ab47163f9` | 70.805 s | $2.980731 | all determinate |
+| 2     | C008, C018, C023, C030       | `db1f3356-b901-42f6-91de-c89dfb9ed148` | 60.639 s | $2.056846 | all determinate |
 
 No strongest-model escalation ran because no row met the configured
 uncertainty or inconsistency trigger. Acceptance additionally required the
@@ -56,14 +56,14 @@ renders white despite passing local tests. It exercised
 `deployed-bundle-differs-from-dev-tests`. The unrelated task asked for the
 difference between SHA-256 and a UUID.
 
-| Harness / arm | Session | Recall | Outcome | Usage evidence |
-| --- | --- | --- | --- | --- |
-| Claude treatment, relevant | `f7141782-005e-4072-bbac-bc487b81b100` | exact snapshot + ID | correct, applied card | cache create 35,187; cache read 105,934; output 1,132 |
-| Claude treatment, unrelated | `e700d853-2093-4097-b3b3-311b17ffd297` | none | correct non-recall | cache create 27,352; cache read 17,930; output 163 |
-| Claude control, relevant | `2b33b8fe-8173-4d05-9c35-f3a4eb9278a5` | unavailable | correct without memory | cache create 3,623; output 863 |
-| Codex treatment, relevant | `019fa5cd-0c40-7961-8615-68706c9c3157` | exact snapshot + ID | correct, applied card | input 61,714; cached 38,400; output 312; reasoning 56 |
-| Codex treatment, unrelated | `019fa5cd-9f6e-7c60-af57-da0711acbacd` | none | correct non-recall | input 17,732; output 36 |
-| Codex control, relevant | control process receipt | unavailable | correct after repository re-derivation | input 278,941; cached 225,024; output 2,046; reasoning 458 |
+| Harness / arm               | Session                                | Recall              | Outcome                                | Usage evidence                                             |
+| --------------------------- | -------------------------------------- | ------------------- | -------------------------------------- | ---------------------------------------------------------- |
+| Claude treatment, relevant  | `f7141782-005e-4072-bbac-bc487b81b100` | exact snapshot + ID | correct, applied card                  | cache create 35,187; cache read 105,934; output 1,132      |
+| Claude treatment, unrelated | `e700d853-2093-4097-b3b3-311b17ffd297` | none                | correct non-recall                     | cache create 27,352; cache read 17,930; output 163         |
+| Claude control, relevant    | `2b33b8fe-8173-4d05-9c35-f3a4eb9278a5` | unavailable         | correct without memory                 | cache create 3,623; output 863                             |
+| Codex treatment, relevant   | `019fa5cd-0c40-7961-8615-68706c9c3157` | exact snapshot + ID | correct, applied card                  | input 61,714; cached 38,400; output 312; reasoning 56      |
+| Codex treatment, unrelated  | `019fa5cd-9f6e-7c60-af57-da0711acbacd` | none                | correct non-recall                     | input 17,732; output 36                                    |
+| Codex control, relevant     | control process receipt                | unavailable         | correct after repository re-derivation | input 278,941; cached 225,024; output 2,046; reasoning 458 |
 
 Two Claude attempts were retired and are not counted:
 

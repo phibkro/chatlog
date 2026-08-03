@@ -103,15 +103,15 @@ The bundle must include the full provider encoding overhead in its final budget.
 
 ## Commands
 
-| Purpose | Command | Expected result |
-| --- | --- | --- |
-| Planner tests | `bun test test/context-planner.test.ts` | Exit 0 |
-| Delivery tests | `bun test test/context-delivery.test.ts test/experience-memory-hook.test.ts test/bridge.test.ts` | Exit 0 |
-| Intervention tests | `bun test test/intervention-ledger.test.ts test/context-outcomes.test.ts` | Exit 0 |
-| Closed-loop gate | `bun run gate:verify -- <evaluation-artifact>` | Exit 0 only for a valid keep gate |
-| MCP tests | `bun test test/mcp.test.ts` | Exit 0 |
-| Workbench tests | `bun test test/workbench.test.ts test/memory-lab.test.ts` | Exit 0 |
-| Full gate | `bun run check` | Exit 0 |
+| Purpose            | Command                                                                                          | Expected result                   |
+| ------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------- |
+| Planner tests      | `bun test test/context-planner.test.ts`                                                          | Exit 0                            |
+| Delivery tests     | `bun test test/context-delivery.test.ts test/experience-memory-hook.test.ts test/bridge.test.ts` | Exit 0                            |
+| Intervention tests | `bun test test/intervention-ledger.test.ts test/context-outcomes.test.ts`                        | Exit 0                            |
+| Closed-loop gate   | `bun run gate:verify -- <evaluation-artifact>`                                                   | Exit 0 only for a valid keep gate |
+| MCP tests          | `bun test test/mcp.test.ts`                                                                      | Exit 0                            |
+| Workbench tests    | `bun test test/workbench.test.ts test/memory-lab.test.ts`                                        | Exit 0                            |
+| Full gate          | `bun run check`                                                                                  | Exit 0                            |
 
 ## Scope
 

@@ -43,4 +43,3 @@ masked, and treatment improves at least one of:
 
 If control already scores 10/10 with zero re-derivation and treatment adds
 cost, disposition is `cut`. Mixed or noisy evidence is `revise-or-cut`.
-

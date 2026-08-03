@@ -1,5 +1,7 @@
+import type { EventBatch } from "./events";
+
 export type Provider = "anthropic" | "openai" | string;
-export type Harness = "claude-code" | "codex" | "pi" | string;
+export type Harness = "claude-code" | "codex" | "pi" | "claude-web" | string;
 export type ConversationDomain = "coding" | "personal" | "ideas" | "research" | "general" | string;
 
 export interface TokenUsage {
@@ -16,6 +18,10 @@ export interface ToolCall {
   name: string;
   arguments?: string;
   output?: string;
+  approval?: "approved" | "denied";
+  execution?: "started" | "succeeded" | "failed" | "unknown";
+  result?: "observed" | "error";
+  sourceEventIds?: string[];
 }
 
 export interface Turn {
@@ -24,6 +30,7 @@ export interface Turn {
   at?: string;
   toolCalls?: ToolCall[];
   tokens?: TokenUsage;
+  sourceEventIds?: string[];
 }
 
 export interface Conversation {
@@ -41,6 +48,7 @@ export interface Conversation {
   turns: Turn[];
   resumeId?: string;
   sourcePath: string;
+  eventBatchHash?: string;
   contentHash: string;
 }
 
@@ -50,13 +58,8 @@ export interface SourceFile {
   mtimeMs: number;
 }
 
-export interface AdaptResult {
-  conversation: Omit<Conversation, "contentHash">;
-  partialTail: boolean;
-}
-
 export interface SourceAdapter {
   readonly harness: Harness;
   discover(): Promise<SourceFile[]>;
-  adapt(source: SourceFile): Promise<AdaptResult>;
+  adapt(source: SourceFile): Promise<EventBatch>;
 }

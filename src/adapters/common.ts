@@ -550,8 +550,14 @@ export class EventBatchBuilder {
         "partial-tail",
         { itemType: "partial-tail" },
       );
-    if (capacityOmission && capacityOmission.count > 0)
-      this.omitCapacityTail(capacityOmission.line, capacityOmission.count);
+    if (capacityOmission && capacityOmission.count > 0) {
+      const currentLineAccounted =
+        this.recordHashes.has(capacityOmission.line) ||
+        this.semanticLoss.some((loss) => loss.recordPosition?.line === capacityOmission.line);
+      const firstOmittedLine = capacityOmission.line + (currentLineAccounted ? 1 : 0);
+      const omittedCount = capacityOmission.count - (currentLineAccounted ? 1 : 0);
+      if (omittedCount > 0) this.omitCapacityTail(firstOmittedLine, omittedCount);
+    }
     return {
       schemaVersion: 1,
       origin: makeObservedBatchOrigin(

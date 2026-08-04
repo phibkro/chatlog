@@ -153,3 +153,24 @@ test("can account for and skip an oversized complete JSONL line", async () => {
   expect(records).toEqual([{ type: "ok" }]);
   expect(result).toEqual({ partialTail: false, lines: 2, records: 2 });
 });
+
+test("accounts for an oversized unterminated JSONL tail when skipping is enabled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chatlog-jsonl-oversized-tail-"));
+  const path = join(dir, "oversized.jsonl");
+  await writeFile(path, Buffer.alloc(JSONL_MAX_LINE_BYTES + 1, 0x78));
+  const omittedLines: number[] = [];
+
+  const result = await Effect.runPromise(
+    readJsonLines(
+      path,
+      () => Effect.void,
+      (line) =>
+        Effect.sync(() => {
+          omittedLines.push(line);
+        }),
+    ),
+  );
+
+  expect(omittedLines).toEqual([1]);
+  expect(result).toEqual({ partialTail: true, lines: 1, records: 1 });
+});

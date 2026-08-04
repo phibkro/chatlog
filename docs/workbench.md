@@ -19,16 +19,21 @@ hosted telemetry product.
   query path.
 - **Memory Lab** — a separate Foldkit application for proposal review. It
   presents blinded evidence and a model-authored memory proposal, then asks the
-  operator only whether the proposal is correct, incorrect, or uncertain and
-  whether the outcome is positive, negative, or neutral. Written correction or
-  missing-context feedback is optional. Reviews never promote or inject memory.
+  operator whether the proposal is correct, incorrect, or uncertain and whether
+  the outcome is positive, negative, or neutral. Review completion does not
+  promote or inject memory. After finalization, a separate preview-and-apply
+  action can append an operator-authorized insight transition.
 - **Context** — release authority, active insights, provider receipts, session
   budgets, recall branches, stop reasons, feedback, and outcome evidence. It
   distinguishes delivery, provider use, and causal evidence.
-- **Patterns** — inferred role boundaries, measured agent experiments, and
-  knowledge-refinery candidates. A candidate is a prompt for review, never an
-  automatic configuration change. The server returns an artifact only when its
-  manifest-backed authority matches the current derived corpus projection.
+- **Patterns** — a filterable repeated-pattern explorer, session-aware
+  workflow-change history, inferred role boundaries, measured agent
+  experiments, and knowledge-refinery candidates. A candidate is a prompt for
+  review, never an automatic configuration change. A private deployment may
+  opt into append-only operator reviews; neither a pattern nor an annotation
+  automatically changes agent configuration. The server returns an artifact
+  only when its manifest-backed authority matches the current derived corpus
+  projection.
 - **Sources** — connected harnesses, discovered exports, planned connectors,
   provenance domains, and their privacy behavior.
 
@@ -71,18 +76,23 @@ an existing judgment.
 
 ### Operator write boundaries
 
-Workbench has three bounded operator write paths. Each path requires an explicit
-server capability:
+Workbench has six bounded operator POST paths. Five write durable state;
+insight preview is read-only. Each path requires an explicit server capability:
 
 - `POST /api/memory-lab/draft` replaces one candidate review in the current
   local draft;
 - `POST /api/memory-lab/finalize` validates all rows and writes the locked
-  operator-review file.
+  operator-review file;
+- `POST /api/memory-lab/insight-preview` assembles and validates an exact
+  transition without writing the insight ledger;
+- `POST /api/memory-lab/insight-apply` appends the exact previewed transition;
 - `POST /api/context/feedback` records operator feedback for one delivered
-  context event.
+  context event;
+- `POST /api/context/outcome` records one observed outcome.
 
-`GET /api/memory-lab` remains readable whenever Memory Lab is injected; it does
-not require the write capability.
+`GET /api/memory-lab` remains readable whenever Memory Lab is injected. It does
+not require the write capability. Its candidate aliases include current durable
+insight status so an active insight can still be retired after a page reload.
 
 `GET /api/context` returns the current release, active insights, context
 sessions, bounded event traces, recall lifecycle events, and aggregate counts.
@@ -294,6 +304,9 @@ clustering begins.
 bun run ingest
 bun run derive
 bun run refine
+bun run query workflow-evolution
+bun run query workflow-outcomes
+bun run query workflow-patterns
 bun run workbench
 ```
 
@@ -301,31 +314,48 @@ Open the bootstrap URL that the server prints. The URL contains a random
 launch credential in its fragment. The page exchanges this credential for an
 `HttpOnly` and `SameSite=Strict` cookie. Then the page removes the fragment.
 
-The server requires this credential on each API route. It also requires the
-exact listener `Host` and `Origin` values. Corpus and evidence routes are
+For frontend development, run `bun run workbench:web:dev` while the backend is
+running. Vite proxies both `/auth` and `/api` to the loopback backend, rewriting
+`Host` and `Origin` to the backend listener origin so its strict origin checks
+still apply. The proxy keeps the credential cookie same-origin with the Vite
+page. Bootstrap responses observed as HTTPS set `Secure`; loopback HTTP
+bootstrap responses intentionally do not, so local development remains usable.
+Set `CHATLOG_WORKBENCH_BACKEND_ORIGIN` when the development backend does not use
+`http://127.0.0.1:4789`.
+
+The server binds to loopback by default. Each HTTP mutation stays disabled
+until its capability is enabled. Each API route requires the launch credential.
+The request URL, `Host`, and browser `Origin` must match the listener origin or
+one exact `CHATLOG_WORKBENCH_ORIGINS` entry. Corpus and evidence routes are
 read-only. The bounded operator writes are described above.
 
 Environment variables:
 
-| Variable                    | Default                                    | Purpose                                   |
-| --------------------------- | ------------------------------------------ | ----------------------------------------- |
-| `CHATLOG_DATA_ROOT`         | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB     |
-| `CHATLOG_SOURCE_CONFIG`     | `~/.config/chatlog/sources.json`           | Additional source catalog                 |
-| `CHATLOG_HOST`              | `127.0.0.1`                                | Listen address                            |
-| `CHATLOG_PORT`              | `4789`                                     | Listen port                               |
-| `CHATLOG_OPERATOR_ID`       | `local-workbench-operator`                 | Server-owned identity for operator writes |
-| `CHATLOG_ALLOW_REMOTE`      | unset                                      | Must equal `1` before a non-loopback bind |
-| `CHATLOG_MEMORY_LAB_WRITES` | loopback only                              | Enable remote Memory Lab writes           |
-| `CHATLOG_CONTEXT_WRITES`    | loopback only                              | Enable remote context feedback            |
+| Variable                         | Default                                    | Purpose                                                                                     |
+| -------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `CHATLOG_DATA_ROOT`              | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB                                                       |
+| `CHATLOG_SOURCE_CONFIG`          | `~/.config/chatlog/sources.json`           | Additional source catalog                                                                   |
+| `CHATLOG_HOST`                   | `127.0.0.1`                                | Listen address                                                                              |
+| `CHATLOG_PORT`                   | `4789`                                     | Listen port                                                                                 |
+| `CHATLOG_OPERATOR_ID`            | `local-workbench-operator`                 | Server-owned identity for operator writes                                                   |
+| `CHATLOG_WORKBENCH_ORIGINS`      | unset                                      | Comma-separated exact external origins trusted to serve Workbench through a reverse proxy   |
+| `CHATLOG_ALLOW_REMOTE`           | unset                                      | Must equal `1` before a non-loopback bind                                                   |
+| `CHATLOG_MEMORY_LAB_WRITES`      | loopback only                              | Enable remote Memory Lab writes                                                             |
+| `CHATLOG_CONTEXT_WRITES`         | loopback only                              | Enable remote context feedback                                                              |
+| `CHATLOG_ALLOW_ANNOTATIONS`      | unset                                      | Must equal `1` to enable the one append-only annotation route                               |
+| `CHATLOG_ANNOTATION_ORIGINS`     | unset                                      | Comma-separated exact external browser origins allowed to annotate                          |
+| `CHATLOG_ACK_REMOTE_ANNOTATIONS` | unset                                      | Additional acknowledgement required if annotations and a non-loopback bind are both enabled |
 
-Remote access is deliberately opt-in. If access from another machine is needed,
-prefer a private overlay or authenticated reverse proxy rather than exposing
-the port directly.
+Remote access is opt-in. Use a private overlay or an authenticated reverse
+proxy instead of a direct remote bind. Add each external HTTPS origin to
+`CHATLOG_WORKBENCH_ORIGINS`. The server ignores forwarded headers and requires
+the request URL, `Host`, and `Origin` to agree.
 
 The operator deployment keeps Workbench on loopback. It publishes
 `https://chatlog.home.phibkro.org` only inside the LAN or tailnet through the
-Homelab entry plane. The application credential protects the API. The private
-network and reverse proxy remain separate security boundaries.
+Homelab entry plane. The exact origin is trusted in the Workbench configuration.
+The application credential protects the API. The private network and reverse
+proxy remain separate security boundaries.
 
 ## Connect sources
 
@@ -405,8 +435,20 @@ Workbench shows the same read-only audit trail on the Sources page. Receipt
 files live beneath `receipts/imports/` in the Chatlog data root.
 If post-import derivation fails, the command still returns an error, but the
 receipt remains as evidence of the already-committed manifest transition.
-Crash recovery between the manifest commit and receipt write remains part of
-the later durable-intent lifecycle migration.
+Local ingestion, Anthropic exports, ChatGPT exports, and generic event imports
+write a private, hash-sealed operation intent before they replace the manifest.
+Recovery checks the actual manifest. It aborts an uncommitted intent. It resumes
+projection, requested derivation, applicable receipt writing, and completion for
+a committed intent. An unrelated manifest fails closed.
+Inspect and resume pending work explicitly with:
+
+```sh
+chatlog source recover
+```
+
+When source authority changes, derived readers remain unavailable until the
+operation either regenerates derived state or records an explicit invalidation.
+`chatlog derive` is the repair path for an invalidated projection.
 
 ### Active source projection
 
@@ -416,20 +458,22 @@ manifest-sources hash in `active_projection_meta`. Current views join both the
 source path and content hash instead of inferring authority from whichever
 historical row was indexed most recently.
 
-Normal local ingestion and Anthropic imports reconcile this projection under
-the ingest lock. Upgrade an existing pre-projection database explicitly:
+Normal ingestion and all supported provider imports reconcile this projection
+under the ingest lock. They recover older pending operations before new work.
+Upgrade an existing pre-projection database explicitly:
 
 ```sh
 chatlog source reconcile
 ```
 
-The command rebuilds missing active index/turn/tool/FTS rows from immutable
-canonical objects, validates every manifest mapping, then replaces the
-projection and its receipt in one SQLite transaction. Workbench, MCP, operator
-queries, and Pi bridge emission compare the manifest, projection receipt, and
-active rows before serving current data. Missing or unequal state fails closed;
-Workbench reports drift as HTTP 503 while the Sources and receipt audit views
-remain available for diagnosis.
+The command first recovers pending operation intents, then rebuilds missing
+active index/turn/tool/FTS rows from immutable canonical objects, validates
+every manifest mapping, and replaces the projection and its receipt in one
+SQLite transaction. Workbench, MCP, operator queries, and Pi bridge emission
+compare the manifest, projection receipt, and active rows before serving
+current data. Missing or unequal state fails closed; Workbench reports drift as
+HTTP 503 while the Sources and receipt audit views remain available for
+diagnosis.
 
 Workbench insights and DuckDB analytics apply the same rule to derived state.
 The active conversation projection, aggregate input hashes, and current
@@ -459,7 +503,8 @@ conversation JSON member:
 
 ```sh
 chatlog preview chatgpt /private/exports/chatgpt-data.zip personal
-chatlog import chatgpt /private/exports/chatgpt-data.zip personal
+chatlog import chatgpt /private/exports/chatgpt-data.zip personal \
+  --source-content-hash <sha256> --proposal-id <sha256>
 ```
 
 Preview is aggregate-only and writes no corpus object, event batch, SQLite
@@ -469,6 +514,10 @@ canonical evidence, and refuses to guess when the current path is missing,
 cyclic, or dangling. Attachment pointers and metadata are retained without
 fetching file bodies. Account memories, custom instructions, projects, and
 file bodies are excluded.
+
+Imports require the preview `sourceContentHash` and `proposalId`. The importer
+reads the source again. It stops if the source or proposal does not match the
+preview. Anthropic and generic imports use the same flags.
 
 ### Generic Chatlog event JSONL
 
@@ -482,7 +531,8 @@ provenance fail closed.
 
 ```sh
 chatlog preview generic /private/exports/events.jsonl coding
-chatlog import generic /private/exports/events.jsonl coding
+chatlog import generic /private/exports/events.jsonl coding \
+  --source-content-hash <sha256> --proposal-id <sha256>
 ```
 
 Both importers use immutable event batches, active-source authority, final
@@ -493,24 +543,25 @@ receipts through read-only source data; it has no mutating HTTP import route.
 
 Workbench's JSON endpoints expose the same bounded views used by the UI:
 
-| Endpoint                                                 | Result                                                                                          |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `/api/health`                                            | Lightweight manifest-backed readiness and active-source count                                   |
-| `/api/overview`                                          | Corpus counts, recent sessions, project concentration                                           |
-| `/api/projects`                                          | Project activity and harness mix                                                                |
-| `/api/sessions?project=…`                                | Session metadata for a project                                                                  |
-| `/api/search?q=…&limit=…`                                | Ranked local FTS results and evidence pointers                                                  |
-| `/api/prior-attempts?q=…`                                | Zero-egress chronological attempts from current content-role matches                            |
-| `/api/project-intelligence?project=…`                    | Exact current totals, bounded derived sample, then current sessions                             |
-| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads                                      |
-| `/api/knowledge-candidate?id=…`                          | Read-only curation/evaluation detail with bounded evidence pointers                             |
-| `/api/themes?limit=…&scanLimit=…&topicLimit=…`           | On-demand completed-cache clustering with exact-or-fail-closed bounds                           |
-| `/api/evidence?uri=chatlog://…`                          | One canonical redacted turn                                                                     |
-| `/api/insights`                                          | Projection provenance plus bounded orchestration, role, experiment, and refinery findings       |
-| `/api/sources`                                           | Connector state and import actions                                                              |
-| `/api/receipts?limit=…`                                  | Newest bounded completed-import receipts                                                        |
-| `/api/context`                                           | Authorized release, active insights, sessions, budgets, delivery events, feedback, and outcomes |
-| `/api/context/feedback`                                  | Operator feedback for one same-session delivered context event                                  |
+| Endpoint                                                 | Result                                                                                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/health`                                            | Lightweight manifest-backed readiness and active-source count                                                                      |
+| `/api/overview`                                          | Corpus counts, recent sessions, project concentration                                                                              |
+| `/api/projects`                                          | Project activity and harness mix                                                                                                   |
+| `/api/sessions?project=…`                                | Session metadata for a project                                                                                                     |
+| `/api/search?q=…&limit=…`                                | Ranked local FTS results and evidence pointers                                                                                     |
+| `/api/prior-attempts?q=…`                                | Zero-egress chronological attempts from current content-role matches                                                               |
+| `/api/project-intelligence?project=…`                    | Exact current totals, bounded derived sample, then current sessions                                                                |
+| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads                                                                         |
+| `/api/knowledge-candidate?id=…`                          | Read-only curation/evaluation detail with bounded evidence pointers                                                                |
+| `/api/themes?limit=…&scanLimit=…&topicLimit=…`           | On-demand completed-cache clustering with exact-or-fail-closed bounds                                                              |
+| `/api/evidence?uri=chatlog://…`                          | One canonical redacted turn                                                                                                        |
+| `/api/insights`                                          | Bounded workflow patterns, evolution, outcomes, orchestration, role, experiment, and refinery artifacts with projection provenance |
+| `/api/sources`                                           | Connector state and import actions                                                                                                 |
+| `/api/receipts?limit=…`                                  | Newest bounded completed-import receipts                                                                                           |
+| `/api/context`                                           | Authorized release, active insights, sessions, budgets, delivery events, feedback, and outcomes                                    |
+| `/api/context/feedback`                                  | Operator feedback for one same-session delivered context event                                                                     |
+| `POST /api/pattern-annotations`                          | Explicitly enabled, bounded append-only operator review for one pattern                                                            |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and
@@ -519,18 +570,85 @@ policy-filtered subset over stdio. It includes search, one-turn evidence,
 recent work, project briefs, governed context delivery, and bounded recall.
 Both surfaces use the same analysis store and domain policy.
 
+Workflow evolution is derived explicitly with
+`chatlog query workflow-evolution`. Workbench shows the newest 40 events and at
+most three evidence pointers per event. It collapses exact same-session/day
+conversation copies, keeps cross-session identity conservative, and presents
+the July 22 approval-policy decision as an evidence-backed tracer. The surface
+describes operator policy; it neither changes agent authority nor attributes
+causal outcomes.
+
+`chatlog query workflow-outcomes` derives the optional outcome context beneath
+the event ledger. Workbench shows the approval tracer and at most 30 newest
+comparisons. Windows are symmetric in corpus time, project-scoped, and require
+full episode containment plus five deduplicated episodes per side. Completion,
+friction, and failed-attempt rates are proxies with visible denominators;
+provider-reported tokens are compared only within the same provider/harness
+with three samples per side.
+The panel never labels a delta as an effect or recommendation.
+
+`chatlog query workflow-patterns` derives the optional repeated-pattern layer
+after Workflow Evolution and Workflow Outcomes. One newest event per opaque
+episode contributes to a workflow-kind, explicit-signal, and inferred-role
+signature; three distinct episodes across two UTC days are required. Workbench
+exposes at most 30 patterns and renders a filterable Explorer with exact
+recurrence, reformulation, return-to-prior, coverage, bounded occurrence
+timelines, outcome context, and canonical-example drilldown. Filters cover
+kind, signal, role, harness, outcome coverage, review state, bounded text, and
+the projected occurrence date range.
+Outcome directions require three covered episode windows and are disclosed as
+descriptive associations across potentially overlapping windows.
+Opaque episode lineages are a deduplication boundary, not statistical
+independence.
+
+The Workbench projection replaces structured project paths with counts and
+omits internal pattern, event, episode, and statement identifiers. The
+canonical evidence endpoint remains the explicit one-turn drilldown boundary.
+
+### Local pattern annotations
+
+Annotations are presentation and review state, not edits to derived evidence.
+When explicitly enabled, the Explorer can mark a pattern `confirmed`,
+`contextual`, `dismissed`, or `unreviewed`, add a presentation-only label, and
+store a bounded context note. Records are private, append-only,
+content-addressed, predecessor-linked, and retained across re-derivations by a
+stable kind/signal/role handle.
+
+`POST /api/pattern-annotations` is the only mutating Workbench route. It is
+browser-only and requires all of:
+
+- `CHATLOG_ALLOW_ANNOTATIONS=1`;
+- an exact server-configured `Origin` (loopback origins are built in);
+- a present `Sec-Fetch-Site: same-origin` header;
+- JSON within the declared byte bound;
+- the public snapshot token and per-pattern revision the client reviewed.
+
+The server does not trust `Host` or forwarded headers as mutation authority.
+Stale revisions or pattern snapshots return HTTP 409. These controls make the
+annotation write route resistant to CSRF and DNS rebinding; they are not
+application authentication and do not gate the existing read APIs. Keep the
+service loopback-bound behind a private overlay. A lost authoritative
+annotation manifest must be restored from backup rather than reconstructed
+from potentially forked objects.
+
+Writes serialize through a private SQLite coordination lock below
+`annotations/`. It contains no annotation content or authority and is released
+automatically by SQLite when a writer exits; the sealed JSON manifest remains
+the sole current-state authority. The global rate bound counts all allowed
+mutation attempts, including invalid or conflicting writes.
+
 ## Package and deploy
 
-`flake.nix` packages the Workbench static assets and the Bun runtime entry
-points, without embedding any corpus data — `nix build` only ever copies
-`src/`, `package.json`, and `tsconfig.json` into the store.
+`flake.nix` packages the Workbench static assets, Bun runtime entry points,
+locked production dependencies, and the local agent-plugin marketplace. It
+does not embed corpus, analysis, derived, memory, or receipt data.
 
 ```sh
 nix build .#chatlog
 CHATLOG_DATA_ROOT=/absolute/path/to/data ./result/bin/chatlog-workbench
 CHATLOG_DATA_ROOT=/absolute/path/to/data ./result/bin/chatlog preview anthropic /path/to/export.zip personal
 
-# or run the apps directly without a local checkout
+# or run the apps directly without installing
 nix run .#cli -- preview anthropic /path/to/export.zip personal
 nix run .#workbench
 nix run .#mcp
@@ -554,6 +672,9 @@ default:
     # dataRoot = "${config.xdg.dataHome}/chatlog";         # default
     # host = "127.0.0.1";                                  # default; loopback
     # port = 4789;                                         # default
+    # externalOrigins = [ "https://chatlog.example.net" ];
+    # allowAnnotations = false;                            # default
+    # annotationOrigins = [ "https://chatlog.example.net" ];
   };
 }
 ```
@@ -566,30 +687,39 @@ not already exist. `host` defaults to loopback. The server itself refuses a
 non-loopback bind unless `CHATLOG_ALLOW_REMOTE=1` is set in its environment, so
 changing `host` alone does not expose the service.
 
+`externalOrigins` declares the exact HTTPS origins that can serve the complete
+Workbench through a reverse proxy. The listener remains loopback-only. The
+server ignores forwarded headers and requires the request URL, `Host`, and
+browser `Origin` to agree with one declared origin.
+
+`allowAnnotations` enables only the append-only pattern review endpoint.
+External annotation origins must also appear in `annotationOrigins`. The server
+requires same-origin browser fetch metadata for these writes. A manually
+launched non-loopback instance also requires a separate acknowledgement.
+
 `GET /api/health` is the lightweight readiness probe for operators and
 monitors. It verifies that the manifest-backed source projection is current
 without running the dashboard's corpus, project, tool, or time-series
 aggregations; it returns HTTP 503 when the database is absent or the projection
 has drifted.
 
-Remote access is deliberately not this module's job. Front Workbench with
-Tailscale Serve or another authenticated reverse proxy that targets
-`127.0.0.1:<port>`. This remains an operator action at the network boundary.
-The module and package never configure Tailscale ACLs, certificates, Serve
-state, or DNS.
+Remote access requires an operator-managed network boundary. Front Workbench
+with Tailscale Serve or another authenticated reverse proxy that targets
+`127.0.0.1:<port>`. Then add the public HTTPS origin to `externalOrigins`. The
+module and package never configure Tailscale ACLs, certificates, Serve state,
+or DNS.
 
-Workbench also requires its random launch credential. This credential is
-defense in depth, not a replacement for transport security or tailnet ACLs.
-Only users trusted with the complete corpus can reach the Serve endpoint. The
-Home Manager module rejects non-loopback hosts instead of creating a
-crash-looping service.
+Workbench also requires its random launch credential. The service prints a
+bootstrap URL for each configured origin. This credential is defense in depth.
+It does not replace transport security or tailnet ACLs. Only users trusted with
+the complete corpus can reach the reverse-proxy endpoint. The Home Manager
+module rejects non-loopback hosts.
 
 The workstation consumes Chatlog as a pinned `github:phibkro/chatlog` flake
-input. Homelab enables the user service at `127.0.0.1:4789`, keeps mutable
-state at `~/.local/share/chatlog`, and relays it on the workstation's Tailscale
-address for Pi's private Caddy entry plane. That produces the canonical
-`https://chatlog.home.phibkro.org` surface without weakening Workbench's
-loopback bind policy. The source checkout is no longer a runtime dependency.
+input. Homelab enables the user service at `127.0.0.1:4789`. It stores mutable
+state at `~/.local/share/chatlog`. It relays the service through the private
+Caddy entry plane and declares `https://chatlog.home.phibkro.org` in
+`externalOrigins`. The source checkout is not a runtime dependency.
 
 Derived projection checks deliberately hash the small projection and aggregate
 artifacts, not every structural object on every read. Missing active objects
@@ -635,3 +765,15 @@ memory-lab write mode and the `X-Chatlog-Memory-Lab: 1` header. Stale packet,
 proposal, review, evidence, or ledger hashes fail closed. Models can propose
 text and confidence, but cannot activate, dispute, supersede, expire, or retire
 an insight.
+
+The browser keeps labeling and memory application separate. Complete and lock
+the blinded review first. A candidate marked `correct` then shows an application
+panel. Enter the target context, edit the proposed text if necessary, and
+preview the exact revision, scope, evidence count, lifecycle command, and
+startup-context effect. Applying requires a second operator action.
+
+Removal is also explicit. It previews and appends a `retire` transition. It does
+not delete evidence or history. Apply requests repeat the preview timestamp,
+prior ledger hash, and exact preview-command hash. A concurrent ledger, source,
+or derived-projection change makes the preview stale instead of applying a
+different command.

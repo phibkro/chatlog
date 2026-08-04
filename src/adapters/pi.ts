@@ -365,10 +365,11 @@ const adaptSource = Effect.fnUntraced(function* (
         if (!rawBlock || typeof rawBlock !== "object" || Array.isArray(rawBlock)) continue;
         const block = rawBlock as Record<string, unknown>;
         const blockType = stringValue(block.type);
-        const nativeId = stringValue(
+        const nativeBlockId = stringValue(
           block.id,
           stringValue(block.toolCallId, `${messageId}:block:${index}`),
         );
+        const eventNativeId = `${messageId}:block:${index}:${nativeBlockId}`;
         if (blockType === "thinking") {
           const event = builder.add(
             "model.reasoning.observed",
@@ -376,19 +377,19 @@ const adaptSource = Effect.fnUntraced(function* (
             line,
             {
               messageId,
-              blockId: nativeId,
+              blockId: nativeBlockId,
               text: redact(stringValue(block.thinking, blockText(block))),
             },
             {
-              nativeItemId: `${nativeId}:reasoning`,
+              nativeItemId: `${eventNativeId}:reasoning`,
               ...(timestampValue ? { occurredAt: timestampValue } : {}),
               relations: { causedBy: [messageEvent.eventId], parent: messageEvent.eventId },
               actor: { kind: "assistant" },
             },
           );
-          remember(`${nativeId}:reasoning`, event);
+          remember(`${eventNativeId}:reasoning`, event);
         } else if (blockType === "toolCall") {
-          const callId = stringValue(block.id, nativeId);
+          const callId = stringValue(block.id, nativeBlockId);
           const event = builder.add(
             "tool.call.proposed",
             value,
@@ -401,14 +402,14 @@ const adaptSource = Effect.fnUntraced(function* (
               toolClass: "pi",
             },
             {
-              nativeItemId: nativeId,
+              nativeItemId: eventNativeId,
               ...(timestampValue ? { occurredAt: timestampValue } : {}),
               relations: { causedBy: [messageEvent.eventId], parent: messageEvent.eventId },
               actor: { kind: "assistant", name: stringValue(block.name, "tool") },
             },
           );
           remember(callId, event);
-          remember(nativeId, event);
+          remember(eventNativeId, event);
         } else if (blockType === "toolResult") {
           const callId = stringValue(block.toolCallId, stringValue(block.id));
           const causedBy = byNativeId.get(callId);
@@ -430,7 +431,7 @@ const adaptSource = Effect.fnUntraced(function* (
               ...(block.isError === true ? { isError: true } : {}),
             },
             {
-              nativeItemId: `${nativeId}:result`,
+              nativeItemId: `${eventNativeId}:result`,
               ...(causedBy
                 ? { relations: { causedBy: [causedBy.eventId], parent: causedBy.eventId } }
                 : {
@@ -439,7 +440,7 @@ const adaptSource = Effect.fnUntraced(function* (
               actor: { kind: "tool", name: stringValue(block.toolName, "tool_result") },
             },
           );
-          remember(`${nativeId}:result`, event);
+          remember(`${eventNativeId}:result`, event);
         }
       }
     } catch (error) {

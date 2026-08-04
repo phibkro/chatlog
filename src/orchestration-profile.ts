@@ -389,7 +389,13 @@ export async function deriveOrchestrationProfile(
   const labels = JSON.parse(labelsText) as OrchestrationLabel[];
   const projection = await assertDerivedProjection(root);
   const inputProjectionHash = projection.contentHash;
-  const recipeHash = hash((await Bun.file(import.meta.path).text()) + "\n" + labelsText);
+  const recipeHash = hash(
+    (await Bun.file(import.meta.path).text()) +
+      "\n" +
+      (await Bun.file(join(import.meta.dir, "redact.ts")).text()) +
+      "\n" +
+      labelsText,
+  );
   const manifestPath = join(root, "derived", "orchestration-lean-manifest.json");
   let manifest: any = { version: 1 };
   try {

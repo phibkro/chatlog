@@ -1,7 +1,7 @@
 import { redact } from "./redact";
 
 export const EVENT_SCHEMA_VERSION = 1 as const;
-export const EVENT_ADAPTER_RECIPE = "chatlog-agent-events-v2";
+export const EVENT_ADAPTER_RECIPE = "chatlog-agent-events-v3";
 export const EVENT_CAPTURE_POLICY_VERSION = "chatlog-redacted-capture-v1";
 
 export const SEMANTIC_LOSS_CODES = [

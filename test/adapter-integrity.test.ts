@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude";
 import { CodexAdapter } from "../src/adapters/codex";
 import { OmpAdapter, PiAdapter } from "../src/adapters/pi";
+import { canonicalEventBatch } from "../src/events";
 
 const fixtureRoot = join(import.meta.dir, "fixtures/events");
 
@@ -49,6 +50,15 @@ test("Pi emits canonical project identity, fallback relations, and image loss", 
         ],
       },
     },
+    {
+      type: "message",
+      id: "m3",
+      timestamp: "2026-08-01T12:00:03.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "shell", arguments: {} }],
+      },
+    },
   ];
   await writeFile(
     join(sourceRoot, "session.jsonl"),
@@ -56,7 +66,8 @@ test("Pi emits canonical project identity, fallback relations, and image loss", 
   );
 
   const adapter = new PiAdapter(sourceRoot);
-  const batch = await adapter.adapt((await adapter.discover())[0]!);
+  const batch = canonicalEventBatch(await adapter.adapt((await adapter.discover())[0]!));
+  expect(batch.events.filter((event) => event.kind === "tool.call.proposed")).toHaveLength(2);
   const started = batch.events.find((event) => event.kind === "session.started");
   expect(started?.payload.project).toBe(repo);
 

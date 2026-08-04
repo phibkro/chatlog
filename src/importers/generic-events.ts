@@ -1,8 +1,13 @@
-import { chmod, lstat, mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
-import { canonicalizeConversation, projectConversation } from "../conversation-projection";
+import {
+  canonicalizeConversation,
+  projectConversation,
+  validateCanonicalConversation,
+} from "../conversation-projection";
 import { normalizeConversationDomain } from "../domain";
+import { durableAtomicWrite } from "../durable-fs";
 import {
   CLOSED_LOOP_EVALUATOR_ADAPTER_RECIPE,
   CLOSED_LOOP_EVALUATOR_SOURCE_KIND,
@@ -37,15 +42,23 @@ import {
   type SemanticLossEntry,
 } from "../events";
 import { persistEventBatch } from "../event-store";
-import { reconcileSourceAuthority, type CorpusManifest } from "../source-authority";
+import {
+  manifestSourcesHash,
+  reconcileSourceAuthority,
+  type CorpusManifest,
+} from "../source-authority";
 import { buildSourceReceipt, persistSourceReceipt, type SourceReceipt } from "../source-receipts";
 import { withIngestLock } from "../lock";
 import { redact } from "../redact";
 import type { Conversation, ConversationDomain } from "../types";
 import type { DeriveSummary } from "../derive";
 import type { RefinerySummary } from "../refinery";
-import { deriveCorpus } from "../derive";
-import { refineCorpus } from "../refinery";
+import {
+  createOperationIntent,
+  recoverPendingOperations,
+  resolveManifestWriteFailure,
+  resumeCommittedOperation,
+} from "../operation-intents";
 import {
   EXPORT_MAX_CORPUS_OBJECT_BYTES,
   EXPORT_MAX_MANIFEST_BYTES,
@@ -72,6 +85,7 @@ const GENERIC_RECIPE_PREFIX = "chatlog-generic-events-v1";
 export interface GenericEventImportOptions {
   domain?: ConversationDomain;
   derive?: boolean;
+  preview: Pick<GenericEventPreviewSummary, "source" | "sourceContentHash" | "proposalId">;
 }
 
 export interface GenericEventPreviewSummary {
@@ -641,11 +655,7 @@ export async function readGenericEventFile(sourcePath: string): Promise<GenericS
 }
 
 async function atomicWrite(path: string, value: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, value, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, value);
 }
 
 async function loadManifest(root: string): Promise<CorpusManifest> {
@@ -689,6 +699,7 @@ async function loadManifest(root: string): Promise<CorpusManifest> {
 async function readPriorConversation(
   root: string,
   contentHash: string,
+  sourcePath: string,
 ): Promise<Conversation | null> {
   const path = join(root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`);
   let info;
@@ -713,8 +724,9 @@ async function readPriorConversation(
     root,
   );
   if (!contentResult.ok) return boundedFailure(contentResult.error);
+  let parsed: unknown;
   try {
-    return JSON.parse(contentResult.value.text) as Conversation;
+    parsed = JSON.parse(contentResult.value.text);
   } catch (error: unknown) {
     failClosed(
       `cannot parse generic-event prior corpus object ${path}: ${redact(
@@ -723,6 +735,10 @@ async function readPriorConversation(
       error,
     );
   }
+  const conversation = validateCanonicalConversation(parsed, { contentHash, sourcePath });
+  if (!conversation)
+    failClosed(`${path}: generic-event prior corpus object hash or shape mismatch`);
+  return conversation;
 }
 
 async function classify(
@@ -736,7 +752,11 @@ async function classify(
   if (previous.contentHash === conversation.contentHash) return "unchanged";
   if (!previous.contentHash) return "changed";
   try {
-    const oldConversation = await readPriorConversation(root, previous.contentHash);
+    const oldConversation = await readPriorConversation(
+      root,
+      previous.contentHash,
+      conversation.sourcePath,
+    );
     if (!oldConversation) return "changed";
     return normalizeConversationDomain(oldConversation.domain ?? "general") !== domain
       ? "reclassified"
@@ -755,6 +775,11 @@ function lossCounts(batch: EventBatch): Record<string, number> {
   );
 }
 
+function projectGenericConversation(batch: EventBatch, domain: string): Conversation {
+  const { contentHash: _contentHash, ...projection } = projectConversation(batch);
+  return canonicalizeConversation({ ...projection, domain });
+}
+
 export async function previewGenericEvents(
   sourcePath: string,
   root: string,
@@ -763,7 +788,7 @@ export async function previewGenericEvents(
   const stream = await readGenericEventFile(sourcePath);
   const domain = normalizeConversationDomain(options.domain ?? stream.header.domain);
   const manifest = await loadManifest(root);
-  const projected = canonicalizeConversation({ ...projectConversation(stream.batch), domain });
+  const projected = projectGenericConversation(stream.batch, domain);
   const classification = await classify(root, manifest, projected, domain);
   const classifications = { new: 0, changed: 0, reclassified: 0, unchanged: 0 };
   classifications[classification]++;
@@ -773,6 +798,7 @@ export async function previewGenericEvents(
       schema: "chatlog/generic-event-import-preview-v1",
       source: stream.source,
       sourceContentHash: stream.sourceContentHash,
+      manifestAuthorityHash: manifestSourcesHash(manifest.sources),
       producer: stream.header.producer,
       domain,
       batchHash: sha256(stableStringify(stream.batch)),
@@ -809,89 +835,127 @@ export async function previewGenericEvents(
 export async function importGenericEvents(
   sourcePath: string,
   root: string,
-  options: GenericEventImportOptions = {},
+  options: GenericEventImportOptions,
 ): Promise<GenericEventImportSummary> {
+  const expectedPreview = options.preview;
+  if (!expectedPreview) failClosed("generic-event import requires preview proposal pins");
   return withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
+    const current = await previewGenericEvents(sourcePath, root, {
+      domain: options.domain,
+    });
+    if (
+      !current.ready ||
+      current.source !== expectedPreview.source ||
+      current.sourceContentHash !== expectedPreview.sourceContentHash ||
+      current.proposalId !== expectedPreview.proposalId
+    )
+      failClosed(`${resolve(sourcePath)}: source no longer matches the preview proposal`);
     const stream = await readGenericEventFile(sourcePath);
+    if (
+      stream.source !== expectedPreview.source ||
+      stream.sourceContentHash !== expectedPreview.sourceContentHash
+    )
+      failClosed(`${stream.source}: source changed after the preview proposal was checked`);
     const domain = normalizeConversationDomain(options.domain ?? stream.header.domain);
     const manifestPath = join(root, "corpus", "manifest.json");
     const manifest = await loadManifest(root);
+    const beforeManifest = structuredClone(manifest);
+
+    const batch = stream.batch;
+    const batchHash = await persistEventBatch(root, batch);
+    const conversation = projectGenericConversation(batch, domain);
+    const sourceReceipt = buildSourceReceipt({
+      batch,
+      batchHash,
+      conversationProjectionHash: conversation.contentHash,
+    });
+    await persistSourceReceipt(root, sourceReceipt);
+    const sourceMtimeMs = Date.parse(stream.sourceModifiedAt);
+    const previous = manifest.sources[conversation.sourcePath];
+    const unchanged =
+      previous?.contentHash === conversation.contentHash &&
+      previous.eventBatchHash === batchHash &&
+      previous.conversationProjectionHash === conversation.contentHash &&
+      previous.receiptHash === sourceReceipt.receiptHash;
+    const prepared = {
+      batch,
+      batchHash,
+      conversation,
+      sourceReceipt,
+      sourceMtimeMs,
+      sourceBytes: stream.sourceBytes,
+    } as const;
+    const objectPath = join(
+      root,
+      "corpus",
+      "objects",
+      prepared.conversation.contentHash.slice(0, 2),
+      `${prepared.conversation.contentHash}.json`,
+    );
+    const existing = await readPriorConversation(
+      root,
+      prepared.conversation.contentHash,
+      prepared.conversation.sourcePath,
+    );
+    if (!existing) await atomicWrite(objectPath, JSON.stringify(prepared.conversation) + "\n");
+
+    let imported = 0;
+    let skipped = 0;
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
     try {
-      await reconcileSourceAuthority(root, db, manifest.sources);
-      const batchHash = await persistEventBatch(root, stream.batch);
-      const projected = projectConversation(stream.batch);
-      const conversation = canonicalizeConversation({ ...projected, domain });
-      const sourceReceipt = buildSourceReceipt({
-        batch: stream.batch,
-        batchHash,
-        conversationProjectionHash: conversation.contentHash,
-      });
-      await persistSourceReceipt(root, sourceReceipt);
-      const previous = manifest.sources[conversation.sourcePath];
-      let imported = 0;
-      let skipped = 0;
-      if (
-        previous?.contentHash === conversation.contentHash &&
-        previous.eventBatchHash === batchHash &&
-        previous.conversationProjectionHash === conversation.contentHash &&
-        previous.receiptHash === sourceReceipt.receiptHash
-      )
-        skipped++;
+      await reconcileSourceAuthority(root, db, beforeManifest.sources);
+      if (unchanged) skipped++;
       else {
-        const objectPath = join(
-          root,
-          "corpus",
-          "objects",
-          conversation.contentHash.slice(0, 2),
-          `${conversation.contentHash}.json`,
-        );
-        if (!(await Bun.file(objectPath).exists()))
-          await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
-        indexEventBatch(db, stream.batch, batchHash, conversation.contentHash);
-        indexConversation(
-          db,
-          conversation,
-          Date.parse(stream.sourceModifiedAt),
-          stream.sourceBytes,
-        );
-        manifest.sources[conversation.sourcePath] = {
-          contentHash: conversation.contentHash,
-          eventBatchHash: batchHash,
-          conversationProjectionHash: conversation.contentHash,
-          receiptHash: sourceReceipt.receiptHash,
-          size: stream.sourceBytes,
-          mtimeMs: Date.parse(stream.sourceModifiedAt),
+        indexEventBatch(db, prepared.batch, prepared.batchHash, prepared.conversation.contentHash);
+        indexConversation(db, prepared.conversation, prepared.sourceMtimeMs, prepared.sourceBytes);
+        manifest.sources[prepared.conversation.sourcePath] = {
+          contentHash: prepared.conversation.contentHash,
+          eventBatchHash: prepared.batchHash,
+          conversationProjectionHash: prepared.conversation.contentHash,
+          receiptHash: prepared.sourceReceipt.receiptHash,
+          size: prepared.sourceBytes,
+          mtimeMs: prepared.sourceMtimeMs,
         };
         imported++;
       }
-      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      await reconcileSourceAuthority(root, db, manifest.sources);
-      let derived: DeriveSummary | undefined;
-      let refinery: RefinerySummary | undefined;
-      if (options.derive) {
-        derived = await deriveCorpus(root);
-        refinery = await refineCorpus(root);
-      }
-      return {
-        source: stream.source,
-        domain,
-        producer: stream.header.producer,
-        provider: stream.header.provider,
-        harness: stream.header.harness,
-        events: stream.batch.events.length,
-        batches: stream.batches,
-        partialTail: stream.batch.partialTail,
-        imported,
-        skipped,
-        receipts: [sourceReceipt],
-        receipt: sourceReceipt,
-        ...(derived ? { derived } : {}),
-        ...(refinery ? { refinery } : {}),
-      };
     } finally {
       db.close();
     }
+
+    const intent = await createOperationIntent(root, {
+      operation: "generic-import",
+      before: beforeManifest,
+      after: manifest,
+      derive: options.derive === true,
+    });
+    try {
+      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    } catch (error) {
+      await resolveManifestWriteFailure(root, intent, error);
+    }
+    const operation = await resumeCommittedOperation(root, intent);
+    const result: GenericEventImportSummary = {
+      source: stream.source,
+      domain,
+      producer: stream.header.producer,
+      provider: stream.header.provider,
+      harness: stream.header.harness,
+      events: prepared.batch.events.length,
+      batches: stream.batches,
+      partialTail: prepared.batch.partialTail,
+      imported,
+      skipped,
+      receipts: [prepared.sourceReceipt],
+      receipt: prepared.sourceReceipt,
+      ...(operation.derived ? { derived: operation.derived } : {}),
+      ...(operation.refinery ? { refinery: operation.refinery } : {}),
+    };
+    if (operation.derivationFailed)
+      failClosed(
+        `generic import committed as operation ${operation.intent.operationId}, but derived state was explicitly invalidated after derivation failed`,
+      );
+    return result;
   });
 }
 

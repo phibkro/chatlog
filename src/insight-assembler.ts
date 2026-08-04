@@ -170,9 +170,19 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
     return fail("candidate-not-found", "candidate is not present in the refinery artifact");
   if (
     privateManifest.packetHash !== packet.packetHash ||
-    privateManifest.sourceBindingHash !== packet.sourceBindingHash
+    privateManifest.sourceBindingHash !== packet.sourceBindingHash ||
+    !privateManifest.source ||
+    !privateManifest.artifacts ||
+    privateManifest.source.inputProjectionHash !== refinery.inputProjectionHash ||
+    privateManifest.source.refineryRecipeHash !== refinery.recipeHash ||
+    privateManifest.source.refineryThreshold !== refinery.threshold ||
+    privateManifest.source.refineryCandidates !== refinery.candidates.length ||
+    privateManifest.artifacts.packetSha256 !== hash(`${JSON.stringify(packet, null, 2)}\n`)
   )
-    return fail("packet-mismatch", "private mapping is not bound to the exact blinded packet");
+    return fail(
+      "packet-mismatch",
+      "private mapping is not bound to the exact packet and refinery artifact",
+    );
   if (proposalSet.packetHash !== packet.packetHash)
     return fail("proposal-mismatch", "proposal set is bound to a different packet");
   if (hash(JSON.stringify(proposalSet, null, 2) + "\n") !== input.proposalSetHash)
@@ -259,13 +269,30 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
   }
   const proposition = input.correctedProposition ?? proposal.lesson;
   const procedure =
-    input.correctedProcedure ??
-    (candidate.type === "skill" || candidate.type === "gotcha-skill" ? proposal.lesson : null);
+    input.correctedProcedure !== undefined
+      ? input.correctedProcedure
+      : candidate.type === "skill" || candidate.type === "gotcha-skill"
+        ? proposal.lesson
+        : null;
+  const command =
+    input.transitionCommand ??
+    (input.correctedProposition === undefined && input.correctedProcedure === undefined
+      ? "accept"
+      : "accept-with-correction");
+  const transitionSeed = JSON.stringify([
+    candidate.id,
+    input.proposalSetHash,
+    input.operatorReviewHash,
+    command,
+    input.priorRevisionId ?? null,
+    proposition,
+    procedure,
+  ]);
   const authority = sourceAuthority(input.actor, sourceHashes, recordedAt);
   const revision = {
     schemaVersion: 2 as const,
     insightId: candidate.id,
-    revisionId: `rev-${hash(`${candidate.id}:${input.proposalSetHash}:${input.operatorReviewHash}:${proposition}`).slice(0, 40)}`,
+    revisionId: `rev-${hash(transitionSeed).slice(0, 40)}`,
     kind: kindForCandidate(candidate),
     proposition,
     procedure,
@@ -293,6 +320,7 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
               ? "retired"
               : ("active" as const),
     supersedes: null,
+    conflictsWith: [],
     duplicateOf: null,
     riskClass: "low" as const,
     valence: review.valence,
@@ -300,7 +328,7 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
       kind: "model-proposal" as const,
       actor: proposalSet.generator.model,
       sourceHashes,
-      proposalId: mapping.candidateAlias,
+      proposalId: `proposal-${mapping.candidateAlias.toLowerCase()}`,
     },
     authority: [authority],
     derivation: {
@@ -326,11 +354,6 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
       "semantic-mismatch",
       validated.errors.map((error) => `${error.path}: ${error.message}`).join("; "),
     );
-  const command =
-    input.transitionCommand ??
-    (input.correctedProposition === undefined && input.correctedProcedure === undefined
-      ? "accept"
-      : "accept-with-correction");
   return {
     ok: true,
     value: {
@@ -341,12 +364,15 @@ export function assembleInsightCommand(input: InsightAssemblerInput): InsightAss
       actor: input.actor,
       authority,
       recordedAt,
-      reason: input.correctedProposition
-        ? "operator correction bound to finalized review"
-        : "operator accepted source-bound proposal",
+      reason:
+        command === "retire"
+          ? "operator removed source-bound insight from agent context"
+          : input.correctedProposition !== undefined || input.correctedProcedure !== undefined
+            ? "operator correction bound to finalized review"
+            : `operator authorized source-bound ${command} transition`,
       sourceHashes,
       priorLedgerHash: input.priorLedgerHash ?? null,
-      idempotencyKey: `assemble-${hash(`${candidate.id}:${input.proposalSetHash}:${input.operatorReviewHash}:${proposition}`).slice(0, 40)}`,
+      idempotencyKey: `assemble-${hash(transitionSeed).slice(0, 40)}`,
     },
   };
 }

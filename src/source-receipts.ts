@@ -1,5 +1,5 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   ACTIVE_SOURCE_AUTHORITY_VERSION,
   SEMANTIC_LOSS_CODES,
@@ -8,6 +8,7 @@ import {
   type EventBatch,
 } from "./events";
 import { eventBatchHash } from "./event-store";
+import { durableAtomicWrite } from "./durable-fs";
 import {
   semanticLossCounts,
   sourceItemAccounting,
@@ -270,12 +271,7 @@ function sourceReceiptPath(root: string, hash: string): string {
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await chmod(dirname(path), 0o700);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, text);
 }
 
 export async function persistSourceReceipt(root: string, receipt: SourceReceipt): Promise<string> {

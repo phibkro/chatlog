@@ -29,22 +29,38 @@ MCP tools, or inert prompt artifacts.
 ## Install and first launch
 
 The pre-release Nix package supports `x86_64-linux` and `aarch64-linux`.
-[Install Nix with flakes enabled](https://nixos.org/download/) first.
+[Install Nix with flakes enabled](https://nixos.org/download/) first. From a
+checkout of the pre-release:
 
 ```sh
-nix profile install --refresh \
-  github:phibkro/chatlog/v0.1.0-rc.1#chatlog
+nix profile install --refresh .#chatlog
 
 chatlog --version
 chatlog ingest
 chatlog-workbench
 ```
 
+For a temporary launch without installing, run `nix run .#workbench`.
+
 `chatlog ingest` discovers local histories under `~/.claude/projects`,
 `~/.codex/sessions`, `~/.pi/agent/sessions`, and `~/.omp/agent/sessions`.
 It writes the redacted corpus and derived views to
 `${XDG_DATA_HOME:-~/.local/share}/chatlog`. The command does not run as a
 watcher. Run it again after new agent work.
+
+Each run adapts at most 256 new, changed, or recipe-stale files per harness.
+Chatlog samples those candidates across their modification-time range. It also
+defers files modified during the last five seconds. Repeated runs drain the
+deferred backlog without repeatedly parsing unchanged histories. The result
+reports `deferred` and `unsettled` counts for each harness.
+
+Set these variables to change the bounds:
+
+```sh
+export CHATLOG_INGEST_MAX_SOURCES_PER_ADAPTER=1024
+export CHATLOG_INGEST_MIN_SOURCE_AGE_MS=0
+chatlog ingest
+```
 
 `chatlog-workbench` prints a one-time loopback URL. Open that URL to browse
 projects and sessions, search prior attempts, inspect evidence, review
@@ -86,15 +102,20 @@ plugin installation is provided for those harnesses in this pre-release.
 
 ### Import provider exports
 
-Preview an export before it changes local state:
+Preview an export before it changes local state. Copy `sourceContentHash` and
+`proposalId` from each preview. Both values are required for the matching import:
 
 ```sh
 chatlog preview chatgpt /path/to/chatgpt-export.zip personal
-chatlog import chatgpt /path/to/chatgpt-export.zip personal
+chatlog import chatgpt /path/to/chatgpt-export.zip personal \
+  --source-content-hash <sha256> --proposal-id <sha256>
 
 chatlog preview anthropic /path/to/anthropic-export.zip personal
-chatlog import anthropic /path/to/anthropic-export.zip personal
+chatlog import anthropic /path/to/anthropic-export.zip personal \
+  --source-content-hash <sha256> --proposal-id <sha256>
 ```
+
+The import stops if the source or proposal changed after the preview.
 
 The generic `chatlog/generic-events-v1` importer supports versioned external
 adapters. See
@@ -116,8 +137,9 @@ adapters. See
 | Hosted sync, team accounts, and remote raw-transcript storage                 | Not implemented                     |
 
 Memory Lab reviews only complete, prepared adjudication bundles. It does not
-run a model or infer approval. The advanced refinery and insight lifecycle is
-documented below and in
+run a model or infer approval. Finalization does not publish memory; a separate
+operator preview-and-apply action records an exact insight transition. The
+advanced refinery and insight lifecycle is documented below and in
 [docs/knowledge-refinery.md](docs/knowledge-refinery.md).
 
 ## Data model and safety
@@ -146,14 +168,19 @@ directories.
 
 Chatlog Workbench turns the corpus into a local product for both the operator
 and coding agents. It provides a project and session browser, full-text recall
-with resolvable evidence, measured orchestration patterns, refinery candidates,
-and a source-connection screen.
+with resolvable evidence, a deduplicated workflow-change history, measured
+orchestration patterns, refinery candidates, and a source-connection screen.
 
 ```sh
 chatlog ingest
 chatlog-workbench
 # Open the one-time bootstrap URL that the server prints.
 ```
+
+Open `/memory/` from Workbench to review blinded proposals. Finalize the labels
+first. A correct proposal then gets a separate preview-and-apply control. You
+can edit its text and target scope, inspect the exact ledger change, apply it,
+or remove it later with an immutable retirement transition.
 
 The server binds to loopback and creates a random credential for each launch.
 It requires this credential on all API routes. It reads the existing corpus
@@ -214,6 +241,7 @@ then connected as an explicit import:
 bun run preview:anthropic -- /path/to/data-export.zip personal
 bun run import:anthropic -- /path/to/data-export.zip personal
 bun run src/cli.ts receipts imports 20
+bun run src/cli.ts source recover
 bun run src/cli.ts source reconcile
 ```
 
@@ -225,12 +253,20 @@ design artifacts are left for separately reviewable adapters rather than folded
 into conversations implicitly.
 
 `corpus/manifest.json` is the durable authority for active source mappings. Each
-mapping carries the canonical event-batch hash and conversation projection hash;
-the legacy `contentHash` field remains the projection hash so existing evidence
-pointers stay resolvable. SQLite keeps rebuildable event metadata, typed
-relations, source-to-event provenance, and conversation/FTS projections.
-Ingestion reconciles all of them under the ingest lock, and active guards fail
-closed when the manifest receipt or event batch is unavailable.
+mapping carries the canonical event-batch hash and conversation projection
+hash. The legacy `contentHash` field remains the projection hash so existing
+evidence pointers stay resolvable. SQLite keeps rebuildable `active_sources`,
+event metadata, typed relations, source-to-event provenance, and
+conversation/FTS projections.
+
+Imports and local ingestion record a private, hash-sealed operation intent
+before replacing the manifest. After a crash, Chatlog resumes projection,
+derivation, receipt, and completion work. Run `chatlog source recover` to
+resume pending operations explicitly. After upgrading a pre-projection
+database, run `chatlog source reconcile` once. It recovers pending work first
+and can reconstruct missing active analysis rows from canonical objects.
+Workbench, MCP, operator queries, and Pi bridge emission fail closed when
+authority, projection, event batches, or derived state disagree.
 
 Reasoning and opaque provider events are preserved as evidence but never enter
 ordinary message FTS, derived insight mining, handoffs, or context delivery.
@@ -248,32 +284,34 @@ unaccountedItems = sourceItems - eventBackedItems - lossOnlyItems = 0
 ```
 
 `eventBackedItems` counts unique native source positions, not emitted events.
-An item may produce several canonical events. `redactedItems` records provider
-redaction while `opaqueItems` records an unrecognized item retained as evidence;
-`policyOmissions` are recognized items omitted by capture policy. Malformed JSON,
-malformed objects, invalid identifiers, invalid timestamps, redaction failures,
-and invalid event relations fail closed and do not create a successful receipt.
+An item can produce several canonical events. `redactedItems` records provider
+redaction while `opaqueItems` records an unrecognized item retained as
+evidence. `policyOmissions` are recognized items omitted by capture policy.
+Malformed JSON, malformed objects, invalid identifiers, invalid timestamps,
+redaction failures, and invalid event relations fail closed and do not create
+a successful receipt.
 
 The closed semantic-loss codes are:
 `capture-policy-omission`, `provider-field-unsupported`,
 `encrypted-content-unavailable`, `attachment-body-excluded`,
 `reasoning-excluded-from-projection`, `unknown-well-formed-item`,
-`partial-live-tail`, and `relation-target-missing`. Every loss records provider,
-harness, source item kind and locator, count, observation interval when
-available, affected event IDs when available, adapter and capture recipes, and
-whether a later adapter replay can recover the meaning. Unknown but well-formed
-records become redacted `provider.opaque` evidence and are grouped into bounded
-maintenance nominations. Nomination rows contain only provider, harness,
-source kind, native item kind, counts, and timestamps; they are not schema
-authority and are never used for normal retrieval.
+`partial-live-tail`, and `relation-target-missing`. Every loss records
+provider, harness, source item kind and locator, count, observation interval
+when available, affected event IDs when available, adapter and capture
+recipes, and whether a later adapter replay can recover the meaning. Unknown
+but well-formed records become redacted `provider.opaque` evidence and are
+grouped into bounded maintenance nominations. Nomination rows contain only
+provider, harness, source kind, native item kind, counts, and timestamps. They
+are not schema authority and are never used for normal retrieval.
+
 Each successful source batch has an immutable content-addressed source receipt
 under `receipts/sources/`. It binds the redacted source hash, event-batch hash,
 recipes, normalized/opaque/redacted/omitted/loss-only disposition counts,
 semantic-loss counts, partial-tail state, active-source authority version, and
-event/conversation projection hashes.
-Receipt hashes are deterministic: identical source bytes and recipes return the
-same hash; a recipe change writes a new batch, receipt, and projection without
-mutating the old objects. Inspect aggregate evidence without transcript text:
+event/conversation projection hashes. Receipt hashes are deterministic:
+identical source bytes and recipes return the same hash. A recipe change writes
+a new batch, receipt, and projection without mutating old objects. Inspect
+aggregate evidence without transcript text:
 
 ```sh
 bun run src/cli.ts receipts sources 20
@@ -296,6 +334,9 @@ bun run query ask 'what did I try last time for X' 10
 bun run query ask-lexical 'what did I try last time for X' 10
 bun run query project /exact/project/path
 bun run query orchestration-profile
+bun run query workflow-evolution
+bun run query workflow-outcomes
+bun run query workflow-patterns
 bun run query refinery [skill|gotcha-skill|memory-or-adr|claude-md|wiki-page-later] [limit]
 bun run query candidate <candidate-id>
 bun run query eval-plan <candidate-id>
@@ -371,6 +412,44 @@ than hardcoded role mappings. The report publishes the labelled-sample confusion
 rows, per-role decision boundaries, and a distinguishability test using Wilson
 95% intervals.
 
+## Workflow evolution
+
+`query workflow-evolution` derives a local, projection-bound event ledger from
+explicit operator workflow instructions. Exact copies propagated across
+conversations in the same provider/harness session and UTC day are one event;
+the report retains a count of collapsed conversation copies and bounded
+canonical evidence. Raw session and resume identifiers are replaced with
+opaque hashes.
+
+The first tracer recognizes the explicit approval-policy change that lets
+verified agents integrate without a separate operator review gate while
+retaining required checks. Generic autonomous-integration instructions remain
+autonomy events rather than receiving that stronger policy claim. The ledger
+is descriptive, performs no egress, changes no harness authority, and makes no
+causal outcome claim.
+
+`query workflow-outcomes` adds symmetric project-scoped context around those
+events. It deduplicates active session snapshots, excludes the policy episode
+and sessions spanning the anchor, requires episodes to be fully contained on
+either side, and reports completion, friction, rework, session-shape, and
+same-provider/harness token proxies only above declared
+sample floors. Sparse windows remain visible without deltas. Every comparison
+is explicitly descriptive: temporal association does not establish that a
+workflow change caused the observed result.
+
+`query workflow-patterns` synthesizes repeated operator instructions from the
+event ledger. A pattern is one workflow kind, explicit signal, and inferred
+agent role repeated across at least three distinct opaque episodes and two UTC
+days. Same-episode and one-day fan-out cannot inflate the floor, and episode
+lineages are not presented as statistical independence. Chatlog distinguishes
+exact recurrence, reformulation, and return to a prior formulation while
+keeping the underlying boundary effect separate. Outcome directions appear
+only with three covered event windows and remain descriptive rather than
+causal. Workbench turns this artifact into a filterable detail Explorer.
+Private deployments may separately opt into append-only local reviews with a
+presentation label and context note; annotations never rewrite the artifact,
+canonical evidence, or an agent harness.
+
 Slice 3 consumes the role artifact plus an `agent-eval/promotion-v1` result and
 runs the existing external scorer to rank a concrete role pattern against its
 control. The default query only replays local metrics and performs no hosted
@@ -402,14 +481,17 @@ least three distinct logical sessions. It emits typed, content-addressed
 
 Frequency is only a nomination signal. Each candidate includes diverse session
 evidence, stable turn pointers, rejection checks, and an unmeasured paired
-`agent-eval/promotion-v1` plan. Evaluation remains explicitly ineligible until
-a curator accepts and installs the item through its intended existing channel.
-Then compare at least three control/treatment runs from the same clean commit,
-measuring gate pass, tokens/time to gate, interventions, and explicit
-re-derivation. Keep what measurably helps; revise or remove what does not.
+`agent-eval/promotion-v1` plan. Evaluation remains ineligible until a curator
+completes the blinded review. A separate Memory Lab action can then preview and
+append an exact, source-bound insight transition. This does not install a skill,
+write an ADR or `CLAUDE.md`, or claim measured improvement. Compare at least
+three control/treatment runs from the same clean commit, measuring gate pass,
+tokens/time to gate, interventions, and explicit re-derivation. Keep what
+measurably helps; revise or retire what does not.
 
-The refinery has no accept, install, or promote command. It does not write
-skills, memory, ADRs, `CLAUDE.md`, or wiki pages. See
+The `refine` command itself has no accept, install, or promote operation and
+never writes skills, memory, ADRs, `CLAUDE.md`, or wiki pages. Governed insight
+application is a separate operator-authorized ledger path. See
 `docs/knowledge-refinery.md` for the curation and measurement contract.
 
 The optional semantic judge fails closed on malformed output and emits separate
@@ -549,9 +631,11 @@ ChatGPT exports and generic JSONL are connected, explicit local sources:
 
 ```sh
 chatlog preview chatgpt /path/to/chatgpt-export.zip personal
-chatlog import chatgpt /path/to/chatgpt-export.zip personal
+chatlog import chatgpt /path/to/chatgpt-export.zip personal \
+  --source-content-hash <sha256> --proposal-id <sha256>
 chatlog preview generic /path/to/chatlog-events.jsonl coding
-chatlog import generic /path/to/chatlog-events.jsonl coding
+chatlog import generic /path/to/chatlog-events.jsonl coding \
+  --source-content-hash <sha256> --proposal-id <sha256>
 ```
 
 The ChatGPT adapter preserves the declared parent graph and alternate

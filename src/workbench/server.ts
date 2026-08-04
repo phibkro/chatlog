@@ -8,6 +8,12 @@ import { DerivedProjectionDriftError } from "../derived-authority";
 import { ActiveProjectionDriftError } from "../source-authority";
 import { MemoryLab, type MemoryLabResult } from "./memory-lab";
 import { ContextManagement, type ContextManagementResult } from "./context-management";
+import {
+  PatternAnnotationBusyError,
+  PatternAnnotationConflictError,
+  PatternAnnotationIntegrityError,
+  type PatternAnnotationWriteInput,
+} from "../pattern-annotations";
 
 const MEMORY_LAB_WRITE_HEADER = "X-Chatlog-Memory-Lab";
 const MEMORY_LAB_MAX_BODY_BYTES = 16 * 1024;
@@ -33,6 +39,7 @@ export interface WorkbenchAuthConfig {
   credential: string;
   operatorId: string;
   origin: string;
+  allowedOrigins: ReadonlySet<string>;
 }
 
 export interface WorkbenchHandlerOptions {
@@ -40,6 +47,7 @@ export interface WorkbenchHandlerOptions {
   credential?: string;
   operatorId?: string;
   origin?: string;
+  allowedOrigins?: ReadonlySet<string>;
 }
 
 function listenerOrigin(host: string, port: number): string {
@@ -47,22 +55,35 @@ function listenerOrigin(host: string, port: number): string {
   return `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`;
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+function isLoopbackHost(value: string): boolean {
+  const host = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
+}
+
+function requireConfidentialOrigin(url: URL, label: string): void {
+  if (url.protocol === "http:" && !isLoopbackHost(url.hostname))
+    throw new Error(`${label} must use HTTPS outside the loopback boundary`);
+}
+
 function normalizeOrigin(value: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error("Workbench listener origin must be a valid URL");
+    throw new Error("Workbench origin must be a valid URL");
   }
   if (
-    parsed.protocol !== "http:" ||
+    !["http:", "https:"].includes(parsed.protocol) ||
     parsed.username ||
     parsed.password ||
     parsed.pathname !== "/" ||
     parsed.search ||
     parsed.hash
   )
-    throw new Error("Workbench listener origin must be an HTTP origin");
+    throw new Error("Workbench origin must be a bare HTTP(S) origin");
+  requireConfidentialOrigin(parsed, "Workbench origin");
   return parsed.origin;
 }
 
@@ -92,12 +113,17 @@ function normalizeOperatorId(value: string | undefined): string {
 
 function resolveWorkbenchAuth(options: WorkbenchHandlerOptions = {}): WorkbenchAuthConfig {
   const supplied = options.auth ?? {};
+  const origin = normalizeOrigin(supplied.origin ?? options.origin ?? DEFAULT_WORKBENCH_ORIGIN);
+  const allowedOrigins = new Set<string>([origin]);
+  for (const candidate of supplied.allowedOrigins ?? options.allowedOrigins ?? [])
+    allowedOrigins.add(normalizeOrigin(candidate));
   return {
     credential: normalizeCredential(
       supplied.credential ?? options.credential ?? randomBytes(32).toString("base64url"),
     ),
     operatorId: normalizeOperatorId(supplied.operatorId ?? options.operatorId),
-    origin: normalizeOrigin(supplied.origin ?? options.origin ?? DEFAULT_WORKBENCH_ORIGIN),
+    origin,
+    allowedOrigins,
   };
 }
 
@@ -105,10 +131,12 @@ export function createWorkbenchAuth(
   host: string,
   port: number,
   operatorId?: string,
+  externalOrigins: readonly string[] = [],
 ): WorkbenchAuthConfig {
   return resolveWorkbenchAuth({
     origin: listenerOrigin(host, port),
     operatorId,
+    allowedOrigins: new Set(externalOrigins),
   });
 }
 
@@ -169,23 +197,27 @@ function normalizeHost(value: string | null): string | undefined {
   }
 }
 
-function requestMatchesListener(request: Request, url: URL, origin: string): string | undefined {
-  if (url.origin !== origin) return "invalid listener origin";
-  const expectedHost = normalizeHost(new URL(origin).host);
+function requestMatchesListener(
+  request: Request,
+  url: URL,
+  auth: WorkbenchAuthConfig,
+): string | undefined {
+  if (!auth.allowedOrigins.has(url.origin)) return "invalid listener origin";
+  const expectedHost = normalizeHost(url.host);
   if (expectedHost === undefined || normalizeHost(request.headers.get("host")) !== expectedHost)
     return "invalid host";
   const requestOrigin = request.headers.get("origin");
-  if (requestOrigin !== null && requestOrigin !== origin) return "invalid origin";
+  if (requestOrigin !== null && requestOrigin !== url.origin) return "invalid origin";
   return undefined;
 }
 
-function bootstrapResponse(credential: string): Response {
+function bootstrapResponse(credential: string, secure: boolean): Response {
   return securityHeaders(
     new Response(null, {
       status: 204,
       headers: {
         "Cache-Control": "no-store",
-        "Set-Cookie": `${WORKBENCH_AUTH_COOKIE}=${credential}; Path=/; HttpOnly; SameSite=Strict`,
+        "Set-Cookie": `${WORKBENCH_AUTH_COOKIE}=${credential}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`,
         "X-Content-Type-Options": "nosniff",
       },
     }),
@@ -216,7 +248,51 @@ function errorStatus(message: string): number {
   if (message === "knowledge candidate artifact not found") return 404;
   if (message.startsWith("knowledge candidate not found: ")) return 404;
   if (message.startsWith("project not found: ")) return 404;
+  if (message.startsWith("session not found: ")) return 404;
   return 400;
+}
+
+class WorkbenchHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "WorkbenchHttpError";
+  }
+}
+
+async function boundedJsonBody(request: Request, maximumBytes = 8 * 1024): Promise<unknown> {
+  const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json")
+    throw new WorkbenchHttpError("content type must be application/json", 415);
+  if (!request.body) throw new WorkbenchHttpError("missing JSON body", 400);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const readNext = async (): Promise<void> => {
+    const { done, value } = await reader.read();
+    if (done) return;
+    bytes += value.byteLength;
+    if (bytes > maximumBytes) {
+      await reader.cancel();
+      throw new WorkbenchHttpError(`request body exceeds ${maximumBytes} bytes`, 413);
+    }
+    chunks.push(value);
+    return readNext();
+  };
+  await readNext();
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new WorkbenchHttpError("request body is not valid JSON", 400);
+  }
 }
 
 function securityHeaders(response: Response): Response {
@@ -325,15 +401,36 @@ async function contextBody<T>(
   }
 }
 
+export interface WorkbenchAnnotationHttpConfig {
+  enabled: boolean;
+  allowedOrigins: ReadonlySet<string>;
+  maximumWritesPerMinute?: number;
+}
+function isWorkbenchAnnotationHttpConfig(value: unknown): value is WorkbenchAnnotationHttpConfig {
+  return (
+    typeof value === "object" && value !== null && "enabled" in value && "allowedOrigins" in value
+  );
+}
+
 export function workbenchHandler(
   data: WorkbenchData,
   publicRoot = resolve(import.meta.dir, "public"),
-  memoryLab: MemoryLab | null = null,
+  memoryLabOrAnnotation: MemoryLab | WorkbenchAnnotationHttpConfig | null = null,
   memoryLabWrites = false,
   contextManagement?: ContextManagement | null,
   contextWrites = false,
   options: WorkbenchHandlerOptions = {},
+  annotationConfig?: WorkbenchAnnotationHttpConfig,
 ) {
+  const annotation =
+    annotationConfig ??
+    (isWorkbenchAnnotationHttpConfig(memoryLabOrAnnotation)
+      ? memoryLabOrAnnotation
+      : { enabled: false, allowedOrigins: new Set<string>() });
+  const memoryLab = isWorkbenchAnnotationHttpConfig(memoryLabOrAnnotation)
+    ? null
+    : memoryLabOrAnnotation;
+  const writeTimes: number[] = [];
   const auth = resolveWorkbenchAuth(options);
   const context =
     contextManagement === undefined && typeof data.root === "string"
@@ -343,7 +440,7 @@ export function workbenchHandler(
   return async function fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
-      const boundaryError = requestMatchesListener(request, url, auth.origin);
+      const boundaryError = requestMatchesListener(request, url, auth);
       if (boundaryError !== undefined) return json({ error: boundaryError }, 403);
       if (url.pathname === WORKBENCH_BOOTSTRAP_PATH) {
         if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
@@ -357,7 +454,7 @@ export function workbenchHandler(
         if (credential === undefined || !constantTimeCredentialMatch(credential, auth.credential))
           return json({ error: "workbench bootstrap credential required" }, 401);
         bootstrapConsumed = true;
-        return bootstrapResponse(auth.credential);
+        return bootstrapResponse(auth.credential, url.protocol === "https:");
       }
       if (url.pathname.startsWith("/api/")) {
         const credential = requestCredential(request);
@@ -436,6 +533,27 @@ export function workbenchHandler(
             )
           : contextManagementResponse(body);
       }
+      if (request.method === "POST" && url.pathname === "/api/pattern-annotations") {
+        if (!annotation.enabled) return json({ error: "pattern annotations are disabled" }, 405);
+        const origin = request.headers.get("Origin");
+        if (!origin || !annotation.allowedOrigins.has(origin))
+          throw new WorkbenchHttpError("annotation origin is not allowed", 403);
+        if (request.headers.get("Sec-Fetch-Site") !== "same-origin")
+          throw new WorkbenchHttpError(
+            "annotation writes require same-origin browser fetch metadata",
+            403,
+          );
+        const now = Date.now();
+        const cutoff = now - 60_000;
+        while (writeTimes.length && writeTimes[0] < cutoff) writeTimes.shift();
+        const maximumWrites = annotation.maximumWritesPerMinute ?? 30;
+        if (writeTimes.length >= maximumWrites)
+          throw new WorkbenchHttpError("annotation write rate exceeded; retry later", 429);
+        writeTimes.push(now);
+        const input = await boundedJsonBody(request);
+        const annotationResult = await data.annotatePattern(input as PatternAnnotationWriteInput);
+        return json({ annotation: annotationResult });
+      }
       if (request.method !== "GET" && request.method !== "HEAD")
         return json({ error: "read-only workbench" }, 405);
       if (url.pathname === "/api/health") {
@@ -446,6 +564,7 @@ export function workbenchHandler(
       if (url.pathname === "/api/projects")
         return json(data.projects(url.searchParams.get("limit")));
       if (url.pathname === "/api/sessions") return json(data.sessions(url));
+      if (url.pathname === "/api/session") return json(await data.session(url));
       if (url.pathname === "/api/search") return json(data.search(url));
       if (url.pathname === "/api/prior-attempts") return json(await data.priorAttempts(url));
       if (url.pathname === "/api/project-intelligence")
@@ -489,10 +608,25 @@ export function workbenchHandler(
       );
     } catch (error: unknown) {
       const message = redact(error instanceof Error ? error.message : String(error));
+      if (error instanceof PatternAnnotationConflictError) {
+        return json(
+          {
+            error: message,
+            current: error.current,
+            snapshot: error.snapshot,
+          },
+          409,
+        );
+      }
       const status =
-        error instanceof ActiveProjectionDriftError || error instanceof DerivedProjectionDriftError
-          ? 503
-          : errorStatus(message);
+        error instanceof WorkbenchHttpError
+          ? error.status
+          : error instanceof ActiveProjectionDriftError ||
+              error instanceof DerivedProjectionDriftError ||
+              error instanceof PatternAnnotationIntegrityError ||
+              error instanceof PatternAnnotationBusyError
+            ? 503
+            : errorStatus(message);
       return json({ error: message }, status);
     }
   };
@@ -505,11 +639,16 @@ export interface WorkbenchBindConfig {
   contextWrites: boolean;
 }
 
+export interface WorkbenchAnnotationConfig {
+  enabled: boolean;
+  allowedOrigins: Set<string>;
+}
+
 export function resolveBindConfig(
   env: Record<string, string | undefined> = process.env,
 ): WorkbenchBindConfig {
   const host = env.CHATLOG_HOST ?? "127.0.0.1";
-  const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
+  const loopback = isLoopbackHost(host);
   if (!loopback && env.CHATLOG_ALLOW_REMOTE !== "1") {
     throw new Error("Refusing non-loopback bind without CHATLOG_ALLOW_REMOTE=1");
   }
@@ -524,11 +663,64 @@ export function resolveBindConfig(
   };
 }
 
+export function resolveAnnotationConfig(
+  bind: Pick<WorkbenchBindConfig, "host" | "port">,
+  env: Record<string, string | undefined> = process.env,
+): WorkbenchAnnotationConfig {
+  const enabled = env.CHATLOG_ALLOW_ANNOTATIONS === "1";
+  if (enabled && !isLoopbackHost(bind.host) && env.CHATLOG_ACK_REMOTE_ANNOTATIONS !== "1")
+    throw new Error(
+      "Refusing annotations on a non-loopback bind without CHATLOG_ACK_REMOTE_ANNOTATIONS=1",
+    );
+  const allowedOrigins = new Set<string>(
+    [
+      `http://127.0.0.1:${bind.port}`,
+      `http://localhost:${bind.port}`,
+      `http://[::1]:${bind.port}`,
+    ].map((candidate) => new URL(candidate).origin),
+  );
+  for (const candidate of (env.CHATLOG_ANNOTATION_ORIGINS ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      throw new Error(`Invalid annotation origin: ${candidate}`);
+    }
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    )
+      throw new Error(`Annotation origin must be a bare HTTP(S) origin: ${candidate}`);
+    requireConfidentialOrigin(url, "Annotation origin");
+    allowedOrigins.add(url.origin);
+  }
+  return { enabled, allowedOrigins };
+}
+
 if (import.meta.main) {
   const root = resolveDataRoot();
-  const { host, port, memoryLabWrites, contextWrites } = resolveBindConfig();
-  const auth = createWorkbenchAuth(host, port, process.env.CHATLOG_OPERATOR_ID);
-  const data = new WorkbenchData(root);
+  const bind = resolveBindConfig();
+  const { host, port, memoryLabWrites, contextWrites } = bind;
+  const annotationConfig = resolveAnnotationConfig(bind);
+  const auth = createWorkbenchAuth(
+    host,
+    port,
+    process.env.CHATLOG_OPERATOR_ID,
+    (process.env.CHATLOG_WORKBENCH_ORIGINS ?? "")
+      .split(",")
+      .map((candidate) => candidate.trim())
+      .filter(Boolean),
+  );
+  const data = new WorkbenchData(root, {
+    annotationsEnabled: annotationConfig.enabled,
+  });
   const server = Bun.serve({
     hostname: host,
     port,
@@ -540,13 +732,22 @@ if (import.meta.main) {
       new ContextManagement(root),
       contextWrites,
       { auth },
+      annotationConfig,
     ),
   });
+  console.log(`Chatlog Workbench: ${server.url}`);
   console.log(
     `Chatlog Workbench bootstrap URL: ${workbenchBootstrapUrl(
       new URL(server.url).origin,
       auth.credential,
     )}`,
   );
+  for (const origin of auth.allowedOrigins) {
+    if (origin === auth.origin) continue;
+    console.log(
+      `Chatlog Workbench external bootstrap URL: ${workbenchBootstrapUrl(origin, auth.credential)}`,
+    );
+  }
   console.log(`Data root: ${root}`);
+  console.log(`Pattern annotations: ${annotationConfig.enabled ? "enabled" : "disabled"}`);
 }

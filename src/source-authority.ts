@@ -1,15 +1,27 @@
 import type { Database } from "bun:sqlite";
 import { Effect } from "effect";
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexConversation, indexEventBatch } from "./analysis";
+import { validateCanonicalConversation } from "./conversation-projection";
 import { eventBatchHash, readEventBatch } from "./event-store";
 import { ACTIVE_SOURCE_AUTHORITY_VERSION, stableStringify } from "./events";
 import { validateSourceReceipt, type SourceReceipt } from "./source-receipts";
 import type { Conversation } from "./types";
+import {
+  EXPORT_MAX_CORPUS_OBJECT_BYTES,
+  EXPORT_MAX_MANIFEST_BYTES,
+  readBoundedFile,
+  readBoundedFileSync,
+} from "./importers/export-limits";
 
 export { ACTIVE_SOURCE_AUTHORITY_VERSION };
+
+export interface ManifestRecipeSet {
+  redactionRecipe: string;
+  projectIdentityRecipe: string;
+  eventRecipe: string;
+}
 
 export interface ManifestSourceEntry {
   contentHash: string;
@@ -18,6 +30,9 @@ export interface ManifestSourceEntry {
   receiptHash?: string;
   size?: number;
   mtimeMs?: number;
+  redactionRecipe?: string;
+  projectIdentityRecipe?: string;
+  eventRecipe?: string;
 }
 
 export interface CorpusManifest {
@@ -25,6 +40,7 @@ export interface CorpusManifest {
   redactionRecipe?: string;
   projectIdentityRecipe?: string;
   eventRecipe?: string;
+  recipeMigration?: ManifestRecipeSet;
   sources: Record<string, ManifestSourceEntry>;
 }
 
@@ -71,12 +87,29 @@ function validateManifest(value: unknown, path: string): CorpusManifest {
   const manifest = value as Partial<CorpusManifest>;
   if (manifest?.version !== 1 || !manifest.sources || typeof manifest.sources !== "object")
     invalidSourceAuthority(`${path}: unsupported corpus manifest`);
+  const validRecipe = (recipe: unknown): boolean =>
+    typeof recipe === "string" && recipe.length > 0 && recipe.length <= 256;
+  for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"] as const)
+    if (manifest[key] !== undefined && !validRecipe(manifest[key]))
+      invalidSourceAuthority(`${path}: invalid corpus recipe`);
+  if (
+    manifest.recipeMigration !== undefined &&
+    (!manifest.recipeMigration ||
+      typeof manifest.recipeMigration !== "object" ||
+      !validRecipe(manifest.recipeMigration.redactionRecipe) ||
+      !validRecipe(manifest.recipeMigration.projectIdentityRecipe) ||
+      !validRecipe(manifest.recipeMigration.eventRecipe))
+  )
+    invalidSourceAuthority(`${path}: invalid corpus recipe migration`);
   for (const [sourcePath, entry] of Object.entries(manifest.sources)) {
     if (!sourcePath || !entry || !/^[a-f0-9]{64}$/.test(entry.contentHash))
       invalidSourceAuthority(`${path}: invalid source mapping`);
     for (const key of ["eventBatchHash", "conversationProjectionHash", "receiptHash"] as const)
       if (entry[key] !== undefined && !/^[a-f0-9]{64}$/.test(entry[key]!))
         invalidSourceAuthority(`${path}: invalid source mapping`);
+    for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"] as const)
+      if (entry[key] !== undefined && !validRecipe(entry[key]))
+        invalidSourceAuthority(`${path}: invalid source recipe`);
   }
   return manifest as CorpusManifest;
 }
@@ -131,12 +164,26 @@ export function manifestSourcesHash(
 
 export async function loadCorpusManifest(root: string): Promise<CorpusManifest> {
   const path = join(root, "corpus", "manifest.json");
-  return validateManifest(JSON.parse(await readFile(path, "utf8")), path);
+  const result = await readBoundedFile(
+    path,
+    EXPORT_MAX_MANIFEST_BYTES,
+    `${path} (corpus manifest)`,
+    root,
+  );
+  if (!result.ok) invalidSourceAuthority(result.error.message);
+  return validateManifest(JSON.parse(result.value.text), path);
 }
 
 export function loadCorpusManifestSync(root: string): CorpusManifest {
   const path = join(root, "corpus", "manifest.json");
-  return validateManifest(JSON.parse(readFileSync(path, "utf8")), path);
+  const result = readBoundedFileSync(
+    path,
+    EXPORT_MAX_MANIFEST_BYTES,
+    `${path} (corpus manifest)`,
+    root,
+  );
+  if (!result.ok) invalidSourceAuthority(result.error.message);
+  return validateManifest(JSON.parse(result.value.text), path);
 }
 
 export function reconcileActiveSources(
@@ -263,9 +310,36 @@ function indexedMappingExists(
   );
 }
 
-function canonicalConversationHash(conversation: Conversation): string {
-  const { contentHash: _contentHash, ...canonical } = conversation;
-  return sha256(JSON.stringify(canonical));
+export async function readCanonicalConversationObject(
+  root: string,
+  sourcePath: string,
+  contentHash: string,
+): Promise<Conversation> {
+  const objectPath = join(
+    root,
+    "corpus",
+    "objects",
+    contentHash.slice(0, 2),
+    `${contentHash}.json`,
+  );
+  const result = await readBoundedFile(
+    objectPath,
+    EXPORT_MAX_CORPUS_OBJECT_BYTES,
+    `${objectPath} (canonical corpus object)`,
+    root,
+  );
+  if (!result.ok)
+    throw new MissingIndexedSourceError(sourcePath, contentHash, { cause: result.error });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.value.text);
+  } catch {
+    invalidSourceAuthority(`${objectPath}: canonical object is not valid JSON`);
+  }
+  const conversation = validateCanonicalConversation(parsed, { contentHash, sourcePath });
+  if (!conversation)
+    invalidSourceAuthority(`${objectPath}: canonical object hash or shape mismatch`);
+  return conversation;
 }
 
 export async function reconcileSourceAuthority(
@@ -274,6 +348,18 @@ export async function reconcileSourceAuthority(
   sources: Record<string, ManifestSourceEntry>,
 ): Promise<SourceAuthorityReceipt> {
   validateReceiptMappings(root, sources);
+  const canonical = new Map<string, Conversation>();
+  for (const [sourcePath, entry] of Object.entries(sources).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const conversation = await readCanonicalConversationObject(root, sourcePath, entry.contentHash);
+    if (
+      entry.conversationProjectionHash &&
+      conversation.contentHash !== entry.conversationProjectionHash
+    )
+      invalidSourceAuthority(`${sourcePath}: canonical object does not match projection mapping`);
+    canonical.set(sourcePath, conversation);
+  }
   try {
     return { ...reconcileActiveSources(db, sources), reindexed: 0 };
   } catch (error) {
@@ -296,32 +382,7 @@ export async function reconcileSourceAuthority(
         entry.conversationProjectionHash ?? entry.contentHash,
       );
     }
-    const objectPath = join(
-      root,
-      "corpus",
-      "objects",
-      entry.contentHash.slice(0, 2),
-      `${entry.contentHash}.json`,
-    );
-    let conversation: Conversation;
-    try {
-      conversation = JSON.parse(await readFile(objectPath, "utf8")) as Conversation;
-    } catch (cause) {
-      return Effect.runPromise(
-        Effect.fail(new MissingIndexedSourceError(sourcePath, entry.contentHash, { cause })),
-      );
-    }
-    if (
-      conversation.contentHash !== entry.contentHash ||
-      canonicalConversationHash(conversation) !== entry.contentHash ||
-      conversation.sourcePath !== sourcePath ||
-      !Array.isArray(conversation.turns) ||
-      (entry.conversationProjectionHash &&
-        conversation.contentHash !== entry.conversationProjectionHash)
-    )
-      invalidSourceAuthority(
-        `${objectPath}: canonical object does not match manifest source mapping`,
-      );
+    const conversation = canonical.get(sourcePath)!;
     if (indexConversation(db, conversation, entry.mtimeMs ?? 0, entry.size ?? 0)) reindexed++;
     if (!indexedMappingExists(db, sourcePath, entry))
       return Effect.runPromise(

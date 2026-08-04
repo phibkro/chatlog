@@ -1,10 +1,11 @@
-import { chmod, lstat, mkdir, opendir, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { lstat, opendir } from "node:fs/promises";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
-import { projectConversation } from "../conversation-projection";
+import { validateCanonicalConversation, projectConversation } from "../conversation-projection";
 import { normalizeConversationDomain } from "../domain";
 import { validateBoundedRecord } from "../bounded-input";
-import { persistEventBatch } from "../event-store";
+import { eventBatchHash, persistEventBatch } from "../event-store";
+import { durableAtomicWrite } from "../durable-fs";
 import {
   capture,
   makeEvent,
@@ -18,14 +19,23 @@ import {
   type EventBatch,
   type SemanticLossCode,
 } from "../events";
-import { reconcileSourceAuthority, type CorpusManifest } from "../source-authority";
+import {
+  manifestSourcesHash,
+  reconcileSourceAuthority,
+  type CorpusManifest,
+} from "../source-authority";
 import { buildSourceReceipt, persistSourceReceipt, type SourceReceipt } from "../source-receipts";
 import { withIngestLock } from "../lock";
 import { redact } from "../redact";
 import type { Conversation, ConversationDomain } from "../types";
 import type { DeriveSummary } from "../derive";
+import {
+  createOperationIntent,
+  recoverPendingOperations,
+  resolveManifestWriteFailure,
+  resumeCommittedOperation,
+} from "../operation-intents";
 import type { RefinerySummary } from "../refinery";
-import { deriveCorpus } from "../derive";
 import {
   EXPORT_MAX_ARCHIVE_BYTES,
   EXPORT_MAX_CORPUS_OBJECT_BYTES,
@@ -52,7 +62,6 @@ export {
   EXPORT_MAX_MEMBERS as CHATGPT_MAX_MEMBERS,
   EXPORT_MAX_TOTAL_BYTES as CHATGPT_MAX_TOTAL_BYTES,
 } from "./export-limits";
-import { refineCorpus } from "../refinery";
 export class ChatGPTExportError extends Error {
   readonly code = "chatgpt-export-invalid";
 }
@@ -213,6 +222,7 @@ export interface ChatGPTReadOptions {
 export interface ChatGPTImportOptions {
   domain?: ConversationDomain;
   derive?: boolean;
+  preview: Pick<ChatGPTPreviewSummary, "source" | "sourceContentHash" | "proposalId">;
 }
 
 export interface ChatGPTPreviewSummary {
@@ -1390,11 +1400,7 @@ export async function readChatGPTExport(
 }
 
 async function atomicWrite(path: string, value: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, value, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, value);
 }
 
 async function loadManifest(root: string): Promise<CorpusManifest> {
@@ -1438,6 +1444,7 @@ async function loadManifest(root: string): Promise<CorpusManifest> {
 async function readPriorConversation(
   root: string,
   contentHash: string,
+  sourcePath: string,
 ): Promise<Conversation | null> {
   const path = join(root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`);
   let info;
@@ -1461,8 +1468,9 @@ async function readPriorConversation(
     root,
   );
   if (!contentResult.ok) return boundedFailure(contentResult.error);
+  let parsed: unknown;
   try {
-    return JSON.parse(contentResult.value.text) as Conversation;
+    parsed = JSON.parse(contentResult.value.text);
   } catch (error: unknown) {
     failClosed(
       `cannot parse ChatGPT prior corpus object ${path}: ${redact(
@@ -1471,6 +1479,9 @@ async function readPriorConversation(
       error,
     );
   }
+  const conversation = validateCanonicalConversation(parsed, { contentHash, sourcePath });
+  if (!conversation) failClosed(`${path}: ChatGPT prior corpus object hash or shape mismatch`);
+  return conversation;
 }
 
 async function previousClassification(
@@ -1485,7 +1496,11 @@ async function previousClassification(
   if (previous.contentHash === conversation.contentHash) return "unchanged";
   if (!previous.contentHash) return "changed";
   try {
-    const oldConversation = await readPriorConversation(root, previous.contentHash);
+    const oldConversation = await readPriorConversation(
+      root,
+      previous.contentHash,
+      conversation.sourcePath,
+    );
     if (!oldConversation) return "changed";
     const oldDomain = normalizeConversationDomain(oldConversation.domain ?? "general");
     if (oldDomain !== domain) {
@@ -1566,6 +1581,7 @@ export async function previewChatGPTExport(
       schema: "chatlog/chatgpt-import-preview-v1",
       source: parsed.source,
       sourceContentHash: parsed.sourceContentHash,
+      manifestAuthorityHash: manifestSourcesHash(manifest.sources),
       domain,
       classifications,
     }),
@@ -1609,14 +1625,33 @@ export async function previewChatGPTExport(
 export async function importChatGPTExport(
   sourcePath: string,
   root: string,
-  options: ChatGPTImportOptions = {},
+  options: ChatGPTImportOptions,
 ): Promise<ChatGPTImportSummary> {
+  const expectedPreview = options.preview;
+  if (!expectedPreview) failClosed("ChatGPT import requires preview proposal pins");
   return withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
     const domain = normalizeConversationDomain(options.domain ?? "general");
+    const current = await previewChatGPTExport(sourcePath, root, { domain });
+    if (
+      !current.ready ||
+      current.source !== expectedPreview.source ||
+      current.sourceContentHash !== expectedPreview.sourceContentHash ||
+      current.proposalId !== expectedPreview.proposalId
+    )
+      failClosed(`${resolve(sourcePath)}: source no longer matches the preview proposal`);
     const parsed = await readChatGPTExport(sourcePath);
+    if (
+      expectedPreview &&
+      (parsed.source !== expectedPreview.source ||
+        parsed.sourceContentHash !== expectedPreview.sourceContentHash)
+    )
+      failClosed(`${resolve(sourcePath)}: source changed after the preview proposal was checked`);
     const sourceInfo = await lstat(parsed.source);
     const manifestPath = join(root, "corpus", "manifest.json");
     const manifest = await loadManifest(root);
+    const beforeManifest = structuredClone(manifest);
+    const afterManifest = structuredClone(manifest);
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
     const summary: Omit<ChatGPTImportSummary, "receipt" | "receipts"> = {
       source: parsed.source,
@@ -1632,8 +1667,21 @@ export async function importChatGPTExport(
       omitted: 0,
     };
     const receipts: SourceReceipt[] = [];
-    let added = 0;
-    let replaced = 0;
+    const preparedRows: Array<
+      Readonly<{
+        batch: EventBatch;
+        batchHash: string;
+        conversation: Conversation;
+        sourceReceipt: SourceReceipt;
+      }>
+    > = [];
+    const indexRows: Array<
+      Readonly<{
+        batch: EventBatch;
+        batchHash: string;
+        conversation: Conversation;
+      }>
+    > = [];
     let totalEvents = 0;
     let totalSemanticLosses = 0;
     try {
@@ -1651,7 +1699,7 @@ export async function importChatGPTExport(
           );
         totalEvents += batch.events.length;
         totalSemanticLosses += batch.semanticLoss.length;
-        const batchHash = await persistEventBatch(root, batch);
+        const batchHash = eventBatchHash(batch);
         const conversation = projectConversation(batch);
         summary.conversations++;
         summary.messages += conversationInput.nodes.filter((node) => Boolean(node.message)).length;
@@ -1664,59 +1712,85 @@ export async function importChatGPTExport(
           batchHash,
           conversationProjectionHash: conversation.contentHash,
         });
-        await persistSourceReceipt(root, sourceReceipt);
         receipts.push(sourceReceipt);
-        const previous = manifest.sources[conversation.sourcePath];
-        if (
+        const previous = afterManifest.sources[conversation.sourcePath];
+        const unchanged =
           previous?.contentHash === conversation.contentHash &&
           previous.eventBatchHash === batchHash &&
           previous.conversationProjectionHash === conversation.contentHash &&
-          previous.receiptHash === sourceReceipt.receiptHash
-        ) {
-          summary.skipped++;
-          continue;
+          previous.receiptHash === sourceReceipt.receiptHash;
+        if (unchanged) summary.skipped++;
+        else {
+          summary.imported++;
+          afterManifest.sources[conversation.sourcePath] = {
+            size: sourceInfo.size,
+            mtimeMs: sourceInfo.mtimeMs,
+            contentHash: conversation.contentHash,
+            eventBatchHash: batchHash,
+            conversationProjectionHash: conversation.contentHash,
+            receiptHash: sourceReceipt.receiptHash,
+          };
         }
-        if (previous) replaced++;
-        else added++;
+        const row = Object.freeze({
+          batch,
+          batchHash,
+          conversation,
+          sourceReceipt,
+        });
+        preparedRows.push(row);
+        if (!unchanged) indexRows.push(row);
+      }
+
+      const immutablePreparedRows = Object.freeze(preparedRows.slice());
+      const immutableIndexRows = Object.freeze(indexRows.slice());
+      for (const row of immutablePreparedRows) {
+        await persistEventBatch(root, row.batch);
+        await persistSourceReceipt(root, row.sourceReceipt);
         const objectPath = join(
           root,
           "corpus",
           "objects",
-          conversation.contentHash.slice(0, 2),
-          `${conversation.contentHash}.json`,
+          row.conversation.contentHash.slice(0, 2),
+          `${row.conversation.contentHash}.json`,
         );
-        if (!(await Bun.file(objectPath).exists()))
-          await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
-        indexEventBatch(db, batch, batchHash, conversation.contentHash);
-        indexConversation(db, conversation, sourceInfo.mtimeMs, sourceInfo.size);
-        manifest.sources[conversation.sourcePath] = {
-          size: sourceInfo.size,
-          mtimeMs: sourceInfo.mtimeMs,
-          contentHash: conversation.contentHash,
-          eventBatchHash: batchHash,
-          conversationProjectionHash: conversation.contentHash,
-          receiptHash: sourceReceipt.receiptHash,
-        };
-        summary.imported++;
+        const existing = await readPriorConversation(
+          root,
+          row.conversation.contentHash,
+          row.conversation.sourcePath,
+        );
+        if (!existing) await atomicWrite(objectPath, JSON.stringify(row.conversation) + "\n");
       }
-      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      await reconcileSourceAuthority(root, db, manifest.sources);
+      for (const row of immutableIndexRows) {
+        indexEventBatch(db, row.batch, row.batchHash, row.conversation.contentHash);
+        indexConversation(db, row.conversation, sourceInfo.mtimeMs, sourceInfo.size);
+      }
     } finally {
       db.close();
     }
-    let derived: DeriveSummary | undefined;
-    let refinery: RefinerySummary | undefined;
-    if (options.derive) {
-      derived = await deriveCorpus(root);
-      refinery = await refineCorpus(root);
+
+    const intent = await createOperationIntent(root, {
+      operation: "chatgpt-import",
+      before: beforeManifest,
+      after: afterManifest,
+      derive: options.derive === true,
+    });
+    try {
+      await atomicWrite(manifestPath, JSON.stringify(afterManifest, null, 2) + "\n");
+    } catch (error) {
+      await resolveManifestWriteFailure(root, intent, error);
     }
+    const operation = await resumeCommittedOperation(root, intent);
+    if (operation.derivationFailed)
+      failClosed(
+        `import committed as operation ${intent.operationId}, but derived state was explicitly invalidated after derivation failed`,
+      );
     if (!receipts.length) failClosed(`${parsed.source}: no import receipt was produced`);
     return {
       ...summary,
       receipts,
       receipt: receipts.at(-1)!,
-      ...(derived ? { derived } : {}),
-      ...(refinery ? { refinery } : {}),
+      ...(operation.derived ? { derived: operation.derived } : {}),
+      ...(operation.refinery ? { refinery: operation.refinery } : {}),
     };
   });
 }

@@ -27,6 +27,7 @@ import {
 import {
   indexEventBatch,
   openAnalysis,
+  queryContextEvent,
   queryContextEvents,
   queryContextEventKindCounts,
   type IndexedContextEventRow,
@@ -168,6 +169,13 @@ export interface ContextEventReadOptions {
   contextSessionId: string;
   kinds?: readonly ContextEventKind[];
   limit?: number;
+  /** Skip global outbox recovery only after the requested session was read and published. */
+  recoverPending?: boolean;
+}
+
+export interface ContextEventLookupOptions {
+  contextSessionId: string;
+  eventId: string;
   /** Skip global outbox recovery only after the requested session was read and published. */
   recoverPending?: boolean;
 }
@@ -1172,6 +1180,29 @@ async function publishPendingContextEventBatches(
       return resultError("storage-error", recovered.error.message);
   }
   return { ok: true, value: undefined };
+}
+
+export async function readContextEvent(
+  root: string,
+  options: ContextEventLookupOptions,
+): Promise<ContextEventResult<ContextEventProjectionRow | null>> {
+  try {
+    const contextSessionId = text(options.contextSessionId, "contextSessionId");
+    const eventId = text(options.eventId, "eventId");
+    if (!HASH.test(eventId)) invalid("eventId must be a SHA-256 event ID");
+    if (options.recoverPending !== false) {
+      const published = await publishPendingContextEventBatches(root);
+      if (!published.ok) return published;
+    }
+    const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
+    try {
+      return { ok: true, value: queryContextEvent(db, contextSessionId, eventId) };
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    return resultError("storage-error", `Could not read context event: ${storageMessage(error)}`);
+  }
 }
 
 export async function readContextEvents(

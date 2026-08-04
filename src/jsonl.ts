@@ -196,7 +196,9 @@ export const readJsonLines = Effect.fnUntraced(function* <E = never>(
             cause: undefined,
           }),
         );
-      return { partialTail: true, lines: lineNo + 1, records: records + 1 };
+      records++;
+      if (onLineTooLarge) yield* onLineTooLarge(lineNo + 1);
+      return { partialTail: true, lines: lineNo + 1, records };
     }
 
     const pending = decodePending();

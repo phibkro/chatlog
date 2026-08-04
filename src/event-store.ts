@@ -1,6 +1,5 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   canonicalEventBatch,
   sha256,
@@ -8,6 +7,7 @@ import {
   type EventBatch,
   validateEventBatch,
 } from "./events";
+import { durableAtomicWrite } from "./durable-fs";
 
 export const EVENT_OBJECT_DIRECTORY = "events";
 
@@ -44,11 +44,7 @@ export function eventBatchPath(root: string, hash: string): string {
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, text);
 }
 
 export async function persistEventBatch(root: string, batch: EventBatch): Promise<string> {

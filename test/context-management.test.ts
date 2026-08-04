@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { contextPlaneFixture } from "./context-plane-fixture";
-import { recordContextEvent } from "../src/context-events";
+import { readContextEvent, recordContextEvent } from "../src/context-events";
 import { startContextPlaneSession } from "../src/context-plane";
 import { createContextSession, openContextSession } from "../src/context-session";
 import {
@@ -15,6 +16,18 @@ import { WorkbenchData } from "../src/workbench/data";
 import { workbenchHandler } from "./workbench-handler";
 
 const HASH = "a".repeat(64);
+
+test("missing governed projection returns a stable empty-state error", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-empty-"));
+  const result = await new ContextManagement(root).get();
+  expect(result).toEqual({
+    ok: false,
+    status: 409,
+    error:
+      "No current insight projection exists. Compile and authorize one before releasing context.",
+  });
+  expect(JSON.stringify(result)).not.toContain(root);
+});
 
 async function session(
   root: string,
@@ -96,6 +109,33 @@ async function emittedEvents(
   await emittedEvent(root, contextSessionId, `bounded-view-${index}`);
   return emittedEvents(root, contextSessionId, count, index + 1);
 }
+
+test("direct context event lookup binds event identity to its session", async () => {
+  const root = await contextPlaneFixture();
+  const first = await session(root, "native-lookup-first", "2026-08-04T11:58:00.000Z");
+  const second = await session(root, "native-lookup-second", "2026-08-04T11:59:00.000Z");
+  const eventId = await emittedEvent(root, second.contextSessionId, "direct-lookup-emitted");
+
+  const wrongSession = await readContextEvent(root, {
+    contextSessionId: first.contextSessionId,
+    eventId,
+    recoverPending: false,
+  });
+  expect(wrongSession).toEqual({ ok: true, value: null });
+  const found = await readContextEvent(root, {
+    contextSessionId: second.contextSessionId,
+    eventId,
+    recoverPending: false,
+  });
+  expect(found).toEqual({
+    ok: true,
+    value: expect.objectContaining({
+      eventId,
+      contextSessionId: second.contextSessionId,
+      kind: "context.bundle.emitted",
+    }),
+  });
+});
 
 test("context session storage reclaims the oldest clean session at its durable cap", async () => {
   const root = await contextPlaneFixture();

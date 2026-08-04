@@ -92,4 +92,34 @@ export const memoryLabFixture = (completed = 0): MemoryLabView => ({
     unanswered: 2 - completed,
   },
   finalized: false,
+  applications: {},
 });
+
+export const finalizedMemoryLabFixture = (): MemoryLabView => {
+  const fixture = memoryLabFixture(1);
+  return {
+    ...fixture,
+    finalized: true,
+    reviews: {
+      ...fixture.reviews,
+      reviewer: { id: "operator" },
+      reviews: {
+        ...fixture.reviews.reviews,
+        C002: {
+          status: "reviewed",
+          judgment: "unsure",
+          valence: null,
+          feedback: "",
+        },
+      },
+    },
+    progress: {
+      total: 2,
+      completed: 2,
+      correct: 1,
+      incorrect: 0,
+      unsure: 1,
+      unanswered: 0,
+    },
+  };
+};

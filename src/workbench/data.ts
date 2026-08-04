@@ -24,6 +24,15 @@ import {
   type DerivedProjectionReceipt,
 } from "../derived-authority";
 import { clusterTopics, normalizeTopic, topicCacheKey } from "../vault";
+import { loadWorkflowOutcomes } from "../workflow-outcomes";
+import { loadWorkflowPatterns } from "../workflow-patterns";
+import {
+  loadPatternAnnotationView,
+  patternHandle,
+  writePatternAnnotation,
+  type PatternAnnotationWriteInput,
+  type PublicPatternAnnotation,
+} from "../pattern-annotations";
 
 function boundedInteger(value: string | null, fallback: number, maximum = 100): number {
   if (value == null || value.trim() === "") return fallback;
@@ -442,14 +451,119 @@ async function readThemeCacheEntry(
 function themeVariantId(model: string, recipe: string): string {
   return JSON.stringify([model, recipe]);
 }
+export function boundedOutcomeComparison(comparison: any): unknown {
+  if (!comparison) return null;
+  const scope = comparison.scope ?? {};
+  return {
+    kind: comparison.kind,
+    occurredAt: comparison.occurredAt,
+    status: comparison.status,
+    reasons: comparison.reasons,
+    scope: {
+      projectCount: Array.isArray(scope.projects) ? scope.projects.length : scope.projectCount,
+      maximumWindowDays: scope.maximumWindowDays,
+      observedWindowHours: scope.observedWindowHours,
+      preStart: scope.preStart,
+      postEnd: scope.postEnd,
+    },
+    coverage: comparison.coverage,
+    pre: comparison.pre,
+    post: comparison.post,
+    deltas: comparison.deltas,
+    interpretation: comparison.interpretation,
+  };
+}
+
+export function boundedWorkflowPattern(
+  pattern: any,
+  annotation: PublicPatternAnnotation | null = null,
+): unknown {
+  if (!pattern) return null;
+  const coverage = pattern.coverage ?? {};
+  const metric = (value: any) => ({
+    orientation: value?.orientation,
+    samples: value?.samples,
+    favorable: value?.favorable,
+    unfavorable: value?.unfavorable,
+    unchanged: value?.unchanged,
+    medianDelta: value?.medianDelta,
+  });
+  return {
+    handle: patternHandle(pattern),
+    kind: pattern.kind,
+    signal: pattern.signal,
+    role: pattern.role,
+    title: pattern.title,
+    claim: pattern.claim,
+    boundaryEffect: pattern.boundaryEffect,
+    coverage: {
+      eventMemberships: coverage.eventMemberships,
+      sharedEventMemberships: coverage.sharedEventMemberships,
+      distinctEpisodes: coverage.distinctEpisodes,
+      distinctDays: coverage.distinctDays,
+      distinctFormulations: coverage.distinctFormulations,
+      collapsedSameEpisodeMemberships: coverage.collapsedSameEpisodeMemberships,
+      projectCount: Array.isArray(coverage.projects)
+        ? coverage.projects.length
+        : coverage.projectCount,
+      harnesses: coverage.harnesses,
+      firstSeenAt: coverage.firstSeenAt,
+      lastSeenAt: coverage.lastSeenAt,
+      minimumDistinctEpisodes: coverage.minimumDistinctEpisodes,
+      minimumDistinctDays: coverage.minimumDistinctDays,
+    },
+    sequence: {
+      relations: pattern.sequence?.relations,
+      latestRelation: pattern.sequence?.latestRelation,
+      timeline: (pattern.sequence?.timeline ?? []).slice(-12).map((item: any) => ({
+        occurredAt: item.occurredAt,
+        relation: item.relation,
+      })),
+    },
+    outcomes: {
+      status: pattern.outcomes?.status,
+      observedEpisodes: pattern.outcomes?.observedEpisodes,
+      sparseEpisodes: pattern.outcomes?.sparseEpisodes,
+      minimumObservedEpisodes: pattern.outcomes?.minimumObservedEpisodes,
+      reasons: pattern.outcomes?.reasons,
+      metrics: {
+        completionRate: metric(pattern.outcomes?.metrics?.completionRate),
+        frictionRate: metric(pattern.outcomes?.metrics?.frictionRate),
+        reworkRate: metric(pattern.outcomes?.metrics?.reworkRate),
+      },
+      interpretation: {
+        claim: pattern.outcomes?.interpretation?.claim,
+        causal: false,
+      },
+    },
+    examples: (pattern.examples ?? []).slice(0, 4).map((example: any) => ({
+      occurredAt: example.occurredAt,
+      relation: example.relation,
+      evidence: (example.evidence ?? [])
+        .slice(0, 1)
+        .map((item: any) => ({ pointer: item.pointer })),
+    })),
+    annotation: annotation
+      ? {
+          disposition: annotation.disposition,
+          label: annotation.label,
+          note: annotation.note,
+          revision: annotation.revision,
+          updatedAt: annotation.updatedAt,
+        }
+      : null,
+  };
+}
 export class WorkbenchData {
   readonly root: string;
   private readonly db: Database | null;
   private readonly currentColumns: Set<string>;
   private readonly projectionGuard: ActiveProjectionGuard;
+  private readonly annotationsEnabled: boolean;
 
-  constructor(root: string) {
+  constructor(root: string, options: { annotationsEnabled?: boolean } = {}) {
     this.root = resolve(root);
+    this.annotationsEnabled = options.annotationsEnabled === true;
     this.projectionGuard = new ActiveProjectionGuard(this.root);
     const databasePath = join(this.root, "analysis", "chatlog.sqlite");
     if (!existsSync(databasePath)) {
@@ -605,6 +719,79 @@ export class WorkbenchData {
       FROM current_conversations c ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY c.ended_at DESC LIMIT ?`)
       .all(...params) as unknown[];
+    this.assertProjection(projection);
+    return result;
+  }
+  async session(url: URL): Promise<unknown> {
+    const projection = this.assertProjection();
+    const contentHash = url.searchParams.get("contentHash")?.trim() ?? "";
+    if (!/^[a-f0-9]{64}$/u.test(contentHash))
+      throw new Error("session contentHash must be a lowercase SHA-256 hash");
+    const offsetValue = Number(url.searchParams.get("offset") ?? 0);
+    const offset = Number.isFinite(offsetValue)
+      ? Math.max(0, Math.min(10_000, Math.trunc(offsetValue)))
+      : 0;
+    const limit = boundedInteger(url.searchParams.get("limit"), 40, 100);
+    const current = this.requireDb()
+      .query(
+        `SELECT c.content_hash contentHash, a.source_path sourcePath
+        FROM current_conversations c JOIN active_sources a
+        ON a.source_path = c.source_path AND a.content_hash = c.content_hash
+        WHERE c.content_hash = ?`,
+      )
+      .get(contentHash) as { contentHash: string; sourcePath: string } | null;
+    if (!current) throw new Error(`session not found: ${contentHash}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(
+          join(this.root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`),
+          "utf8",
+        ),
+      );
+    } catch {
+      throw new Error(`session not found: ${contentHash}`);
+    }
+    const conversation = validateCanonicalConversation(parsed, {
+      contentHash,
+      sourcePath: current.sourcePath,
+    });
+    if (!conversation) throw new Error(`session not found: ${contentHash}`);
+    const turns = conversation.turns.slice(offset, offset + limit).map((turn, relativeIndex) => {
+      const index = offset + relativeIndex;
+      return {
+        ...turn,
+        index,
+        evidenceUri: `chatlog://conversation/${contentHash}/turn/${index}`,
+      };
+    });
+    const result = {
+      session: {
+        contentHash,
+        id: conversation.id,
+        title: conversation.title ?? "",
+        provider: conversation.provider,
+        harness: conversation.harness,
+        domain: conversation.domain ?? "coding",
+        sourceKind: conversation.sourceKind ?? "session-log",
+        project: conversation.project,
+        cwd: conversation.cwd,
+        model: conversation.model,
+        startedAt: conversation.startedAt,
+        endedAt: conversation.endedAt,
+        turns: conversation.turns.length,
+      },
+      turns,
+      pagination: {
+        offset,
+        limit,
+        total: conversation.turns.length,
+        hasPrevious: offset > 0,
+        hasNext: offset + turns.length < conversation.turns.length,
+      },
+      bounds: { maximumTurnsPerPage: 100, maximumOffset: 10_000 },
+      egress: { performed: false, surface: "none" },
+    };
     this.assertProjection(projection);
     return result;
   }
@@ -1397,7 +1584,7 @@ export class WorkbenchData {
   async insights(url?: URL): Promise<unknown> {
     const projection = this.assertProjection();
     const derivedProjection = await assertDerivedProjection(this.root);
-    const [leanCurrent, rolesCurrent, refineryCurrent] = await Promise.all([
+    const [leanCurrent, rolesCurrent, refineryCurrent, workflowCurrent] = await Promise.all([
       loadProjectionBoundArtifact(this.root, "orchestration-lean-manifest.json", {
         optional: true,
         projection: derivedProjection,
@@ -1411,12 +1598,40 @@ export class WorkbenchData {
         projection: derivedProjection,
         inputProjectionHash: derivedProjection.structureProjectionHash,
       }),
+      loadProjectionBoundArtifact(this.root, "workflow-evolution-manifest.json", {
+        optional: true,
+        projection: derivedProjection,
+      }),
     ]);
     const effectivenessCurrent = rolesCurrent
       ? await loadCurrentDerivedArtifact(this.root, "orchestration-effectiveness-manifest.json", {
           optional: true,
         })
       : null;
+    const workflowOutcomes = workflowCurrent
+      ? await loadWorkflowOutcomes(this.root, {
+          optional: true,
+          projection: derivedProjection,
+        })
+      : null;
+    const workflowPatterns = workflowOutcomes
+      ? await loadWorkflowPatterns(this.root, {
+          optional: true,
+          projection: derivedProjection,
+        })
+      : null;
+    const workflowPatternsCurrent = workflowPatterns
+      ? await loadCurrentDerivedArtifact(this.root, "workflow-patterns-manifest.json")
+      : null;
+    const patternAnnotations =
+      workflowPatterns && workflowPatternsCurrent
+        ? await loadPatternAnnotationView(
+            this.root,
+            workflowPatterns,
+            workflowPatternsCurrent.contentHash,
+            this.annotationsEnabled,
+          )
+        : null;
     if (
       effectivenessCurrent &&
       effectivenessCurrent.artifact?.roleProfileContentHash !== rolesCurrent?.contentHash
@@ -1429,6 +1644,21 @@ export class WorkbenchData {
     const roles = rolesCurrent?.artifact;
     const effectiveness = effectivenessCurrent?.artifact;
     const refinery = refineryCurrent?.artifact;
+    const workflow = workflowCurrent?.artifact;
+    const boundedWorkflowEvent = (event: Record<string, unknown> | null | undefined) =>
+      event
+        ? {
+            id: event.id,
+            kind: event.kind,
+            occurredAt: event.occurredAt,
+            statement: event.statement,
+            confidence: event.confidence,
+            lineage: event.lineage,
+            signals: event.signals,
+            policyDelta: event.policyDelta,
+            evidence: Array.isArray(event.evidence) ? event.evidence.slice(0, 3) : [],
+          }
+        : null;
     const leanFreshness = leanCurrent
       ? artifactFreshness(derivedProjection.contentHash, leanCurrent)
       : null;
@@ -1454,6 +1684,60 @@ export class WorkbenchData {
         path: "derived/current-hashes.jsonl",
         contentHash: derivedProjection.contentHash,
       },
+      workflowPatterns: workflowPatterns
+        ? {
+            summary: workflowPatterns.summary,
+            annotations: patternAnnotations
+              ? {
+                  enabled: patternAnnotations.enabled,
+                  snapshot: patternAnnotations.snapshot,
+                  summary: patternAnnotations.summary,
+                }
+              : null,
+            methodology: {
+              identity: workflowPatterns.methodology?.identity,
+              repetition: workflowPatterns.methodology?.repetition,
+              relations: workflowPatterns.methodology?.relations,
+              boundaryEffect: workflowPatterns.methodology?.boundaryEffect,
+              outcomes: workflowPatterns.methodology?.outcomes,
+              causality: workflowPatterns.methodology?.causality,
+            },
+            patterns: (workflowPatterns.patterns ?? []).slice(0, 30).map((pattern) => {
+              const handle = patternHandle(pattern);
+              return boundedWorkflowPattern(
+                pattern,
+                patternAnnotations?.annotations[handle] ?? null,
+              );
+            }),
+          }
+        : null,
+      workflowOutcomes: workflowOutcomes
+        ? {
+            summary: workflowOutcomes.summary,
+            methodology: {
+              window: workflowOutcomes.methodology?.window,
+              scope: workflowOutcomes.methodology?.scope,
+              causality: workflowOutcomes.methodology?.causality,
+            },
+            approvalGateTracer: boundedOutcomeComparison(workflowOutcomes.approvalGateTracer),
+            comparisons: (workflowOutcomes.comparisons ?? [])
+              .slice(-30)
+              .reverse()
+              .map(boundedOutcomeComparison),
+          }
+        : null,
+      workflowEvolution: workflow
+        ? {
+            summary: workflow.summary,
+            methodology: {
+              grouping: workflow.methodology?.grouping,
+              crossSessionBoundary: workflow.methodology?.crossSessionBoundary,
+              causalBoundary: workflow.methodology?.causalBoundary,
+            },
+            approvalGateTracer: boundedWorkflowEvent(workflow.tracers?.approvalGate),
+            events: (workflow.events ?? []).slice(-40).reverse().map(boundedWorkflowEvent),
+          }
+        : null,
       orchestration: lean?.finding
         ? {
             provenance: leanFreshness,
@@ -1525,6 +1809,20 @@ export class WorkbenchData {
       throw new DerivedProjectionDriftError(
         "derived projection changed while serving the request; retry",
       );
+    return result;
+  }
+
+  async annotatePattern(input: PatternAnnotationWriteInput): Promise<PublicPatternAnnotation> {
+    if (!this.annotationsEnabled) throw new Error("pattern annotations are disabled");
+    const projection = await assertDerivedProjection(this.root);
+    const artifact = await loadWorkflowPatterns(this.root, { projection });
+    if (!artifact) throw new Error("workflow patterns have not been derived");
+    const current = await loadCurrentDerivedArtifact(this.root, "workflow-patterns-manifest.json");
+    if (!current) throw new Error("workflow patterns have not been derived");
+    const result = await writePatternAnnotation(this.root, input, {
+      artifact,
+      artifactContentHash: current.contentHash,
+    });
     return result;
   }
 

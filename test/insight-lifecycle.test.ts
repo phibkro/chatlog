@@ -1,11 +1,21 @@
 import { expect, test } from "bun:test";
-import { insightScope, projectInsightState, type InsightRevision } from "../src/insights";
+import { createHash } from "node:crypto";
+import { assembleInsightCommand } from "../src/insight-assembler";
+import { compileInsightProjection } from "../src/insight-compiler";
 import {
   appendInsightTransition,
   createEmptyInsightLedger,
   type InsightCommandInput,
 } from "../src/insight-ledger";
-import { compileInsightProjection } from "../src/insight-compiler";
+import { insightScope, projectInsightState, type InsightRevision } from "../src/insights";
+import {
+  ADJUDICATION_SELECTION_RECIPE,
+  type AdjudicationPacket,
+  type AdjudicationPrivateManifest,
+  type HumanAdjudicationAnswers,
+} from "../src/refinery-adjudication";
+import type { PromotionCandidate, RefineryArtifact } from "../src/refinery";
+import type { MemoryProposalSet, OperatorReviews } from "../src/workbench/memory-lab";
 
 const HASH = "c".repeat(64);
 const EVIDENCE = `chatlog://conversation/${HASH}/turn/0`;
@@ -174,4 +184,249 @@ test("conflicting active revisions do not both enter compiled startup context", 
   });
   expect(compiled.ok).toBe(true);
   if (compiled.ok) expect(compiled.value.entryIds).toEqual(["second"]);
+});
+
+test("assembled retirement is a distinct idempotent revision that removes startup context", () => {
+  const packetHash = "a".repeat(64);
+  const sourceBindingHash = "b".repeat(64);
+  const candidateId = "operator-boundary";
+  const evidenceUri = `chatlog://conversation/${HASH}/turn/0`;
+  const candidate: PromotionCandidate = {
+    id: candidateId,
+    type: "memory-or-adr",
+    signature: "operator boundary",
+    title: "Operator boundary",
+    status: "curation-required",
+    frequency: {
+      occurrences: 3,
+      distinctSnippets: 3,
+      conversations: 3,
+      sessions: 3,
+      projects: 1,
+      harnesses: 1,
+      threshold: 3,
+    },
+    evidence: [
+      {
+        pointer: { turnIndex: 0, uri: evidenceUri },
+        snippet: "Ask before crossing the operator boundary.",
+        conversationHash: HASH,
+        sessionId: "session",
+        project: "project",
+        harness: "codex",
+        model: "model",
+      },
+    ],
+    curation: { principle: "ask first", route: "memory", checks: [] },
+    evaluation: {
+      contract: "agent-eval/promotion-v1",
+      status: "unmeasured",
+      minimumRunsPerArm: 3,
+      control: "without",
+      treatment: "with",
+      metrics: ["completion"],
+      keepRule: "keep",
+      cutRule: "cut",
+    },
+  };
+  const refinery: RefineryArtifact = {
+    schemaVersion: 1,
+    inputProjectionHash: "c".repeat(64),
+    recipeHash: "d".repeat(64),
+    threshold: 3,
+    policy: {
+      autoPromotion: false,
+      frequencyIsSignalNotDecision: true,
+      referenceWikiDeferred: true,
+    },
+    candidates: [candidate],
+  };
+  const packet: AdjudicationPacket = {
+    schemaVersion: 2,
+    packetHash,
+    sourceBindingHash,
+    blinded: true,
+    selectionRecipe: ADJUDICATION_SELECTION_RECIPE,
+    instructions: {
+      untrustedEvidence: true,
+      verdicts: { genuine: "genuine", mixed: "mixed", boilerplate: "boilerplate" },
+      evidence: "select evidence",
+      insufficientContext: "ask",
+    },
+    candidates: [
+      {
+        candidateAlias: "C001",
+        signatureTheme: "operator boundary",
+        evidence: [
+          {
+            evidenceId: "E01",
+            sessionAlias: "S01",
+            projectAlias: "P01",
+            harnessAlias: "H01",
+            snippet: "Ask before crossing the boundary.",
+          },
+        ],
+      },
+    ],
+  };
+  const privateManifest: AdjudicationPrivateManifest = {
+    schemaVersion: 2,
+    packetHash,
+    sourceBindingHash,
+    source: {
+      inputProjectionHash: refinery.inputProjectionHash,
+      refineryRecipeHash: refinery.recipeHash,
+      refineryThreshold: 3,
+      refineryCandidates: 1,
+    },
+    selection: {
+      recipe: ADJUDICATION_SELECTION_RECIPE,
+      seed: "seed",
+      requested: 1,
+      selected: 1,
+      fixedChallengeCandidatesAvailable: 0,
+      artifactStratumSizes: { low: 0, middle: 1, high: 0 },
+      selectedStrata: { low: 0, middle: 1, high: 0 },
+      selectedTypes: { "memory-or-adr": 1 },
+      targetTypes: { "memory-or-adr": 1 },
+      shortages: [],
+    },
+    artifacts: {
+      packetSha256: createHash("sha256")
+        .update(`${JSON.stringify(packet, null, 2)}\n`)
+        .digest("hex"),
+      markdownSha256: HASH,
+      answersTemplateSha256: HASH,
+      answersSchemaSha256: HASH,
+    },
+    candidates: [
+      {
+        candidateAlias: "C001",
+        candidateId,
+        type: "memory-or-adr",
+        stratum: "middle",
+        signatureFamily: "operator boundary",
+        evidence: [
+          {
+            evidenceId: "E01",
+            sourceIndex: 0,
+            pointerUri: evidenceUri,
+            conversationHash: HASH,
+            sessionId: "session",
+            project: "project",
+            harness: "codex",
+          },
+        ],
+      },
+    ],
+  };
+  const proposalSet: MemoryProposalSet = {
+    schemaVersion: 1,
+    packetHash,
+    generator: { provider: "test", model: "test", effort: "medium", recipe: "test" },
+    proposals: {
+      C001: {
+        lesson: "Ask before crossing an operator boundary.",
+        suggestedValence: "positive",
+        rationale: "Repeated evidence.",
+      },
+    },
+  };
+  const proposalSetHash = createHash("sha256")
+    .update(`${JSON.stringify(proposalSet, null, 2)}\n`)
+    .digest("hex");
+  const operatorReviews: OperatorReviews = {
+    schemaVersion: 1,
+    packetHash,
+    proposalSetHash,
+    reviewer: { id: "operator" },
+    reviews: {
+      C001: {
+        status: "reviewed",
+        judgment: "correct",
+        valence: "positive",
+        feedback: "",
+      },
+    },
+  };
+  const adjudicationAnswers: HumanAdjudicationAnswers = {
+    schemaVersion: 2,
+    packetHash,
+    adjudicator: { id: "adjudicator" },
+    answers: {
+      C001: {
+        status: "decided",
+        verdict: "genuine",
+        genuineEvidenceIds: ["E01"],
+        confidence: "high",
+        reasoning: "The evidence directly supports the lesson.",
+      },
+    },
+  };
+  const common = {
+    projectIdentity: "project",
+    candidate,
+    refinery,
+    packet,
+    privateManifest,
+    proposalSet,
+    operatorReviews,
+    adjudicationAnswers,
+    proposalSetHash,
+    operatorReviewHash: "e".repeat(64),
+    adjudicationAnswersHash: "f".repeat(64),
+    actor: { id: "operator", kind: "operator" as const },
+    activeEvidence: new Set([evidenceUri]),
+    recordedAt: "2026-08-03T12:00:00.000Z",
+  };
+  const accepted = assembleInsightCommand({ ...common, transitionCommand: "accept" });
+  expect(accepted).toMatchObject({ ok: true });
+  const staleRefineryBinding = assembleInsightCommand({
+    ...common,
+    privateManifest: {
+      ...privateManifest,
+      source: { ...privateManifest.source, inputProjectionHash: "0".repeat(64) },
+    },
+    transitionCommand: "accept",
+  });
+  expect(staleRefineryBinding).toMatchObject({
+    ok: false,
+    error: { code: "packet-mismatch" },
+  });
+  if (!accepted.ok) return;
+  const retired = assembleInsightCommand({
+    ...common,
+    transitionCommand: "retire",
+    priorRevisionId: accepted.value.revision.revisionId,
+    priorLedgerHash: HASH,
+    correctedProposition: accepted.value.revision.proposition,
+    correctedProcedure: accepted.value.revision.procedure,
+    scope: accepted.value.revision.scope,
+  });
+  expect(retired).toMatchObject({ ok: true });
+  if (!retired.ok) return;
+  expect(retired.value.revision.status).toBe("retired");
+  expect(retired.value.revision.revisionId).not.toBe(accepted.value.revision.revisionId);
+  expect(retired.value.idempotencyKey).not.toBe(accepted.value.idempotencyKey);
+
+  let ledger = createEmptyInsightLedger("project");
+  const appended = appendInsightTransition(ledger, {
+    ...accepted.value,
+    priorLedgerHash: ledger.ledgerHash,
+  });
+  expect(appended.ok).toBe(true);
+  if (!appended.ok) return;
+  ledger = appended.value;
+  const removed = appendInsightTransition(ledger, {
+    ...retired.value,
+    priorLedgerHash: ledger.ledgerHash,
+  });
+  expect(removed.ok).toBe(true);
+  if (!removed.ok) return;
+  expect(projectInsightState(removed.value).current[candidateId]?.status).toBe("retired");
+  const compiled = compileInsightProjection(projectInsightState(removed.value), {
+    now: new Date("2026-08-03T12:01:00.000Z"),
+  });
+  expect(compiled.ok).toBe(true);
+  if (compiled.ok) expect(compiled.value.entryIds).not.toContain(candidateId);
 });

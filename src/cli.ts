@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
 import { OmpAdapter, PiAdapter } from "./adapters/pi";
-import { ingest } from "./ingest";
+import { DEFAULT_INGEST_MAX_SOURCES_PER_ADAPTER, ingest } from "./ingest";
 import { openAnalysis, queryModels, querySearch, queryStats } from "./analysis";
 import { deriveCorpus } from "./derive";
 import {
@@ -21,6 +21,7 @@ import {
   agentSemanticSearch,
 } from "./agent-query";
 import { duckSessionLengths, duckTokenUsage, duckToolFrequency, duckUsageOverTime } from "./duckdb";
+import { clearDerivedInvalidation } from "./derived-invalidation";
 import { redact } from "./redact";
 import { refineCorpus } from "./refinery";
 import { agentRefinery, agentRefineryCandidate, agentRefineryEvalPlan } from "./refinery-query";
@@ -30,6 +31,9 @@ import { emitPiBridge, type PiBridgeMode } from "./bridge";
 import { deriveOrchestrationProfile, loadOrchestrationProfile } from "./orchestration-profile";
 import { deriveRoleSegmentation, loadRoleSegmentation } from "./role-segmentation";
 import { deriveEffectivenessRanking, loadEffectivenessRanking } from "./effectiveness-ranking";
+import { deriveWorkflowEvolution, loadWorkflowEvolution } from "./workflow-evolution";
+import { deriveWorkflowOutcomes, loadWorkflowOutcomes } from "./workflow-outcomes";
+import { deriveWorkflowPatterns, loadWorkflowPatterns } from "./workflow-patterns";
 import { importAnthropicExport, previewAnthropicExport } from "./importers/anthropic-export";
 import { importChatGPTExport, previewChatGPTExport } from "./importers/chatgpt-export";
 import { importGenericEvents, previewGenericEvents } from "./importers/generic-events";
@@ -37,6 +41,7 @@ import { normalizeConversationDomain } from "./domain";
 import { resolveDataRoot } from "./data-root";
 import { listImportReceipts } from "./import-receipts";
 import { listSourceReceipts, readUnknownShapeNominations } from "./source-receipts";
+import { recoverPendingOperations } from "./operation-intents";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
@@ -73,6 +78,40 @@ import type { ContextReceiptEvidence } from "./context-types";
 import { isMcpDataFailure, McpData } from "./mcp/data";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
+const importPreviewPin = (): {
+  source: string;
+  sourceContentHash: string;
+  proposalId: string;
+} => {
+  const value = (name: string): string | null => {
+    const index = args.indexOf(name);
+    if (index === -1) return null;
+    const candidate = args[index + 1];
+    if (!candidate || candidate.startsWith("--"))
+      throw new Error(`${name} requires a 64-character SHA-256 value`);
+    return candidate;
+  };
+  const sourceContentHash = value("--source-content-hash");
+  const proposalId = value("--proposal-id");
+  if ((sourceContentHash === null) !== (proposalId === null))
+    throw new Error("--source-content-hash and --proposal-id must be supplied together");
+  if (!sourceContentHash || !proposalId)
+    throw new Error(
+      "import requires --source-content-hash and --proposal-id copied from chatlog preview",
+    );
+  if (!/^[a-f0-9]{64}$/u.test(sourceContentHash) || !/^[a-f0-9]{64}$/u.test(proposalId))
+    throw new Error("preview pins must be lowercase 64-character SHA-256 values");
+  return { source: resolve(args[0]!), sourceContentHash, proposalId };
+};
+function ingestEnvironmentInteger(name: string, fallback: number, minimum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum)
+    throw new Error(`${name} must be a safe integer greater than or equal to ${minimum}`);
+  return value;
+}
+
 const help = `Chatlog ${packageMetadata.version}
 
 Usage: chatlog <command> [arguments]
@@ -157,7 +196,20 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
 } else if (command === "--version" || command === "-v") {
   console.log(packageMetadata.version);
 } else if (command === "ingest") {
-  console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
+  console.log(
+    JSON.stringify(
+      await ingest(localAdapters(), root, {
+        maxSourcesPerAdapter: ingestEnvironmentInteger(
+          "CHATLOG_INGEST_MAX_SOURCES_PER_ADAPTER",
+          DEFAULT_INGEST_MAX_SOURCES_PER_ADAPTER,
+          1,
+        ),
+        minimumSourceAgeMs: ingestEnvironmentInteger("CHATLOG_INGEST_MIN_SOURCE_AGE_MS", 5_000, 0),
+      }),
+      null,
+      2,
+    ),
+  );
 } else if (command === "preview") {
   if (!subcommand || !args[0])
     throw new Error("usage: chatlog preview <anthropic|chatgpt|generic> <export-path> [domain]");
@@ -184,7 +236,7 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
 } else if (command === "import") {
   if (!subcommand || !args[0])
     throw new Error(
-      "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive]",
+      "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive] --source-content-hash <sha256> --proposal-id <sha256>",
     );
   const domain = normalizeConversationDomain(
     args[1] && !args[1].startsWith("--")
@@ -193,7 +245,12 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
         ? "personal"
         : "general",
   );
-  const options = { domain, derive: !args.includes("--no-derive") };
+  const preview = importPreviewPin();
+  const options = {
+    domain,
+    derive: !args.includes("--no-derive"),
+    preview,
+  };
   const result =
     subcommand === "anthropic"
       ? await importAnthropicExport(args[0], root, options)
@@ -203,7 +260,7 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
           ? await importGenericEvents(args[0], root, options)
           : (() => {
               throw new Error(
-                "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive]",
+                "usage: chatlog import <anthropic|chatgpt|generic> <source-path> [domain] [--no-derive] --source-content-hash <sha256> --proposal-id <sha256>",
               );
             })();
   console.log(JSON.stringify(result, null, 2));
@@ -233,14 +290,20 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
         : await listImportReceipts(root, limit);
   console.log(JSON.stringify(output, null, 2));
 } else if (command === "source") {
-  if (subcommand !== "reconcile" || args.length) throw new Error("usage: chatlog source reconcile");
+  if (args.length || (subcommand !== "reconcile" && subcommand !== "recover"))
+    throw new Error("usage: chatlog source <reconcile|recover>");
   console.log(
     JSON.stringify(
       await withIngestLock(root, async () => {
+        const recovery = await recoverPendingOperations(root);
+        if (subcommand === "recover") return recovery;
         const manifest = await loadCorpusManifest(root);
         const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
         try {
-          return await reconcileSourceAuthority(root, db, manifest.sources);
+          return {
+            ...(await reconcileSourceAuthority(root, db, manifest.sources)),
+            recovery,
+          };
         } finally {
           db.close();
         }
@@ -252,13 +315,28 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
 } else if (command === "derive") {
   console.log(
     JSON.stringify(
-      { derived: await deriveCorpus(root), refinery: await refineCorpus(root) },
+      await withIngestLock(root, async () => {
+        await recoverPendingOperations(root);
+        const derived = await deriveCorpus(root);
+        const refinery = await refineCorpus(root, 3, { allowExplicitInvalidation: true });
+        await clearDerivedInvalidation(root);
+        return { derived, refinery };
+      }),
       null,
       2,
     ),
   );
 } else if (command === "refine") {
-  console.log(JSON.stringify(await refineCorpus(root, Number(subcommand ?? 3)), null, 2));
+  console.log(
+    JSON.stringify(
+      await withIngestLock(root, async () => {
+        await recoverPendingOperations(root);
+        return refineCorpus(root, Number(subcommand ?? 3));
+      }),
+      null,
+      2,
+    ),
+  );
 } else if (command === "query") {
   const db = new Database(join(root, "analysis", "chatlog.sqlite"), {
     readonly: true,
@@ -313,6 +391,27 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
           report: await loadEffectivenessRanking(root),
         },
       };
+    } else if (subcommand === "workflow-evolution") {
+      const derivation = await deriveWorkflowEvolution(root);
+      output = { derivation, report: await loadWorkflowEvolution(root) };
+    } else if (subcommand === "workflow-outcomes") {
+      const workflowDerivation = await deriveWorkflowEvolution(root);
+      const derivation = await deriveWorkflowOutcomes(root);
+      output = {
+        workflowDerivation,
+        derivation,
+        report: await loadWorkflowOutcomes(root),
+      };
+    } else if (subcommand === "workflow-patterns") {
+      const workflowDerivation = await deriveWorkflowEvolution(root);
+      const outcomesDerivation = await deriveWorkflowOutcomes(root);
+      const derivation = await deriveWorkflowPatterns(root);
+      output = {
+        workflowDerivation,
+        outcomesDerivation,
+        derivation,
+        report: await loadWorkflowPatterns(root),
+      };
     } else if (subcommand === "refinery") {
       output = await agentRefinery(root, args[0], Number(args[1] ?? 30));
     } else if (subcommand === "undocumented") {
@@ -350,7 +449,7 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
     else if (subcommand === "lengths") output = await duckSessionLengths(root);
     else
       throw new Error(
-        "usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|refinery|undocumented|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>",
+        "usage: bun run query <search|semantic|get|grok|ask|ask-lexical|project|orchestration-profile|workflow-evolution|workflow-outcomes|workflow-patterns|refinery|undocumented|candidate|eval-plan|stats|models|tokens|usage-time|tools|lengths>",
       );
     const currentProjection = projectionGuard.assert(db);
     if (

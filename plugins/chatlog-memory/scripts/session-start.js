@@ -70,7 +70,7 @@ async function readBoundedInputText(stream, limit, label) {
 // src/context-plane.ts
 import { Database as Database3 } from "bun:sqlite";
 import { existsSync } from "fs";
-import { join as join6, resolve as resolve4 } from "path";
+import { join as join6, resolve as resolve5 } from "path";
 
 // src/recall-budget.ts
 import { isAbsolute, normalize, relative } from "path";
@@ -131,6 +131,16 @@ var pipeArguments = (self, args) => {
     }
   }
 };
+var Prototype = {
+  pipe() {
+    return pipeArguments(this, arguments);
+  }
+};
+var Class = /* @__PURE__ */ function() {
+  function PipeableBase() {}
+  PipeableBase.prototype = Prototype;
+  return PipeableBase;
+}();
 
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Function.js
 var dual = function(arity, body) {
@@ -1398,7 +1408,7 @@ var dedupeWith = /* @__PURE__ */ dual(2, (self, isEquivalent) => {
 });
 
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Effectable.js
-var Prototype = (options) => makePrimitiveProto({
+var Prototype2 = (options) => makePrimitiveProto({
   op: options.label,
   [evaluate]: options.evaluate
 });
@@ -1455,7 +1465,7 @@ var Service = function() {
 };
 var ServiceProto = {
   [ServiceTypeId]: ServiceTypeId,
-  .../* @__PURE__ */ Prototype({
+  .../* @__PURE__ */ Prototype2({
     label: "Service",
     evaluate(fiber) {
       return exitSucceed(get(fiber.context, this));
@@ -4658,6 +4668,52 @@ var withTime = /* @__PURE__ */ dual((args2) => isEffect(args2[0]), (self, label)
 }), () => self, () => sync(() => {
   console.timeEnd(label);
 }))));
+// node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Data.js
+var exports_Data = {};
+__export(exports_Data, {
+  taggedEnum: () => taggedEnum,
+  TaggedError: () => TaggedError2,
+  TaggedClass: () => TaggedClass,
+  Error: () => Error3,
+  Class: () => Class2
+});
+var Class2 = class extends Class {
+  constructor(props) {
+    super();
+    if (props) {
+      Object.assign(this, props);
+    }
+  }
+};
+var TaggedClass = (tag) => class extends Class2 {
+  _tag = tag;
+};
+var taggedEnum = () => new Proxy({}, {
+  get(_target, tag, _receiver) {
+    if (tag === "$is") {
+      return isTagged;
+    } else if (tag === "$match") {
+      return taggedMatch;
+    }
+    return (props) => ({
+      ...props,
+      _tag: tag
+    });
+  }
+});
+function taggedMatch() {
+  if (arguments.length === 1) {
+    const cases2 = arguments[0];
+    return function(value2) {
+      return cases2[value2._tag](value2);
+    };
+  }
+  const value = arguments[0];
+  const cases = arguments[1];
+  return cases[value._tag](value);
+}
+var Error3 = Error2;
+var TaggedError2 = TaggedError;
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Effect.js
 var exports_Effect = {};
 __export(exports_Effect, {
@@ -7128,6 +7184,118 @@ async function readPublishedInsightMemory(root) {
 import { readFileSync } from "fs";
 import { join as join3 } from "path";
 
+// src/importers/export-limits.ts
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "fs";
+import { resolve as resolve3, sep } from "path";
+var EXPORT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+var EXPORT_MAX_FILE_BYTES = 128 * 1024 * 1024;
+var EXPORT_MAX_MEMBER_BYTES = 64 * 1024 * 1024;
+var EXPORT_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+var EXPORT_MAX_LISTING_BYTES = 4 * 1024 * 1024;
+var EXPORT_MAX_STDERR_BYTES = 64 * 1024;
+var EXPORT_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+var EXPORT_MAX_CORPUS_OBJECT_BYTES = 64 * 1024 * 1024;
+
+class ExportLimitError extends Error {
+  code = "export-limit-exceeded";
+  kind;
+  limit;
+  observed;
+  constructor(kind, limit, observed, label) {
+    super(`${label} exceeds the ${kind} limit of ${limit} bytes`);
+    this.name = "ExportLimitError";
+    this.kind = kind;
+    this.limit = limit;
+    this.observed = observed;
+  }
+}
+
+class ExportFileTypeError extends Error {
+  label;
+  code = "export-file-type-invalid";
+  constructor(label) {
+    super(`${label} is not a regular file`);
+    this.label = label;
+    this.name = "ExportFileTypeError";
+  }
+}
+
+class ExportReadError extends Error {
+  label;
+  code = "export-read-failed";
+  constructor(label, cause) {
+    super(`${label} could not be read`, { cause });
+    this.label = label;
+    this.name = "ExportReadError";
+  }
+}
+function readBoundedFileSync(path, limit, label, containmentRoot) {
+  const resolvedPath = resolve3(path);
+  if (containmentRoot !== undefined) {
+    try {
+      const root = realpathSync(resolve3(containmentRoot));
+      const candidate = realpathSync(resolvedPath);
+      if (candidate !== root && !candidate.startsWith(`${root}${sep}`))
+        return { ok: false, error: new ExportFileTypeError(label) };
+    } catch (error2) {
+      return { ok: false, error: new ExportReadError(label, error2) };
+    }
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(resolvedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error2) {
+    if (typeof error2 === "object" && error2 !== null && "code" in error2 && (error2.code === "ELOOP" || error2.code === "EMLINK"))
+      return { ok: false, error: new ExportFileTypeError(label) };
+    return { ok: false, error: new ExportReadError(label, error2) };
+  }
+  try {
+    const info2 = fstatSync(descriptor);
+    if (!info2.isFile())
+      return { ok: false, error: new ExportFileTypeError(label) };
+    if (info2.size > limit)
+      return {
+        ok: false,
+        error: new ExportLimitError("file", limit, info2.size, label)
+      };
+    let encoded = Buffer.allocUnsafe(Math.min(limit + 1, Math.max(info2.size + 1, 4096)));
+    let bytes = 0;
+    for (;; ) {
+      if (bytes === encoded.byteLength) {
+        if (bytes > limit)
+          return {
+            ok: false,
+            error: new ExportLimitError("file", limit, bytes, label)
+          };
+        const expanded = Buffer.allocUnsafe(Math.min(limit + 1, Math.max(encoded.byteLength * 2, bytes + 1)));
+        encoded.copy(expanded, 0, 0, bytes);
+        encoded = expanded;
+      }
+      const count2 = readSync(descriptor, encoded, bytes, encoded.byteLength - bytes, null);
+      if (count2 === 0)
+        break;
+      bytes += count2;
+    }
+    return {
+      ok: true,
+      value: {
+        text: encoded.subarray(0, bytes).toString("utf8"),
+        bytes,
+        size: bytes,
+        mtimeMs: info2.mtimeMs
+      }
+    };
+  } catch (error2) {
+    return { ok: false, error: new ExportReadError(label, error2) };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+// src/analysis.ts
+class CacheWriteBackfillError extends exports_Data.TaggedError("CacheWriteBackfillError") {
+}
+
 // src/adapter-conformance.ts
 class AdapterConformanceError extends Error {
   code = "adapter-conformance-invalid";
@@ -7290,12 +7458,21 @@ function validateManifest(value, path) {
   const manifest = value;
   if (manifest?.version !== 1 || !manifest.sources || typeof manifest.sources !== "object")
     invalidSourceAuthority(`${path}: unsupported corpus manifest`);
+  const validRecipe = (recipe) => typeof recipe === "string" && recipe.length > 0 && recipe.length <= 256;
+  for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"])
+    if (manifest[key] !== undefined && !validRecipe(manifest[key]))
+      invalidSourceAuthority(`${path}: invalid corpus recipe`);
+  if (manifest.recipeMigration !== undefined && (!manifest.recipeMigration || typeof manifest.recipeMigration !== "object" || !validRecipe(manifest.recipeMigration.redactionRecipe) || !validRecipe(manifest.recipeMigration.projectIdentityRecipe) || !validRecipe(manifest.recipeMigration.eventRecipe)))
+    invalidSourceAuthority(`${path}: invalid corpus recipe migration`);
   for (const [sourcePath, entry] of Object.entries(manifest.sources)) {
     if (!sourcePath || !entry || !/^[a-f0-9]{64}$/.test(entry.contentHash))
       invalidSourceAuthority(`${path}: invalid source mapping`);
     for (const key of ["eventBatchHash", "conversationProjectionHash", "receiptHash"])
       if (entry[key] !== undefined && !/^[a-f0-9]{64}$/.test(entry[key]))
         invalidSourceAuthority(`${path}: invalid source mapping`);
+    for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"])
+      if (entry[key] !== undefined && !validRecipe(entry[key]))
+        invalidSourceAuthority(`${path}: invalid source recipe`);
   }
   return manifest;
 }
@@ -7326,7 +7503,10 @@ function manifestSourcesHash(sources) {
 }
 function loadCorpusManifestSync(root) {
   const path = join3(root, "corpus", "manifest.json");
-  return validateManifest(JSON.parse(readFileSync(path, "utf8")), path);
+  const result3 = readBoundedFileSync(path, EXPORT_MAX_MANIFEST_BYTES, `${path} (corpus manifest)`, root);
+  if (!result3.ok)
+    invalidSourceAuthority(result3.error.message);
+  return validateManifest(JSON.parse(result3.value.text), path);
 }
 class ActiveProjectionGuard {
   root;
@@ -7420,7 +7600,7 @@ import {
   unlink as unlink3,
   writeFile as writeFile3
 } from "fs/promises";
-import { dirname as dirname3, join as join5, resolve as resolve3 } from "path";
+import { dirname as dirname3, join as join5, resolve as resolve4 } from "path";
 
 // src/context-types.ts
 var CONTEXT_SCHEMA_VERSION = 1;
@@ -8053,7 +8233,7 @@ function parseStoredSession(value) {
   };
 }
 function sessionPath(root, contextSessionId) {
-  return join5(resolve3(root), "memory", "context-sessions", `${contextSessionId}.json`);
+  return join5(resolve4(root), "memory", "context-sessions", `${contextSessionId}.json`);
 }
 async function atomicPrivateJson(path, value) {
   await mkdir4(dirname3(path), { recursive: true, mode: 448 });
@@ -8072,7 +8252,7 @@ function sameNativeBinding(left, right) {
   return left.nativeSessionId === right.nativeSessionId && left.target.provider === right.target.provider && left.target.harness === right.target.harness && left.target.model === right.target.model && left.target.role === right.target.role && left.projectIdentity === right.projectIdentity && left.cwd === right.cwd && left.path === right.path && left.domainPolicy.length === right.domainPolicy.length && left.domainPolicy.every((domain, index) => domain === right.domainPolicy[index]);
 }
 async function findNativeSession(root, nativeSessionId) {
-  const directoryPath = join5(resolve3(root), "memory", "context-sessions");
+  const directoryPath = join5(resolve4(root), "memory", "context-sessions");
   let directory;
   try {
     directory = await opendir(directoryPath);
@@ -8119,7 +8299,7 @@ function contextSessionIsUnused(session) {
 async function contextSessionHasRecallArtifacts(root, contextSessionId) {
   let directory;
   try {
-    directory = await opendir(join5(resolve3(root), "memory", "context-recall-results", contextSessionId));
+    directory = await opendir(join5(resolve4(root), "memory", "context-recall-results", contextSessionId));
   } catch (error2) {
     if (typeof error2 === "object" && error2 !== null && "code" in error2 && error2.code === "ENOENT")
       return { ok: true, value: false };
@@ -8136,7 +8316,7 @@ async function contextSessionHasRecallArtifacts(root, contextSessionId) {
   }
 }
 async function requireContextSessionCapacity(root, excludedNativeSessionId) {
-  const directoryPath = join5(resolve3(root), "memory", "context-sessions");
+  const directoryPath = join5(resolve4(root), "memory", "context-sessions");
   let directory;
   try {
     directory = await opendir(directoryPath);
@@ -8180,7 +8360,7 @@ async function requireContextSessionCapacity(root, excludedNativeSessionId) {
   });
   let database;
   try {
-    database = new Database2(join5(resolve3(root), "analysis", "chatlog.sqlite"), {
+    database = new Database2(join5(resolve4(root), "analysis", "chatlog.sqlite"), {
       readonly: true,
       create: false
     });
@@ -8657,7 +8837,7 @@ function failure2(code, message) {
   return { ok: false, error: { code, message } };
 }
 function databaseProjection(root) {
-  const databasePath = join6(resolve4(root), "analysis", "chatlog.sqlite");
+  const databasePath = join6(resolve5(root), "analysis", "chatlog.sqlite");
   if (!existsSync(databasePath))
     return failure2("source-unavailable", "Chatlog analysis database is unavailable");
   let db;
@@ -8665,7 +8845,7 @@ function databaseProjection(root) {
     db = new Database3(databasePath, { readonly: true, create: false });
     return {
       ok: true,
-      value: new ActiveProjectionGuard(resolve4(root)).assert(db).manifestSourcesHash
+      value: new ActiveProjectionGuard(resolve5(root)).assert(db).manifestSourcesHash
     };
   } catch (error2) {
     return failure2("projection-drift", error2 instanceof Error ? error2.message : String(error2));
@@ -8751,13 +8931,13 @@ async function startContextPlaneSession(root, input) {
 }
 
 // src/data-root.ts
-import { lstatSync, opendirSync, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
+import { lstatSync, opendirSync, realpathSync as realpathSync3, statSync as statSync2 } from "fs";
 import { homedir } from "os";
-import { isAbsolute as isAbsolute3, join as join8, relative as relative2, resolve as resolve6, sep } from "path";
+import { isAbsolute as isAbsolute3, join as join8, relative as relative2, resolve as resolve7, sep as sep2 } from "path";
 
 // src/project-identity.ts
-import { readFileSync as readFileSync2, realpathSync, statSync } from "fs";
-import { basename, dirname as dirname4, isAbsolute as isAbsolute2, join as join7, normalize as normalize2, resolve as resolve5 } from "path";
+import { readFileSync as readFileSync2, realpathSync as realpathSync2, statSync } from "fs";
+import { basename, dirname as dirname4, isAbsolute as isAbsolute2, join as join7, normalize as normalize2, resolve as resolve6 } from "path";
 var CACHE_LIMIT = 512;
 var commonDirectoryCache = new Map;
 var cwdResolutionCache = new Map;
@@ -8766,7 +8946,7 @@ function normalizedFallback(cwd) {
 }
 function existingDirectory(path) {
   try {
-    const canonical = realpathSync(path);
+    const canonical = realpathSync2(path);
     return statSync(canonical).isDirectory() ? canonical : undefined;
   } catch {
     return;
@@ -8826,7 +9006,7 @@ function gitDirectory(marker, checkoutRoot) {
   if (!match5)
     return { kind: "invalid" };
   const path = match5[1];
-  const gitDir = existingDirectory(isAbsolute2(path) ? path : resolve5(checkoutRoot, path));
+  const gitDir = existingDirectory(isAbsolute2(path) ? path : resolve6(checkoutRoot, path));
   return gitDir ? { kind: "valid", gitDir } : { kind: "invalid" };
 }
 function commonDirectory(gitDir) {
@@ -8842,7 +9022,7 @@ function commonDirectory(gitDir) {
   const path = metadataLine(marker);
   if (!path)
     return;
-  return existingDirectory(isAbsolute2(path) ? path : resolve5(gitDir, path));
+  return existingDirectory(isAbsolute2(path) ? path : resolve6(gitDir, path));
 }
 function cacheCommonDirectory(commonGitDir) {
   const cached3 = commonDirectoryCache.get(commonGitDir);
@@ -8901,24 +9081,24 @@ function defaultDataRoot() {
 }
 function resolveDataRoot(explicit = process.env.CHATLOG_DATA_ROOT) {
   const configured = explicit?.trim();
-  return resolve6(configured || defaultDataRoot());
+  return resolve7(configured || defaultDataRoot());
 }
 function pathWithin(path, parent) {
   const child = relative2(parent, path);
-  return child === "" || !child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute3(child);
+  return child === "" || !child.startsWith(`..${sep2}`) && child !== ".." && !isAbsolute3(child);
 }
 function canonicalOrAbsolute(path) {
-  const absolute = resolve6(path);
+  const absolute = resolve7(path);
   try {
-    return realpathSync2(absolute);
+    return realpathSync3(absolute);
   } catch {
     return absolute;
   }
 }
 function existingCanonicalDirectory(path, label) {
-  const absolute = resolve6(path);
+  const absolute = resolve7(path);
   try {
-    const canonical = realpathSync2(absolute);
+    const canonical = realpathSync3(absolute);
     if (!statSync2(canonical).isDirectory())
       return fail5("root-unavailable", `${label} "${absolute}" is not an existing directory (not a directory). Set CHATLOG_DATA_ROOT to an operator-owned Chatlog data root outside the active repository.`);
     return { ok: true, value: canonical };
@@ -8948,7 +9128,7 @@ function assertContainedSymlinkPaths(root) {
     let canonical;
     let isDirectory;
     try {
-      canonical = realpathSync2(path);
+      canonical = realpathSync3(path);
       isDirectory = statSync2(canonical).isDirectory();
     } catch {
       return fail5("broken-symlink", `Chatlog authority path "${path}" is a broken or unresolved symlink. Repair it or set CHATLOG_DATA_ROOT to an operator-owned root with local authority and corpus data.`);
@@ -8992,8 +9172,8 @@ function assertContainedSymlinkPaths(root) {
 function resolvePluginDataRoot(activeWorkspace, explicit = process.env.CHATLOG_DATA_ROOT) {
   if (!activeWorkspace.trim())
     return fail5("workspace-unavailable", "The active workspace is unavailable, so Chatlog cannot establish a safe plugin data root. Set CHATLOG_DATA_ROOT to an existing operator-owned root outside repositories.");
-  const selected = explicit?.trim() ? resolve6(explicit.trim()) : resolveDataRoot();
-  const lexicalRoot = resolve6(selected);
+  const selected = explicit?.trim() ? resolve7(explicit.trim()) : resolveDataRoot();
+  const lexicalRoot = resolve7(selected);
   const existingRoot = existingCanonicalDirectory(lexicalRoot, "Chatlog data root");
   if (!existingRoot.ok)
     return existingRoot;
@@ -9001,14 +9181,14 @@ function resolvePluginDataRoot(activeWorkspace, explicit = process.env.CHATLOG_D
   const workspace = canonicalOrAbsolute(activeWorkspace);
   const projectIdentity = projectOf(activeWorkspace);
   const project = canonicalOrAbsolute(projectIdentity);
-  const workspacePaths = [resolve6(activeWorkspace), workspace];
+  const workspacePaths = [resolve7(activeWorkspace), workspace];
   const rootPaths = [lexicalRoot, root];
   const overlaps = (left, right) => left.some((path) => right.some((candidate) => pathWithin(path, candidate) || pathWithin(candidate, path)));
   if (overlaps(workspacePaths, rootPaths)) {
     return fail5("workspace-contained", `Chatlog data root "${lexicalRoot}" is inside the active workspace "${workspace}" or contains it. Refusing repository-controlled plugin memory; set CHATLOG_DATA_ROOT to an operator-owned root outside the repository.`);
   }
   if (isAbsolute3(projectIdentity)) {
-    const repositoryPaths = [resolve6(projectIdentity), project];
+    const repositoryPaths = [resolve7(projectIdentity), project];
     if (overlaps(repositoryPaths, rootPaths)) {
       return fail5("repository-contained", `Chatlog data root "${lexicalRoot}" is repository-contained, contains the active repository, or is symlinked through an untrusted path. Set CHATLOG_DATA_ROOT to an operator-owned root outside the active repository.`);
     }

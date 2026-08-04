@@ -146,6 +146,38 @@ test("capacity-tail omission accounts for every skipped source record", () => {
   expect(semanticLossCounts(batch.semanticLoss)).toEqual({ "capture-policy-omission": 3 });
 });
 
+test("capacity-tail omission does not recount a partially captured boundary record", () => {
+  const builder = new EventBatchBuilder({
+    provider: "openai",
+    harness: "codex",
+    sourceKind: "codex-session",
+    source: { path: "/tmp/partial-capacity.jsonl", size: 1, mtimeMs: 1 },
+    sessionId: "partial-capacity-session",
+  });
+  builder.add("session.started", { type: "session_meta" }, 1, {
+    sessionId: "partial-capacity-session",
+  });
+  builder.add("message.created", { type: "response_item" }, 2, {
+    role: "assistant",
+    content: "captured before the next event exceeded capacity",
+  });
+  const batch = builder.finish(false, 4, { line: 2, count: 3 });
+  expect(sourceItemAccounting(batch)).toMatchObject({
+    sourceItems: 4,
+    eventBackedItems: 2,
+    lossOnlyItems: 2,
+    unaccountedItems: 0,
+    policyOmissions: 2,
+  });
+  expect(batch.semanticLoss).toEqual([
+    expect.objectContaining({
+      code: "capture-policy-omission",
+      count: 2,
+      recordPosition: { line: 3 },
+    }),
+  ]);
+});
+
 async function adaptJsonl(
   adapter: SourceAdapter,
   fixtureName: string,

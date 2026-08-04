@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysis";
@@ -8,10 +8,13 @@ import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
   assertActiveProjection,
+  loadCorpusManifest,
+  loadCorpusManifestSync,
   reconcileActiveSources,
   reconcileSourceAuthority,
   type ManifestSourceEntry,
 } from "../src/source-authority";
+import { EXPORT_MAX_MANIFEST_BYTES } from "../src/importers/export-limits";
 import { buildSourceReceipt, persistSourceReceipt } from "../src/source-receipts";
 import { syntheticEventBatch } from "./event-fixture";
 import type { Conversation } from "../src/types";
@@ -50,6 +53,16 @@ async function writeManifest(
   await mkdir(join(root, "corpus"), { recursive: true });
   await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
 }
+test("corpus manifest readers reject files above the bounded manifest ceiling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-source-authority-manifest-limit-"));
+  const path = join(root, "corpus", "manifest.json");
+  await mkdir(join(root, "corpus"), { recursive: true });
+  await writeFile(path, "{}");
+  await truncate(path, EXPORT_MAX_MANIFEST_BYTES + 1);
+
+  await expect(loadCorpusManifest(root)).rejects.toThrow("exceeds the file limit");
+  expect(() => loadCorpusManifestSync(root)).toThrow("exceeds the file limit");
+});
 
 test("migrates legacy newest-row authority and prevents historical resurrection", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-source-authority-migration-"));
@@ -222,7 +235,11 @@ test("operator reconciliation command rebuilds a manifest projection", async () 
   ]);
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
-  expect(JSON.parse(stdout)).toMatchObject({ activeSources: 1, reindexed: 1 });
+  expect(JSON.parse(stdout)).toMatchObject({
+    activeSources: 1,
+    reindexed: 1,
+    recovery: { discovered: 0, completed: 0, aborted: 0 },
+  });
 
   const reader = new Database(path, { readonly: true, create: false });
   expect(assertActiveProjection(root, reader).activeSources).toBe(1);
@@ -294,7 +311,7 @@ test("rebuild rejects a parseable canonical object whose content hash is invalid
   );
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   await expect(reconcileSourceAuthority(root, db, sources)).rejects.toThrow(
-    "canonical object does not match manifest source mapping",
+    "canonical object hash or shape mismatch",
   );
   expect(db.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 0 });
   db.close();

@@ -343,6 +343,16 @@ var pipeArguments = (self, args) => {
     }
   }
 };
+var Prototype = {
+  pipe() {
+    return pipeArguments(this, arguments);
+  }
+};
+var Class = /* @__PURE__ */ function() {
+  function PipeableBase() {}
+  PipeableBase.prototype = Prototype;
+  return PipeableBase;
+}();
 
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Function.js
 var dual = function(arity, body) {
@@ -1610,7 +1620,7 @@ var dedupeWith = /* @__PURE__ */ dual(2, (self, isEquivalent) => {
 });
 
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Effectable.js
-var Prototype = (options) => makePrimitiveProto({
+var Prototype2 = (options) => makePrimitiveProto({
   op: options.label,
   [evaluate]: options.evaluate
 });
@@ -1667,7 +1677,7 @@ var Service = function() {
 };
 var ServiceProto = {
   [ServiceTypeId]: ServiceTypeId,
-  .../* @__PURE__ */ Prototype({
+  .../* @__PURE__ */ Prototype2({
     label: "Service",
     evaluate(fiber) {
       return exitSucceed(get(fiber.context, this));
@@ -4870,6 +4880,52 @@ var withTime = /* @__PURE__ */ dual((args2) => isEffect(args2[0]), (self, label)
 }), () => self, () => sync(() => {
   console2.timeEnd(label);
 }))));
+// node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Data.js
+var exports_Data = {};
+__export(exports_Data, {
+  taggedEnum: () => taggedEnum,
+  TaggedError: () => TaggedError2,
+  TaggedClass: () => TaggedClass,
+  Error: () => Error3,
+  Class: () => Class2
+});
+var Class2 = class extends Class {
+  constructor(props) {
+    super();
+    if (props) {
+      Object.assign(this, props);
+    }
+  }
+};
+var TaggedClass = (tag) => class extends Class2 {
+  _tag = tag;
+};
+var taggedEnum = () => new Proxy({}, {
+  get(_target, tag, _receiver) {
+    if (tag === "$is") {
+      return isTagged;
+    } else if (tag === "$match") {
+      return taggedMatch;
+    }
+    return (props) => ({
+      ...props,
+      _tag: tag
+    });
+  }
+});
+function taggedMatch() {
+  if (arguments.length === 1) {
+    const cases2 = arguments[0];
+    return function(value2) {
+      return cases2[value2._tag](value2);
+    };
+  }
+  const value = arguments[0];
+  const cases = arguments[1];
+  return cases[value._tag](value);
+}
+var Error3 = Error2;
+var TaggedError2 = TaggedError;
 // node_modules/.bun/effect@4.0.0-beta.101/node_modules/effect/dist/Effect.js
 var exports_Effect = {};
 __export(exports_Effect, {
@@ -6340,18 +6396,18 @@ var fnUntracedEager2 = fnUntracedEager;
 // src/mcp/data.ts
 import { Database as Database6 } from "bun:sqlite";
 import { existsSync as existsSync3 } from "fs";
-import { readFile as readFile8 } from "fs/promises";
-import { join as join15, resolve as resolve10 } from "path";
+import { readFile as readFile9 } from "fs/promises";
+import { join as join16, resolve as resolve11 } from "path";
 
 // src/context-plane.ts
 import { Database as Database5 } from "bun:sqlite";
 import { existsSync as existsSync2 } from "fs";
-import { join as join13, resolve as resolve9 } from "path";
+import { join as join14, resolve as resolve10 } from "path";
 
 // src/context-candidates.ts
 import { Database as Database3 } from "bun:sqlite";
 import { existsSync } from "fs";
-import { join as join7, resolve as resolve5 } from "path";
+import { join as join8, resolve as resolve6 } from "path";
 
 // src/recall-budget.ts
 import { isAbsolute as isAbsolute3, normalize as normalize2, relative as relative2 } from "path";
@@ -8017,18 +8073,79 @@ async function readPublishedInsightMemory(root) {
 }
 
 // src/source-authority.ts
-import { readFileSync as readFileSync3 } from "fs";
-import { join as join6 } from "path";
+import { readFileSync as readFileSync2 } from "fs";
+import { join as join7 } from "path";
 
 // src/analysis.ts
 import { Database as Database2 } from "bun:sqlite";
-import { chmodSync, mkdirSync, readFileSync as readFileSync2 } from "fs";
-import { dirname as dirname5 } from "path";
+import { chmodSync, mkdirSync } from "fs";
+import { basename as basename2, dirname as dirname5, join as join6 } from "path";
 
 // src/event-store.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, rename as rename3, stat as stat2, writeFile as writeFile3 } from "fs/promises";
+import { readFile as readFile4, stat as stat3 } from "fs/promises";
+import { join as join5 } from "path";
+
+// src/durable-fs.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import { dirname as dirname4, join as join5 } from "path";
+import { chmod as chmod3, mkdir as mkdir3, open as open2, readFile as readFile3, rename as rename3, stat as stat2, unlink as unlink2 } from "fs/promises";
+import { dirname as dirname4 } from "path";
+async function syncDirectory(path) {
+  const handle = await open2(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function createDirectoryDurably(path) {
+  try {
+    await mkdir3(path, { mode: 448 });
+    await syncDirectory(dirname4(path));
+  } catch (error2) {
+    if (error2?.code === "EEXIST") {
+      if ((await stat2(path)).isDirectory())
+        return;
+      throw new Error(`${path}: expected a directory`, { cause: error2 });
+    }
+    if (error2?.code !== "ENOENT")
+      throw error2;
+    await createDirectoryDurably(dirname4(path));
+    await createDirectoryDurably(path);
+  }
+}
+async function ensurePrivateDirectory(path) {
+  await createDirectoryDurably(path);
+  await chmod3(path, 448);
+}
+async function durableAtomicWrite(path, data, options = {}) {
+  const bytes = Buffer.byteLength(data);
+  if (options.maxBytes != null && bytes > options.maxBytes)
+    throw new Error(`${path}: content exceeds ${options.maxBytes} bytes`);
+  const directory = dirname4(path);
+  await ensurePrivateDirectory(directory);
+  const temporary = `${path}.${process.pid}.${randomUUID2()}.tmp`;
+  const handle = await open2(temporary, "wx", options.mode ?? 384);
+  let renamed = false;
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+    await handle.close();
+    await rename3(temporary, path);
+    renamed = true;
+    await syncDirectory(directory);
+  } finally {
+    try {
+      await handle.close();
+    } catch {}
+    if (!renamed) {
+      try {
+        await unlink2(temporary);
+      } catch {}
+    }
+  }
+}
+
+// src/event-store.ts
 var EVENT_OBJECT_DIRECTORY = "events";
 
 class EventStoreError extends Error {
@@ -8060,21 +8177,17 @@ function eventBatchPath(root, hash4) {
   return join5(root, "corpus", eventBatchRelativePath(hash4));
 }
 async function atomicWrite(path, text2) {
-  await mkdir3(dirname4(path), { recursive: true, mode: 448 });
-  const temporary = `${path}.${process.pid}.${randomUUID2()}.tmp`;
-  await writeFile3(temporary, text2, { mode: 384 });
-  await rename3(temporary, path);
-  await chmod3(path, 384);
+  await durableAtomicWrite(path, text2);
 }
 async function persistEventBatch(root, batch) {
   const canonical = canonicalEventBatch(batch);
   const hash4 = eventBatchHash(canonical);
   const path = eventBatchPath(root, hash4);
   try {
-    const info2 = await stat2(path);
+    const info2 = await stat3(path);
     if (!info2.isFile())
       invalidEventStore(`${path}: event batch path is not a file`);
-    const existing = validateEventBatch(JSON.parse(await readFile3(path, "utf8")));
+    const existing = validateEventBatch(JSON.parse(await readFile4(path, "utf8")));
     if (eventBatchHash(existing) !== hash4)
       invalidEventStore(`${path}: event batch hash mismatch`);
     return hash4;
@@ -8087,10 +8200,182 @@ async function persistEventBatch(root, batch) {
 }
 async function readEventBatch(root, hash4) {
   const path = eventBatchPath(root, hash4);
-  const batch = canonicalEventBatch(JSON.parse(await readFile3(path, "utf8")));
+  const batch = canonicalEventBatch(JSON.parse(await readFile4(path, "utf8")));
   if (eventBatchHash(batch) !== hash4.toLowerCase())
     invalidEventStore(`${path}: event batch hash mismatch`);
   return batch;
+}
+
+// src/conversation-projection.ts
+function canonicalizeConversation(value) {
+  const scrub = (item) => {
+    if (typeof item === "string")
+      return redact2(item);
+    if (Array.isArray(item))
+      return item.map(scrub);
+    if (item && typeof item === "object")
+      return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, scrub(child)]));
+    return item;
+  };
+  const scrubbed = scrub(value);
+  const hash4 = sha256(JSON.stringify(scrubbed));
+  return { ...scrubbed, contentHash: hash4 };
+}
+function optionalStringField(value, key) {
+  return !(key in value) || typeof value[key] === "string";
+}
+function optionalStringArrayField(value, key) {
+  return !(key in value) || Array.isArray(value[key]) && value[key].every((item) => typeof item === "string");
+}
+function validCanonicalTurn(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const turn = value;
+  if (typeof turn.role !== "string" || typeof turn.content !== "string")
+    return false;
+  if (!optionalStringField(turn, "at") || !optionalStringArrayField(turn, "sourceEventIds"))
+    return false;
+  if ("tokens" in turn) {
+    const tokens = turn.tokens;
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || Object.values(tokens).some((item) => typeof item !== "number" || !Number.isFinite(item)))
+      return false;
+  }
+  if ("toolCalls" in turn) {
+    if (!Array.isArray(turn.toolCalls) || turn.toolCalls.some((callValue) => {
+      if (!callValue || typeof callValue !== "object" || Array.isArray(callValue))
+        return true;
+      const call = callValue;
+      return typeof call.name !== "string" || !optionalStringField(call, "id") || !optionalStringField(call, "arguments") || !optionalStringField(call, "output") || !optionalStringField(call, "approval") || !optionalStringField(call, "execution") || !optionalStringField(call, "result") || !optionalStringArrayField(call, "sourceEventIds");
+    }))
+      return false;
+  }
+  return true;
+}
+function validCanonicalConversation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const conversation = value;
+  if (typeof conversation.id !== "string" || typeof conversation.provider !== "string" || typeof conversation.harness !== "string" || typeof conversation.project !== "string" || typeof conversation.cwd !== "string" || typeof conversation.model !== "string" || typeof conversation.startedAt !== "string" || typeof conversation.endedAt !== "string" || typeof conversation.sourcePath !== "string" || typeof conversation.contentHash !== "string" || !Array.isArray(conversation.turns) || conversation.turns.some((turn) => !validCanonicalTurn(turn)))
+    return false;
+  return optionalStringField(conversation, "title") && optionalStringField(conversation, "domain") && optionalStringField(conversation, "sourceKind") && optionalStringField(conversation, "resumeId") && optionalStringField(conversation, "eventBatchHash");
+}
+function validateCanonicalConversation(value, expected) {
+  if (!validCanonicalConversation(value) || value.contentHash !== expected.contentHash || value.sourcePath !== expected.sourcePath)
+    return null;
+  const { contentHash: _contentHash, ...body } = value;
+  try {
+    return canonicalizeConversation(body).contentHash === expected.contentHash ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// src/importers/export-limits.ts
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync as realpathSync3 } from "fs";
+import { resolve as resolve5, sep as sep2 } from "path";
+var EXPORT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+var EXPORT_MAX_FILE_BYTES = 128 * 1024 * 1024;
+var EXPORT_MAX_MEMBER_BYTES = 64 * 1024 * 1024;
+var EXPORT_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+var EXPORT_MAX_LISTING_BYTES = 4 * 1024 * 1024;
+var EXPORT_MAX_STDERR_BYTES = 64 * 1024;
+var EXPORT_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+var EXPORT_MAX_CORPUS_OBJECT_BYTES = 64 * 1024 * 1024;
+
+class ExportLimitError extends Error {
+  code = "export-limit-exceeded";
+  kind;
+  limit;
+  observed;
+  constructor(kind, limit, observed, label) {
+    super(`${label} exceeds the ${kind} limit of ${limit} bytes`);
+    this.name = "ExportLimitError";
+    this.kind = kind;
+    this.limit = limit;
+    this.observed = observed;
+  }
+}
+
+class ExportFileTypeError extends Error {
+  label;
+  code = "export-file-type-invalid";
+  constructor(label) {
+    super(`${label} is not a regular file`);
+    this.label = label;
+    this.name = "ExportFileTypeError";
+  }
+}
+
+class ExportReadError extends Error {
+  label;
+  code = "export-read-failed";
+  constructor(label, cause) {
+    super(`${label} could not be read`, { cause });
+    this.label = label;
+    this.name = "ExportReadError";
+  }
+}
+function readBoundedFileSync(path, limit, label, containmentRoot) {
+  const resolvedPath = resolve5(path);
+  if (containmentRoot !== undefined) {
+    try {
+      const root = realpathSync3(resolve5(containmentRoot));
+      const candidate = realpathSync3(resolvedPath);
+      if (candidate !== root && !candidate.startsWith(`${root}${sep2}`))
+        return { ok: false, error: new ExportFileTypeError(label) };
+    } catch (error2) {
+      return { ok: false, error: new ExportReadError(label, error2) };
+    }
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(resolvedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error2) {
+    if (typeof error2 === "object" && error2 !== null && "code" in error2 && (error2.code === "ELOOP" || error2.code === "EMLINK"))
+      return { ok: false, error: new ExportFileTypeError(label) };
+    return { ok: false, error: new ExportReadError(label, error2) };
+  }
+  try {
+    const info2 = fstatSync(descriptor);
+    if (!info2.isFile())
+      return { ok: false, error: new ExportFileTypeError(label) };
+    if (info2.size > limit)
+      return {
+        ok: false,
+        error: new ExportLimitError("file", limit, info2.size, label)
+      };
+    let encoded = Buffer.allocUnsafe(Math.min(limit + 1, Math.max(info2.size + 1, 4096)));
+    let bytes = 0;
+    for (;; ) {
+      if (bytes === encoded.byteLength) {
+        if (bytes > limit)
+          return {
+            ok: false,
+            error: new ExportLimitError("file", limit, bytes, label)
+          };
+        const expanded = Buffer.allocUnsafe(Math.min(limit + 1, Math.max(encoded.byteLength * 2, bytes + 1)));
+        encoded.copy(expanded, 0, 0, bytes);
+        encoded = expanded;
+      }
+      const count2 = readSync(descriptor, encoded, bytes, encoded.byteLength - bytes, null);
+      if (count2 === 0)
+        break;
+      bytes += count2;
+    }
+    return {
+      ok: true,
+      value: {
+        text: encoded.subarray(0, bytes).toString("utf8"),
+        bytes,
+        size: bytes,
+        mtimeMs: info2.mtimeMs
+      }
+    };
+  } catch (error2) {
+    return { ok: false, error: new ExportReadError(label, error2) };
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 // src/analysis.ts
@@ -8374,31 +8659,17 @@ function indexContextEventBatch(db, input, batchHash) {
     }
   })();
 }
-function queryContextEvents(db, contextSessionId, kinds, limit) {
-  const params = [contextSessionId];
-  let kindClause = "";
-  if (kinds && kinds.length > 0) {
-    kindClause = ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
-    params.push(...kinds);
-  }
-  if (limit !== undefined)
-    params.push(limit);
-  const lifecycleOrderSql = Object.entries(CONTEXT_LIFECYCLE_ORDER).map(([kind, order]) => `WHEN '${kind}' THEN ${order}`).join(" ");
-  const direction = limit === undefined ? "ASC" : "DESC";
-  const rows = db.query(`SELECT event_id eventId,batch_hash batchHash,sequence,kind,occurred_at occurredAt,
-      observed_at observedAt,context_session_id contextSessionId,state,idempotency_key idempotencyKey,
-      bundle_hash bundleHash,item_id itemId,intervention_event_ids_json interventionEventIdsJson,
-      known_intervention_lineage_json knownInterventionLineageJson,actor_kind actorKind,
-      actor_authority actorAuthority,actor_json actorJson,payload_json payloadJson,evidence_grade evidenceGrade,
-      treatment_arm treatmentArm,outcome_status outcomeStatus,unresolved,evidence_classification evidenceClassification,
-      input_event_ids_json inputEventIdsJson,input_hashes_json inputHashesJson
-    FROM context_event_projection
-    WHERE context_session_id = ?${kindClause}
-    ORDER BY COALESCE(occurred_at, observed_at, '') ${direction}, sequence ${direction},
-      CASE kind ${lifecycleOrderSql} ELSE 100 END ${direction}, event_id ${direction}
-    ${limit === undefined ? "" : "LIMIT ?"}`).all(...params);
-  const orderedRows = limit === undefined ? rows : rows.toReversed();
-  return orderedRows.map((row) => ({
+var CONTEXT_EVENT_PROJECTION_COLUMNS = `event_id eventId,batch_hash batchHash,sequence,kind,
+  occurred_at occurredAt,observed_at observedAt,context_session_id contextSessionId,state,
+  idempotency_key idempotencyKey,bundle_hash bundleHash,item_id itemId,
+  intervention_event_ids_json interventionEventIdsJson,
+  known_intervention_lineage_json knownInterventionLineageJson,actor_kind actorKind,
+  actor_authority actorAuthority,actor_json actorJson,payload_json payloadJson,
+  evidence_grade evidenceGrade,treatment_arm treatmentArm,outcome_status outcomeStatus,
+  unresolved,evidence_classification evidenceClassification,
+  input_event_ids_json inputEventIdsJson,input_hashes_json inputHashesJson`;
+function contextEventProjectionRow(row) {
+  return {
     eventId: String(row.eventId),
     batchHash: String(row.batchHash),
     sequence: Number(row.sequence),
@@ -8423,7 +8694,29 @@ function queryContextEvents(db, contextSessionId, kinds, limit) {
     evidenceClassification: typeof row.evidenceClassification === "string" ? row.evidenceClassification : null,
     inputEventIds: jsonStringArray(JSON.parse(String(row.inputEventIdsJson))),
     inputHashes: jsonStringArray(JSON.parse(String(row.inputHashesJson)))
-  }));
+  };
+}
+function queryContextEvents(db, contextSessionId, kinds, limit) {
+  const params = [contextSessionId];
+  let kindClause = "";
+  if (kinds && kinds.length > 0) {
+    kindClause = ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
+    params.push(...kinds);
+  }
+  if (limit !== undefined)
+    params.push(limit);
+  const lifecycleOrderSql = Object.entries(CONTEXT_LIFECYCLE_ORDER).map(([kind, order]) => `WHEN '${kind}' THEN ${order}`).join(" ");
+  const direction = limit === undefined ? "ASC" : "DESC";
+  const rows = db.query(`SELECT ${CONTEXT_EVENT_PROJECTION_COLUMNS}
+       FROM context_event_projection
+       WHERE context_session_id = ?${kindClause}
+       ORDER BY COALESCE(occurred_at, observed_at, '') ${direction}, sequence ${direction},
+         CASE kind ${lifecycleOrderSql} ELSE 100 END ${direction}, event_id ${direction}
+       ${limit === undefined ? "" : "LIMIT ?"}`).all(...params);
+  const orderedRows = limit === undefined ? rows : rows.toReversed();
+  return orderedRows.map(contextEventProjectionRow);
+}
+class CacheWriteBackfillError extends exports_Data.TaggedError("CacheWriteBackfillError") {
 }
 
 // src/adapter-conformance.ts
@@ -8588,12 +8881,21 @@ function validateManifest(value, path) {
   const manifest = value;
   if (manifest?.version !== 1 || !manifest.sources || typeof manifest.sources !== "object")
     invalidSourceAuthority(`${path}: unsupported corpus manifest`);
+  const validRecipe = (recipe) => typeof recipe === "string" && recipe.length > 0 && recipe.length <= 256;
+  for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"])
+    if (manifest[key] !== undefined && !validRecipe(manifest[key]))
+      invalidSourceAuthority(`${path}: invalid corpus recipe`);
+  if (manifest.recipeMigration !== undefined && (!manifest.recipeMigration || typeof manifest.recipeMigration !== "object" || !validRecipe(manifest.recipeMigration.redactionRecipe) || !validRecipe(manifest.recipeMigration.projectIdentityRecipe) || !validRecipe(manifest.recipeMigration.eventRecipe)))
+    invalidSourceAuthority(`${path}: invalid corpus recipe migration`);
   for (const [sourcePath, entry] of Object.entries(manifest.sources)) {
     if (!sourcePath || !entry || !/^[a-f0-9]{64}$/.test(entry.contentHash))
       invalidSourceAuthority(`${path}: invalid source mapping`);
     for (const key of ["eventBatchHash", "conversationProjectionHash", "receiptHash"])
       if (entry[key] !== undefined && !/^[a-f0-9]{64}$/.test(entry[key]))
         invalidSourceAuthority(`${path}: invalid source mapping`);
+    for (const key of ["redactionRecipe", "projectIdentityRecipe", "eventRecipe"])
+      if (entry[key] !== undefined && !validRecipe(entry[key]))
+        invalidSourceAuthority(`${path}: invalid source recipe`);
   }
   return manifest;
 }
@@ -8601,10 +8903,10 @@ function validateReceiptMappings(root, sources) {
   for (const [sourcePath, entry] of Object.entries(sources)) {
     if (!entry.receiptHash)
       continue;
-    const receiptPath = join6(root, "receipts", "sources", entry.receiptHash.slice(0, 2), `${entry.receiptHash}.json`);
+    const receiptPath = join7(root, "receipts", "sources", entry.receiptHash.slice(0, 2), `${entry.receiptHash}.json`);
     let receipt;
     try {
-      receipt = validateSourceReceipt(JSON.parse(readFileSync3(receiptPath, "utf8")));
+      receipt = validateSourceReceipt(JSON.parse(readFileSync2(receiptPath, "utf8")));
     } catch {
       invalidSourceAuthority(`${sourcePath}: source receipt is missing or invalid`);
     }
@@ -8623,8 +8925,11 @@ function manifestSourcesHash(sources) {
   return sha2562(stableStringify(canonical));
 }
 function loadCorpusManifestSync(root) {
-  const path = join6(root, "corpus", "manifest.json");
-  return validateManifest(JSON.parse(readFileSync3(path, "utf8")), path);
+  const path = join7(root, "corpus", "manifest.json");
+  const result3 = readBoundedFileSync(path, EXPORT_MAX_MANIFEST_BYTES, `${path} (corpus manifest)`, root);
+  if (!result3.ok)
+    invalidSourceAuthority(result3.error.message);
+  return validateManifest(JSON.parse(result3.value.text), path);
 }
 class ActiveProjectionGuard {
   root;
@@ -8841,7 +9146,7 @@ async function collectContextCandidates(root, request3) {
       ok: false,
       error: { code: "source-unavailable", message: published.error.message }
     };
-  const databasePath = join7(resolve5(root), "analysis", "chatlog.sqlite");
+  const databasePath = join8(resolve6(root), "analysis", "chatlog.sqlite");
   if (!existsSync(databasePath))
     return {
       ok: false,
@@ -8849,7 +9154,7 @@ async function collectContextCandidates(root, request3) {
     };
   const db = new Database3(databasePath, { readonly: true, create: false });
   try {
-    const guard = new ActiveProjectionGuard(resolve5(root));
+    const guard = new ActiveProjectionGuard(resolve6(root));
     const before = guard.assert(db);
     const queryTerms = sqlTerms(request3);
     const pathFilter = evidencePathFilter(request3.scope.path);
@@ -8903,8 +9208,8 @@ async function collectContextCandidates(root, request3) {
 }
 
 // src/context-release.ts
-import { chmod as chmod6, mkdir as mkdir6, readFile as readFile6, rename as rename5, writeFile as writeFile5 } from "fs/promises";
-import { dirname as dirname7, join as join11, resolve as resolve8 } from "path";
+import { chmod as chmod6, mkdir as mkdir6, readFile as readFile7, rename as rename5, writeFile as writeFile4 } from "fs/promises";
+import { dirname as dirname7, join as join12, resolve as resolve9 } from "path";
 
 // src/closed-loop-evaluation.ts
 var CLOSED_LOOP_EVALUATOR_SOURCE_KIND = "chatlog-closed-loop-evaluator";
@@ -9238,13 +9543,13 @@ import {
   chmod as chmod5,
   mkdir as mkdir5,
   opendir,
-  readFile as readFile5,
+  readFile as readFile6,
   readdir,
   rename as rename4,
-  unlink as unlink3,
-  writeFile as writeFile4
+  unlink as unlink4,
+  writeFile as writeFile3
 } from "fs/promises";
-import { dirname as dirname6, join as join10, resolve as resolve7 } from "path";
+import { dirname as dirname6, join as join11, resolve as resolve8 } from "path";
 
 // src/context-types.ts
 var CONTEXT_SCHEMA_VERSION = 1;
@@ -9258,12 +9563,12 @@ var MAX_CONTEXT_BUDGET = {
   costUsd: 100
 };
 // src/context-event-outbox.ts
-import { join as join9, resolve as resolve6 } from "path";
+import { join as join10, resolve as resolve7 } from "path";
 
 // src/lock.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { chmod as chmod4, link, mkdir as mkdir4, open as open2, readFile as readFile4, stat as stat3, unlink as unlink2 } from "fs/promises";
-import { join as join8 } from "path";
+import { chmod as chmod4, link, mkdir as mkdir4, open as open3, readFile as readFile5, stat as stat4, unlink as unlink3 } from "fs/promises";
+import { join as join9 } from "path";
 import { setTimeout as sleep3 } from "timers/promises";
 var PARTIAL_LOCK_GRACE_MS = 1000;
 var RECLAIM_CLAIM_STALE_MS = 60000;
@@ -9303,7 +9608,7 @@ async function linuxProcessStartIdentity(pid) {
   if (process.platform !== "linux")
     return;
   try {
-    const contents = await readFile4(`/proc/${pid}/stat`, "utf8");
+    const contents = await readFile5(`/proc/${pid}/stat`, "utf8");
     const closingCommand = contents.lastIndexOf(")");
     if (closingCommand < 0)
       return;
@@ -9325,7 +9630,7 @@ async function ownerIsStale(record3) {
 async function staleLock(path) {
   let record3 = {};
   try {
-    const parsed = JSON.parse(await readFile4(path, "utf8"));
+    const parsed = JSON.parse(await readFile5(path, "utf8"));
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
       record3 = parsed;
     if (completeLockRecord(parsed))
@@ -9336,7 +9641,7 @@ async function staleLock(path) {
       };
   } catch {}
   try {
-    const ageMs = Date.now() - (await stat3(path)).mtimeMs;
+    const ageMs = Date.now() - (await stat4(path)).mtimeMs;
     return {
       stale: ageMs > PARTIAL_LOCK_GRACE_MS,
       missing: false,
@@ -9350,7 +9655,7 @@ async function staleLock(path) {
 }
 async function removeReclaimClaim(path) {
   try {
-    await unlink2(path);
+    await unlink3(path);
   } catch (error2) {
     if (errorCode(error2) !== "ENOENT")
       await exports_Effect.runPromise(exports_Console.error(`stale lock reclaim cleanup failed for ${path}:`, error2));
@@ -9366,7 +9671,7 @@ async function reclaimStaleLock(path) {
     if (errorCode(error2) !== "EEXIST")
       return Promise.reject(error2);
     try {
-      const ageMs = Date.now() - (await stat3(claim)).ctimeMs;
+      const ageMs = Date.now() - (await stat4(claim)).ctimeMs;
       if (ageMs > RECLAIM_CLAIM_STALE_MS)
         await removeReclaimClaim(claim);
     } catch (claimError) {
@@ -9382,7 +9687,7 @@ async function reclaimStaleLock(path) {
     let current;
     let claimed;
     try {
-      [current, claimed] = await Promise.all([stat3(path), stat3(claim)]);
+      [current, claimed] = await Promise.all([stat4(path), stat4(claim)]);
     } catch (error2) {
       if (errorCode(error2) === "ENOENT")
         return false;
@@ -9391,7 +9696,7 @@ async function reclaimStaleLock(path) {
     if (current.dev !== claimed.dev || current.ino !== claimed.ino)
       return false;
     try {
-      await unlink2(path);
+      await unlink3(path);
     } catch (error2) {
       if (errorCode(error2) !== "ENOENT")
         return Promise.reject(error2);
@@ -9404,7 +9709,7 @@ async function reclaimStaleLock(path) {
 async function acquireFileLock(path, record3, label, deadline) {
   while (true) {
     try {
-      const handle = await open2(path, "wx", 384);
+      const handle = await open3(path, "wx", 384);
       try {
         await handle.writeFile(JSON.stringify(record3) + `
 `);
@@ -9432,8 +9737,8 @@ async function acquireFileLock(path, record3, label, deadline) {
 async function withFileLock(root, filename, label, work, waitMs = 0) {
   return exports_Effect.runPromise(exports_Effect.acquireUseRelease(exports_Effect.tryPromise({
     try: async () => {
-      const analysisDir = join8(root, "analysis");
-      const path = join8(analysisDir, filename);
+      const analysisDir = join9(root, "analysis");
+      const path = join9(analysisDir, filename);
       const processStartIdentity = await linuxProcessStartIdentity(process.pid);
       const record3 = {
         pid: process.pid,
@@ -9450,9 +9755,9 @@ async function withFileLock(root, filename, label, work, waitMs = 0) {
     catch: asError
   }), () => exports_Effect.tryPromise({ try: work, catch: asError }), ({ path, record: record3 }) => exports_Effect.tryPromise({
     try: async () => {
-      const current = JSON.parse(await readFile4(path, "utf8"));
+      const current = JSON.parse(await readFile5(path, "utf8"));
       if (current.runId === record3.runId)
-        await unlink2(path);
+        await unlink3(path);
     },
     catch: asError
   }).pipe(exports_Effect.catch((error2) => errorCode(error2) === "ENOENT" ? exports_Effect.void : exports_Effect.logError(`${label} lock cleanup failed for ${path}:`, error2)))));
@@ -9483,7 +9788,7 @@ async function publishContextEventBatches(root, batchHashes) {
     return;
   const batches = await exports_Effect.runPromise(exports_Effect.all(hashes.map((hash4) => exports_Effect.promise(() => readEventBatch(root, hash4))), { concurrency: 8 }));
   await withIngestLock(root, async () => {
-    const db = openAnalysis(join9(resolve6(root), "analysis", "chatlog.sqlite"));
+    const db = openAnalysis(join10(resolve7(root), "analysis", "chatlog.sqlite"));
     try {
       for (const [index, batch] of batches.entries())
         indexEventBatch(db, batch, hashes[index]);
@@ -12038,13 +12343,13 @@ function parseStoredSession(value) {
   };
 }
 function sessionPath(root, contextSessionId) {
-  return join10(resolve7(root), "memory", "context-sessions", `${contextSessionId}.json`);
+  return join11(resolve8(root), "memory", "context-sessions", `${contextSessionId}.json`);
 }
 async function atomicPrivateJson(path, value) {
   await mkdir5(dirname6(path), { recursive: true, mode: 448 });
   await chmod5(dirname6(path), 448);
   const temporary = `${path}.${process.pid}.${randomUUID5()}.tmp`;
-  await writeFile4(temporary, `${JSON.stringify(value, null, 2)}
+  await writeFile3(temporary, `${JSON.stringify(value, null, 2)}
 `, {
     encoding: "utf8",
     mode: 384,
@@ -12147,7 +12452,7 @@ function sameNativeBinding(left, right) {
   return left.nativeSessionId === right.nativeSessionId && left.target.provider === right.target.provider && left.target.harness === right.target.harness && left.target.model === right.target.model && left.target.role === right.target.role && left.projectIdentity === right.projectIdentity && left.cwd === right.cwd && left.path === right.path && left.domainPolicy.length === right.domainPolicy.length && left.domainPolicy.every((domain, index) => domain === right.domainPolicy[index]);
 }
 async function findNativeSession(root, nativeSessionId) {
-  const directoryPath = join10(resolve7(root), "memory", "context-sessions");
+  const directoryPath = join11(resolve8(root), "memory", "context-sessions");
   let directory;
   try {
     directory = await opendir(directoryPath);
@@ -12169,7 +12474,7 @@ async function findNativeSession(root, nativeSessionId) {
         return invalid3(`context session storage exceeds the ${MAX_CONTEXT_SESSIONS}-session limit`);
       let parsed;
       try {
-        parsed = parseStoredSession(JSON.parse(await readFile5(join10(directoryPath, entry.name), "utf8")));
+        parsed = parseStoredSession(JSON.parse(await readFile6(join11(directoryPath, entry.name), "utf8")));
       } catch (error2) {
         return storageError(error2);
       }
@@ -12194,7 +12499,7 @@ function contextSessionIsUnused(session) {
 async function contextSessionHasRecallArtifacts(root, contextSessionId) {
   let directory;
   try {
-    directory = await opendir(join10(resolve7(root), "memory", "context-recall-results", contextSessionId));
+    directory = await opendir(join11(resolve8(root), "memory", "context-recall-results", contextSessionId));
   } catch (error2) {
     if (typeof error2 === "object" && error2 !== null && "code" in error2 && error2.code === "ENOENT")
       return { ok: true, value: false };
@@ -12211,7 +12516,7 @@ async function contextSessionHasRecallArtifacts(root, contextSessionId) {
   }
 }
 async function requireContextSessionCapacity(root, excludedNativeSessionId) {
-  const directoryPath = join10(resolve7(root), "memory", "context-sessions");
+  const directoryPath = join11(resolve8(root), "memory", "context-sessions");
   let directory;
   try {
     directory = await opendir(directoryPath);
@@ -12233,7 +12538,7 @@ async function requireContextSessionCapacity(root, excludedNativeSessionId) {
         return invalid3(`context session storage exceeds the ${MAX_CONTEXT_SESSIONS}-session limit`);
       let parsed;
       try {
-        parsed = parseStoredSession(JSON.parse(await readFile5(join10(directoryPath, entry.name), "utf8")));
+        parsed = parseStoredSession(JSON.parse(await readFile6(join11(directoryPath, entry.name), "utf8")));
       } catch (error2) {
         return storageError(error2);
       }
@@ -12255,7 +12560,7 @@ async function requireContextSessionCapacity(root, excludedNativeSessionId) {
   });
   let database;
   try {
-    database = new Database4(join10(resolve7(root), "analysis", "chatlog.sqlite"), {
+    database = new Database4(join11(resolve8(root), "analysis", "chatlog.sqlite"), {
       readonly: true,
       create: false
     });
@@ -12273,7 +12578,7 @@ async function requireContextSessionCapacity(root, excludedNativeSessionId) {
       if (hasRecallArtifacts.value)
         continue;
       try {
-        await unlink3(sessionPath(root, candidate.contextSessionId));
+        await unlink4(sessionPath(root, candidate.contextSessionId));
         return { ok: true, value: true };
       } catch (error2) {
         return storageError(error2);
@@ -12293,7 +12598,7 @@ async function readContextSession(root, contextSessionId) {
   let parsed;
   let migrate = false;
   try {
-    const raw = JSON.parse(await readFile5(location, "utf8"));
+    const raw = JSON.parse(await readFile6(location, "utf8"));
     migrate = record3(raw) && isLegacyAnonymousSession(raw);
     parsed = parseStoredSession(raw);
   } catch (error2) {
@@ -12304,7 +12609,7 @@ async function readContextSession(root, contextSessionId) {
   if (migrate) {
     const migrated = await withIngestLock(root, async () => {
       try {
-        const currentRaw = JSON.parse(await readFile5(location, "utf8"));
+        const currentRaw = JSON.parse(await readFile6(location, "utf8"));
         const current = parseStoredSession(currentRaw);
         if (!current.ok)
           return current;
@@ -12327,7 +12632,7 @@ async function readContextSession(root, contextSessionId) {
   return withIngestLock(root, async () => {
     let current;
     try {
-      current = parseStoredSession(JSON.parse(await readFile5(location, "utf8")));
+      current = parseStoredSession(JSON.parse(await readFile6(location, "utf8")));
     } catch (error2) {
       return storageError(error2);
     }
@@ -12366,7 +12671,7 @@ async function openContextSession(root, input) {
       }
     } else {
       try {
-        const current = parseStoredSession(JSON.parse(await readFile5(sessionPath(root, candidate.value.contextSessionId), "utf8")));
+        const current = parseStoredSession(JSON.parse(await readFile6(sessionPath(root, candidate.value.contextSessionId), "utf8")));
         if (!current.ok)
           return current;
         return { ok: true, value: current.value };
@@ -12394,7 +12699,7 @@ async function reserveContextBundleAttempt(root, contextSessionId, bundleHash) {
   return withIngestLock(root, async () => {
     let current;
     try {
-      current = parseStoredSession(JSON.parse(await readFile5(sessionPath(root, contextSessionId), "utf8")));
+      current = parseStoredSession(JSON.parse(await readFile6(sessionPath(root, contextSessionId), "utf8")));
     } catch (error2) {
       return storageError(error2);
     }
@@ -12436,7 +12741,7 @@ async function commitContextBundleBudget(root, bundle, committedAt, renderedToke
   return withIngestLock(root, async () => {
     let current;
     try {
-      current = parseStoredSession(JSON.parse(await readFile5(sessionPath(root, bundle.contextSessionId), "utf8")));
+      current = parseStoredSession(JSON.parse(await readFile6(sessionPath(root, bundle.contextSessionId), "utf8")));
     } catch (error2) {
       return storageError(error2);
     }
@@ -12526,7 +12831,7 @@ var RECALL_TRACE_KEYS = [
   "contentHash"
 ];
 function recallResultPath(root, contextSessionId, invocationHash) {
-  return join10(resolve7(root), "memory", "context-recall-results", contextSessionId, `${invocationHash}.json`);
+  return join11(resolve8(root), "memory", "context-recall-results", contextSessionId, `${invocationHash}.json`);
 }
 function recallScopeMatchesSession(scope3, session) {
   if (session === undefined)
@@ -12629,7 +12934,7 @@ async function readUncommittedContextRecallResult(root, contextSessionId, invoca
   if (typeof invocationId !== "string" || invocationId.trim().length === 0 || invocationId.length > 256 || typeof invocationHash !== "string" || !HASH5.test(invocationHash))
     return invalid3("recall invocation identity is malformed");
   try {
-    const stored = JSON.parse(await readFile5(recallResultPath(root, contextSessionId, invocationHash), "utf8"));
+    const stored = JSON.parse(await readFile6(recallResultPath(root, contextSessionId, invocationHash), "utf8"));
     return validateStoredRecallEnvelopeIdentity(stored, { invocationId, invocationHash }, context3);
   } catch (error2) {
     if (typeof error2 === "object" && error2 !== null && "code" in error2 && error2.code === "ENOENT")
@@ -12643,7 +12948,7 @@ async function readContextRecallResult(root, contextSessionId, invocation, conte
   if (!record3(invocation) || typeof invocation.invocationId !== "string" || invocation.invocationId.trim().length === 0 || invocation.invocationId.length > 256 || typeof invocation.invocationHash !== "string" || !HASH5.test(invocation.invocationHash))
     return invalid3("recall invocation identity is malformed");
   try {
-    const stored = JSON.parse(await readFile5(recallResultPath(root, contextSessionId, invocation.invocationHash), "utf8"));
+    const stored = JSON.parse(await readFile6(recallResultPath(root, contextSessionId, invocation.invocationHash), "utf8"));
     return validateStoredRecallEnvelope(stored, invocation, context3);
   } catch (error2) {
     return storageError(error2 instanceof Error ? `durable recall result is unavailable: ${error2.message}` : error2);
@@ -12656,7 +12961,7 @@ async function persistContextRecallResult(root, contextSessionId, invocationId, 
   const envelope = { invocationId, invocationHash, result: validated.value };
   const path = recallResultPath(root, contextSessionId, invocationHash);
   try {
-    const existing = JSON.parse(await readFile5(path, "utf8"));
+    const existing = JSON.parse(await readFile6(path, "utf8"));
     const checked = validateStoredRecallEnvelope(existing, {
       invocationId,
       invocationHash,
@@ -12748,7 +13053,7 @@ async function commitContextRecallBudget(root, input) {
   return withIngestLock(root, async () => {
     let current;
     try {
-      current = parseStoredSession(JSON.parse(await readFile5(sessionPath(root, input.contextSessionId), "utf8")));
+      current = parseStoredSession(JSON.parse(await readFile6(sessionPath(root, input.contextSessionId), "utf8")));
     } catch (error2) {
       return storageError(error2);
     }
@@ -12839,7 +13144,7 @@ async function clearContextEventOutbox(root, contextSessionId, eventBatchHashes2
   return withIngestLock(root, async () => {
     let current;
     try {
-      current = parseStoredSession(JSON.parse(await readFile5(sessionPath(root, contextSessionId), "utf8")));
+      current = parseStoredSession(JSON.parse(await readFile6(sessionPath(root, contextSessionId), "utf8")));
     } catch (error2) {
       return storageError(error2);
     }
@@ -12859,7 +13164,7 @@ async function clearContextEventOutbox(root, contextSessionId, eventBatchHashes2
   });
 }
 async function listContextSessions(root) {
-  const directory = join10(resolve7(root), "memory", "context-sessions");
+  const directory = join11(resolve8(root), "memory", "context-sessions");
   let names;
   try {
     names = await readdir(directory);
@@ -12873,7 +13178,7 @@ async function listContextSessions(root) {
     if (!name.endsWith(".json"))
       continue;
     try {
-      const parsed = parseStoredSession(JSON.parse(await readFile5(join10(directory, name), "utf8")));
+      const parsed = parseStoredSession(JSON.parse(await readFile6(join11(directory, name), "utf8")));
       if (!parsed.ok)
         return parsed;
       sessions.push(parsed.value);
@@ -12928,7 +13233,7 @@ async function sourceObservations(root, contextSessionId, eventIds) {
   if (!session.ok)
     return null;
   const sourceSessionId = session.value.nativeSessionId ?? contextSessionId;
-  const db = openAnalysis(join11(root, "analysis", "chatlog.sqlite"));
+  const db = openAnalysis(join12(root, "analysis", "chatlog.sqlite"));
   let rows;
   try {
     const placeholders = eventIds.map(() => "?").join(",");
@@ -13020,7 +13325,7 @@ async function observation(root, pointer, event) {
   };
 }
 function eventIsCanonicallyPublished(root, pointer, event) {
-  const db = openAnalysis(join11(root, "analysis", "chatlog.sqlite"));
+  const db = openAnalysis(join12(root, "analysis", "chatlog.sqlite"));
   try {
     const row = db.query(`SELECT 1 present
          FROM event_metadata metadata
@@ -13056,13 +13361,13 @@ async function verifyContextReleaseArtifact(root, input) {
   return { ok: true, value: verified.value.artifact };
 }
 function releaseDirectory(root) {
-  return join11(resolve8(root), "memory", "context-release");
+  return join12(resolve9(root), "memory", "context-release");
 }
 function releasePath(root, hash4) {
-  return join11(releaseDirectory(root), `${hash4}.json`);
+  return join12(releaseDirectory(root), `${hash4}.json`);
 }
 function pointerPath(root) {
-  return join11(releaseDirectory(root), "current.json");
+  return join12(releaseDirectory(root), "current.json");
 }
 function errorCode2(error2) {
   if (typeof error2 !== "object" || error2 === null || !("code" in error2))
@@ -13074,10 +13379,10 @@ function validPointer2(input) {
 }
 async function readAuthorizedContextRelease(root) {
   try {
-    const pointerInput = JSON.parse(await readFile6(pointerPath(root), "utf8"));
+    const pointerInput = JSON.parse(await readFile7(pointerPath(root), "utf8"));
     if (!validPointer2(pointerInput))
       return fail7("storage-error", "context release pointer is malformed");
-    const gateBytes = await readFile6(releasePath(root, pointerInput.gateHash), "utf8");
+    const gateBytes = await readFile7(releasePath(root, pointerInput.gateHash), "utf8");
     if (sha256(gateBytes) !== pointerInput.gateHash)
       return fail7("storage-error", "authorized context gate bytes do not match the pointer hash");
     const verified = await verifyContextReleaseArtifact(root, JSON.parse(gateBytes));
@@ -13094,7 +13399,7 @@ async function readAuthorizedContextRelease(root) {
 }
 
 // src/context-events.ts
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 var CONTEXT_FEEDBACK_SIGNALS = [
   "helpful",
   "harmful",
@@ -13381,7 +13686,7 @@ function storageMessage(error2) {
 async function writeContextBatch(root, event, batch, idempotencyKey, preflight) {
   try {
     return await withIngestLock(root, async () => {
-      const db = openAnalysis(join12(root, "analysis", "chatlog.sqlite"));
+      const db = openAnalysis(join13(root, "analysis", "chatlog.sqlite"));
       try {
         const existing = db.query(`SELECT event_id eventId,batch_hash batchHash FROM context_event_projection
              WHERE context_session_id = ? AND kind = ? AND idempotency_key = ?`).get(String(event.payload.contextSessionId), event.kind, idempotencyKey);
@@ -13539,7 +13844,7 @@ async function validateContextReferences(root, input) {
   const inputEventIds2 = [...new Set(input.inputEventIds)];
   let db;
   try {
-    db = openAnalysis(join12(root, "analysis", "chatlog.sqlite"));
+    db = openAnalysis(join13(root, "analysis", "chatlog.sqlite"));
   } catch (error2) {
     return {
       ok: false,
@@ -13873,7 +14178,7 @@ async function readContextEvents(root, options) {
       if (!published.ok)
         return published;
     }
-    const db = openAnalysis(join12(root, "analysis", "chatlog.sqlite"));
+    const db = openAnalysis(join13(root, "analysis", "chatlog.sqlite"));
     try {
       return {
         ok: true,
@@ -14553,7 +14858,7 @@ function failure3(code, message) {
   return { ok: false, error: { code, message } };
 }
 function databaseProjection(root) {
-  const databasePath = join13(resolve9(root), "analysis", "chatlog.sqlite");
+  const databasePath = join14(resolve10(root), "analysis", "chatlog.sqlite");
   if (!existsSync2(databasePath))
     return failure3("source-unavailable", "Chatlog analysis database is unavailable");
   let db;
@@ -14561,7 +14866,7 @@ function databaseProjection(root) {
     db = new Database5(databasePath, { readonly: true, create: false });
     return {
       ok: true,
-      value: new ActiveProjectionGuard(resolve9(root)).assert(db).manifestSourcesHash
+      value: new ActiveProjectionGuard(resolve10(root)).assert(db).manifestSourcesHash
     };
   } catch (error2) {
     return failure3("projection-drift", error2 instanceof Error ? error2.message : String(error2));
@@ -15209,77 +15514,13 @@ class ContextPlane {
   }
 }
 
-// src/conversation-projection.ts
-function canonicalizeConversation(value) {
-  const scrub = (item) => {
-    if (typeof item === "string")
-      return redact2(item);
-    if (Array.isArray(item))
-      return item.map(scrub);
-    if (item && typeof item === "object")
-      return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, scrub(child)]));
-    return item;
-  };
-  const scrubbed = scrub(value);
-  const hash4 = sha256(JSON.stringify(scrubbed));
-  return { ...scrubbed, contentHash: hash4 };
-}
-function optionalStringField(value, key) {
-  return !(key in value) || typeof value[key] === "string";
-}
-function optionalStringArrayField(value, key) {
-  return !(key in value) || Array.isArray(value[key]) && value[key].every((item) => typeof item === "string");
-}
-function validCanonicalTurn(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const turn = value;
-  if (typeof turn.role !== "string" || typeof turn.content !== "string")
-    return false;
-  if (!optionalStringField(turn, "at") || !optionalStringArrayField(turn, "sourceEventIds"))
-    return false;
-  if ("tokens" in turn) {
-    const tokens = turn.tokens;
-    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || Object.values(tokens).some((item) => typeof item !== "number" || !Number.isFinite(item)))
-      return false;
-  }
-  if ("toolCalls" in turn) {
-    if (!Array.isArray(turn.toolCalls) || turn.toolCalls.some((callValue) => {
-      if (!callValue || typeof callValue !== "object" || Array.isArray(callValue))
-        return true;
-      const call = callValue;
-      return typeof call.name !== "string" || !optionalStringField(call, "id") || !optionalStringField(call, "arguments") || !optionalStringField(call, "output") || !optionalStringField(call, "approval") || !optionalStringField(call, "execution") || !optionalStringField(call, "result") || !optionalStringArrayField(call, "sourceEventIds");
-    }))
-      return false;
-  }
-  return true;
-}
-function validCanonicalConversation(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const conversation = value;
-  if (typeof conversation.id !== "string" || typeof conversation.provider !== "string" || typeof conversation.harness !== "string" || typeof conversation.project !== "string" || typeof conversation.cwd !== "string" || typeof conversation.model !== "string" || typeof conversation.startedAt !== "string" || typeof conversation.endedAt !== "string" || typeof conversation.sourcePath !== "string" || typeof conversation.contentHash !== "string" || !Array.isArray(conversation.turns) || conversation.turns.some((turn) => !validCanonicalTurn(turn)))
-    return false;
-  return optionalStringField(conversation, "title") && optionalStringField(conversation, "domain") && optionalStringField(conversation, "sourceKind") && optionalStringField(conversation, "resumeId") && optionalStringField(conversation, "eventBatchHash");
-}
-function validateCanonicalConversation(value, expected) {
-  if (!validCanonicalConversation(value) || value.contentHash !== expected.contentHash || value.sourcePath !== expected.sourcePath)
-    return null;
-  const { contentHash: _contentHash, ...body } = value;
-  try {
-    return canonicalizeConversation(body).contentHash === expected.contentHash ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 // src/derive.ts
-import { chmod as chmod7, mkdir as mkdir7, readFile as readFile7, rename as rename6, stat as stat4, writeFile as writeFile6 } from "fs/promises";
-import { basename as basename2, dirname as dirname8, join as join14 } from "path";
+import { readFile as readFile8, stat as stat5 } from "fs/promises";
+import { basename as basename3, join as join15 } from "path";
 var STOP_WORDS = new Set(`about after again agent also another assistant because before being between both broken bug build call called calling can cannot change chat claude code codex color command content context continued conversation could current data does done each error fail failed failing failure file files first fix from function get have idlereason idle_notification intent into issue just last like local make message more most need only operator other output over path previous primary problem project read real regression request result same sent session should some source stuck summary system task team-lead teammate-message teammate_id than that their them then there these they this through timeout timestamp tool tools turn turns type unknown update user using want were what when where which while will with would wrong your`.split(" "));
 async function loadDerived(root, conversationHash) {
-  const path = join14(root, "derived", "objects", conversationHash.slice(0, 2), `${conversationHash}.json`);
-  return JSON.parse(await readFile7(path, "utf8"));
+  const path = join15(root, "derived", "objects", conversationHash.slice(0, 2), `${conversationHash}.json`);
+  return JSON.parse(await readFile8(path, "utf8"));
 }
 
 // src/domain.ts
@@ -15978,7 +16219,7 @@ class McpData {
   contextPlane;
   initializationFailure;
   constructor(root, configuredDomains = parseDomainPolicy()) {
-    this.root = resolve10(root);
+    this.root = resolve11(root);
     this.projectionGuard = new ActiveProjectionGuard(this.root);
     this.contextPlane = new ContextPlane(this.root);
     let domains = [];
@@ -15995,7 +16236,7 @@ class McpData {
       }
     }
     if (!initializationFailure) {
-      const databasePath = join15(this.root, "analysis", "chatlog.sqlite");
+      const databasePath = join16(this.root, "analysis", "chatlog.sqlite");
       if (!existsSync3(databasePath)) {
         initializationFailure = failure4(`No Chatlog analysis database at ${databasePath}`);
       } else {
@@ -16198,7 +16439,7 @@ class McpData {
         return evidenceUnavailable();
       let parsed;
       try {
-        parsed = JSON.parse(await readFile8(join15(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`), "utf8"));
+        parsed = JSON.parse(await readFile9(join16(this.root, "corpus", "objects", pointer.contentHash.slice(0, 2), `${pointer.contentHash}.json`), "utf8"));
       } catch {
         return evidenceUnavailable();
       }

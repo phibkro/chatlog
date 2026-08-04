@@ -592,6 +592,8 @@ export async function deriveRoleSegmentation(
       "\n" +
       (await Bun.file(join(import.meta.dir, "orchestration-profile.ts")).text()) +
       "\n" +
+      (await Bun.file(join(import.meta.dir, "redact.ts")).text()) +
+      "\n" +
       labelsText,
   );
   const manifestPath = join(root, "derived", "orchestration-roles-manifest.json");

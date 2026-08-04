@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
 import { Story } from "foldkit";
 
-import { memoryLabFixture } from "./fixture";
+import { finalizedMemoryLabFixture, memoryLabFixture } from "./fixture";
 import {
+  AppliedApplication,
+  ApplyMemoryApplication,
+  ChangedMemoryText,
+  ChangedProjectIdentity,
   ChangedReviewer,
   ChangedFeedback,
   ConfirmedFinalize,
@@ -11,6 +15,11 @@ import {
   FocusedScenario,
   LoadedMemoryLab,
   LoadMemoryLab,
+  PreviewedApplication,
+  PreviewMemoryApplication,
+  RequestedApplicationApply,
+  RequestedApplicationPreview,
+  RequestedApplicationRemoval,
   RequestedFinalize,
   RequestedNext,
   RequestedSave,
@@ -22,6 +31,102 @@ import {
   init,
   update,
 } from "./main";
+
+const correctedMemory =
+  "Verify the unusual tool boundary before continuing with the operator's task.";
+const applicationRequest = {
+  packetHash: "fixture-packet",
+  proposalSetHash: "fixture-proposal-set-hash",
+  candidateAlias: "C001",
+  reviewerId: "operator",
+  projectIdentity: "chatlog",
+  correctedProposition: correctedMemory,
+  transitionCommand: null,
+} as const;
+
+const applicationPreview = (
+  command: "accept-with-correction" | "retire",
+  currentStatus: "none" | "active",
+  recordedAt: string,
+  priorLedgerHash: string | null,
+) => ({
+  command: {
+    command,
+    insightId: "fixture-insight",
+    revision: {
+      revisionId: command === "retire" ? "fixture-retired-revision" : "fixture-active-revision",
+      proposition: correctedMemory,
+      procedure: null,
+      scope: {
+        user: null,
+        organization: null,
+        project: "chatlog",
+        repository: null,
+        path: null,
+        harness: null,
+        model: null,
+        tool: null,
+        domain: "project",
+      },
+      supportEvidence: ["event://fixture-evidence"],
+      status: command === "retire" ? ("retired" as const) : ("active" as const),
+    },
+    priorLedgerHash,
+    recordedAt,
+  },
+  commandHash: `${command}-command-hash`,
+  changedStartupContext: true,
+  currentStatus,
+});
+
+const applicationResult = (
+  preview: ReturnType<typeof applicationPreview>,
+  transitionId: string,
+  ledgerHash: string,
+) => ({
+  preview,
+  applied: {
+    transition: {
+      transitionId,
+      command: preview.command.command,
+      revision: { status: preview.command.revision.status },
+    },
+    ledger: { ledgerHash },
+  },
+});
+
+const readyApplicationModel = () => {
+  let model = init()[0];
+  model = update(model, LoadedMemoryLab({ lab: finalizedMemoryLabFixture() }))[0];
+  model = update(model, ChangedProjectIdentity({ value: "chatlog" }))[0];
+  model = update(model, ChangedMemoryText({ value: correctedMemory }))[0];
+  return model;
+};
+
+const activeApplicationModel = () => {
+  const preview = applicationPreview(
+    "accept-with-correction",
+    "none",
+    "2026-08-04T12:00:00.000Z",
+    "ledger-before",
+  );
+  let model = update(readyApplicationModel(), RequestedApplicationPreview())[0];
+  model = update(model, PreviewedApplication({ request: applicationRequest, preview }))[0];
+  const applyRequest = {
+    ...applicationRequest,
+    priorLedgerHash: preview.command.priorLedgerHash,
+    previewCommandHash: preview.commandHash,
+    recordedAt: preview.command.recordedAt,
+  };
+  model = update(model, RequestedApplicationApply())[0];
+  return update(
+    model,
+    AppliedApplication({
+      request: applyRequest,
+      result: applicationResult(preview, "transition-active", "ledger-active"),
+    }),
+  )[0];
+};
 
 test("initialization declares one packet load command", () => {
   const [, commands] = init();
@@ -201,4 +306,170 @@ test("unsaved visible edits block navigation and finalization", () => {
     }),
     Story.Command.expectNone(),
   );
+});
+
+test("memory application preview binds the blinded candidate and corrected text", () => {
+  const [, commands] = update(readyApplicationModel(), RequestedApplicationPreview());
+
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toMatchObject({
+    name: PreviewMemoryApplication.name,
+    args: {
+      packetHash: "fixture-packet",
+      proposalSetHash: "fixture-proposal-set-hash",
+      candidateAlias: "C001",
+      reviewerId: "operator",
+      projectIdentity: "chatlog",
+      correctedProposition: correctedMemory,
+    },
+  });
+});
+
+test("memory application cannot apply before a successful preview", () => {
+  const [, commands] = update(readyApplicationModel(), RequestedApplicationApply());
+  expect(commands).toHaveLength(0);
+});
+
+test("editing memory text invalidates the application preview", () => {
+  const preview = applicationPreview(
+    "accept-with-correction",
+    "none",
+    "2026-08-04T12:00:00.000Z",
+    "ledger-before",
+  );
+  let model = update(readyApplicationModel(), RequestedApplicationPreview())[0];
+  model = update(model, PreviewedApplication({ request: applicationRequest, preview }))[0];
+  expect(model.applications.C001?.request._tag).toBe("ApplicationPreviewReady");
+
+  model = update(model, ChangedMemoryText({ value: `${correctedMemory} Narrowly.` }))[0];
+  expect(model.applications.C001?.request._tag).toBe("ApplicationIdle");
+  const [, commands] = update(model, RequestedApplicationApply());
+  expect(commands).toHaveLength(0);
+});
+
+test("successful memory application exposes active durable state", () => {
+  const preview = applicationPreview(
+    "accept-with-correction",
+    "none",
+    "2026-08-04T12:00:00.000Z",
+    "ledger-before",
+  );
+  let model = update(readyApplicationModel(), RequestedApplicationPreview())[0];
+  model = update(model, PreviewedApplication({ request: applicationRequest, preview }))[0];
+
+  const [pending, commands] = update(model, RequestedApplicationApply());
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toMatchObject({
+    name: ApplyMemoryApplication.name,
+    args: {
+      candidateAlias: "C001",
+      correctedProposition: correctedMemory,
+      priorLedgerHash: "ledger-before",
+      previewCommandHash: preview.commandHash,
+      recordedAt: "2026-08-04T12:00:00.000Z",
+    },
+  });
+
+  const applyRequest = {
+    ...applicationRequest,
+    priorLedgerHash: preview.command.priorLedgerHash,
+    previewCommandHash: preview.commandHash,
+    recordedAt: preview.command.recordedAt,
+  };
+  model = update(
+    pending,
+    AppliedApplication({
+      request: applyRequest,
+      result: applicationResult(preview, "transition-active", "ledger-active"),
+    }),
+  )[0];
+  expect(model.applications.C001?.durable).toEqual({
+    status: "active",
+    transitionId: "transition-active",
+    ledgerHash: "ledger-active",
+    command: "accept-with-correction",
+    projectIdentity: "chatlog",
+  });
+});
+
+test("loading the Memory Lab rehydrates an active application for removal", () => {
+  const base = finalizedMemoryLabFixture();
+  const lab = {
+    ...base,
+    applications: {
+      C001: {
+        status: "active" as const,
+        transitionId: "transition-active",
+        ledgerHash: "ledger-active",
+        command: "accept-with-correction" as const,
+        projectIdentity: "chatlog",
+      },
+    },
+  };
+  const model = update(init()[0], LoadedMemoryLab({ lab }))[0];
+  const [pending, commands] = update(model, RequestedApplicationRemoval());
+  expect(pending.applications.C001?.request._tag).toBe("ApplicationPreviewPending");
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toMatchObject({
+    name: PreviewMemoryApplication.name,
+    args: { candidateAlias: "C001", projectIdentity: "chatlog", transitionCommand: "retire" },
+  });
+});
+
+test("removing memory previews and applies an explicit retirement", () => {
+  let model = activeApplicationModel();
+  const [previewPending, previewCommands] = update(model, RequestedApplicationRemoval());
+  expect(previewCommands).toHaveLength(1);
+  expect(previewCommands[0]).toMatchObject({
+    name: PreviewMemoryApplication.name,
+    args: {
+      candidateAlias: "C001",
+      correctedProposition: correctedMemory,
+      transitionCommand: "retire",
+    },
+  });
+
+  const retireRequest = { ...applicationRequest, transitionCommand: "retire" as const };
+  const retirePreview = applicationPreview(
+    "retire",
+    "active",
+    "2026-08-04T12:05:00.000Z",
+    "ledger-active",
+  );
+  model = update(
+    previewPending,
+    PreviewedApplication({ request: retireRequest, preview: retirePreview }),
+  )[0];
+
+  const [applyPending, applyCommands] = update(model, RequestedApplicationApply());
+  expect(applyCommands).toHaveLength(1);
+  expect(applyCommands[0]).toMatchObject({
+    name: ApplyMemoryApplication.name,
+    args: {
+      candidateAlias: "C001",
+      transitionCommand: "retire",
+      priorLedgerHash: "ledger-active",
+      previewCommandHash: retirePreview.commandHash,
+      recordedAt: "2026-08-04T12:05:00.000Z",
+    },
+  });
+
+  const retireApplyRequest = {
+    ...retireRequest,
+    priorLedgerHash: retirePreview.command.priorLedgerHash,
+    previewCommandHash: retirePreview.commandHash,
+    recordedAt: retirePreview.command.recordedAt,
+  };
+  model = update(
+    applyPending,
+    AppliedApplication({
+      request: retireApplyRequest,
+      result: applicationResult(retirePreview, "transition-retired", "ledger-retired"),
+    }),
+  )[0];
+  expect(model.applications.C001?.durable).toMatchObject({
+    status: "retired",
+    transitionId: "transition-retired",
+    ledgerHash: "ledger-retired",
+  });
 });

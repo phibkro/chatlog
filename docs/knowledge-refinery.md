@@ -97,7 +97,8 @@ strictly validated proposals. It saves `operator-reviews.draft.json` atomically
 during review and creates `operator-reviews.json` only after an explicit
 complete-packet finalization. Legacy `answers.draft.json` and `answers.json`
 remain untouched for the expert adjudication workflow. The UI never reads the
-private manifest, invokes a model, or exposes promotion controls.
+private manifest or invokes a model. After finalization, separate controls
+preview and explicitly apply or retire a source-bound insight transition.
 
 ## `agent-eval/promotion-v1`
 

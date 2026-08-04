@@ -227,6 +227,48 @@ test("Memory Lab HTTP reads stay available while writes require capability, head
   }
 });
 
+test("Memory Lab insight transitions use blinded candidate aliases at the HTTP boundary", async () => {
+  const { root, packet, proposalSetHash } = await fixture();
+  const lab = new MemoryLab(root);
+  const common = {
+    packetHash: packet.packetHash,
+    proposalSetHash,
+    reviewerId: "operator",
+    projectIdentity: "project",
+  };
+  expect(
+    await lab.previewInsightTransition({
+      ...common,
+      candidateId: "private-candidate-id",
+    }),
+  ).toEqual({
+    ok: false,
+    status: 400,
+    error:
+      "insight transition preview requires packet, proposal, candidate, reviewer, and project identity",
+  });
+  expect(
+    await lab.previewInsightTransition({
+      ...common,
+      candidateAlias: "C001",
+    }),
+  ).toEqual({
+    ok: false,
+    status: 409,
+    error: "finalize the operator review before previewing an insight transition",
+  });
+  expect(
+    await lab.applyInsightTransition({
+      ...common,
+      candidateAlias: "C001",
+    }),
+  ).toEqual({
+    ok: false,
+    status: 400,
+    error: "insight transition apply requires the preview command hash",
+  });
+});
+
 test("Memory Lab returns proposals and persists a separate exact operator-review ledger", async () => {
   const { root, directory, packet, proposalSet, proposalSetHash } = await fixture();
   const oldAnswers = '{"legacy":"must remain byte-for-byte"}\n';

@@ -1,9 +1,12 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, mkdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { Data, Effect } from "effect";
 import { canonicalEventBatch, CONTEXT_EVENT_KINDS, type EventBatch } from "./events";
 import { eventBatchHash } from "./event-store";
 import type { Conversation } from "./types";
+import { validateCanonicalConversation } from "./conversation-projection";
+import { EXPORT_MAX_CORPUS_OBJECT_BYTES, readBoundedFileSync } from "./importers/export-limits";
 import { ensureInsightProjection } from "./insight-projection";
 
 export interface IndexedContextEventRow {
@@ -417,41 +420,18 @@ export function indexContextEventBatch(db: Database, input: EventBatch, batchHas
   })();
 }
 
-export function queryContextEvents(
-  db: Database,
-  contextSessionId: string,
-  kinds?: readonly string[],
-  limit?: number,
-): IndexedContextEventRow[] {
-  const params: Array<string | number> = [contextSessionId];
-  let kindClause = "";
-  if (kinds && kinds.length > 0) {
-    kindClause = ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
-    params.push(...kinds);
-  }
-  if (limit !== undefined) params.push(limit);
-  const lifecycleOrderSql = Object.entries(CONTEXT_LIFECYCLE_ORDER)
-    .map(([kind, order]) => `WHEN '${kind}' THEN ${order}`)
-    .join(" ");
-  const direction = limit === undefined ? "ASC" : "DESC";
-  const rows = db
-    .query(
-      `SELECT event_id eventId,batch_hash batchHash,sequence,kind,occurred_at occurredAt,
-      observed_at observedAt,context_session_id contextSessionId,state,idempotency_key idempotencyKey,
-      bundle_hash bundleHash,item_id itemId,intervention_event_ids_json interventionEventIdsJson,
-      known_intervention_lineage_json knownInterventionLineageJson,actor_kind actorKind,
-      actor_authority actorAuthority,actor_json actorJson,payload_json payloadJson,evidence_grade evidenceGrade,
-      treatment_arm treatmentArm,outcome_status outcomeStatus,unresolved,evidence_classification evidenceClassification,
-      input_event_ids_json inputEventIdsJson,input_hashes_json inputHashesJson
-    FROM context_event_projection
-    WHERE context_session_id = ?${kindClause}
-    ORDER BY COALESCE(occurred_at, observed_at, '') ${direction}, sequence ${direction},
-      CASE kind ${lifecycleOrderSql} ELSE 100 END ${direction}, event_id ${direction}
-    ${limit === undefined ? "" : "LIMIT ?"}`,
-    )
-    .all(...params) as Array<Record<string, unknown>>;
-  const orderedRows = limit === undefined ? rows : rows.toReversed();
-  return orderedRows.map((row) => ({
+const CONTEXT_EVENT_PROJECTION_COLUMNS = `event_id eventId,batch_hash batchHash,sequence,kind,
+  occurred_at occurredAt,observed_at observedAt,context_session_id contextSessionId,state,
+  idempotency_key idempotencyKey,bundle_hash bundleHash,item_id itemId,
+  intervention_event_ids_json interventionEventIdsJson,
+  known_intervention_lineage_json knownInterventionLineageJson,actor_kind actorKind,
+  actor_authority actorAuthority,actor_json actorJson,payload_json payloadJson,
+  evidence_grade evidenceGrade,treatment_arm treatmentArm,outcome_status outcomeStatus,
+  unresolved,evidence_classification evidenceClassification,
+  input_event_ids_json inputEventIdsJson,input_hashes_json inputHashesJson`;
+
+function contextEventProjectionRow(row: Record<string, unknown>): IndexedContextEventRow {
+  return {
     eventId: String(row.eventId),
     batchHash: String(row.batchHash),
     sequence: Number(row.sequence),
@@ -478,7 +458,54 @@ export function queryContextEvents(
       typeof row.evidenceClassification === "string" ? row.evidenceClassification : null,
     inputEventIds: jsonStringArray(JSON.parse(String(row.inputEventIdsJson))),
     inputHashes: jsonStringArray(JSON.parse(String(row.inputHashesJson))),
-  }));
+  };
+}
+
+export function queryContextEvents(
+  db: Database,
+  contextSessionId: string,
+  kinds?: readonly string[],
+  limit?: number,
+): IndexedContextEventRow[] {
+  const params: Array<string | number> = [contextSessionId];
+  let kindClause = "";
+  if (kinds && kinds.length > 0) {
+    kindClause = ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
+    params.push(...kinds);
+  }
+  if (limit !== undefined) params.push(limit);
+  const lifecycleOrderSql = Object.entries(CONTEXT_LIFECYCLE_ORDER)
+    .map(([kind, order]) => `WHEN '${kind}' THEN ${order}`)
+    .join(" ");
+  const direction = limit === undefined ? "ASC" : "DESC";
+  const rows = db
+    .query(
+      `SELECT ${CONTEXT_EVENT_PROJECTION_COLUMNS}
+       FROM context_event_projection
+       WHERE context_session_id = ?${kindClause}
+       ORDER BY COALESCE(occurred_at, observed_at, '') ${direction}, sequence ${direction},
+         CASE kind ${lifecycleOrderSql} ELSE 100 END ${direction}, event_id ${direction}
+       ${limit === undefined ? "" : "LIMIT ?"}`,
+    )
+    .all(...params) as Array<Record<string, unknown>>;
+  const orderedRows = limit === undefined ? rows : rows.toReversed();
+  return orderedRows.map(contextEventProjectionRow);
+}
+
+export function queryContextEvent(
+  db: Database,
+  contextSessionId: string,
+  eventId: string,
+): IndexedContextEventRow | null {
+  const row = db
+    .query(
+      `SELECT ${CONTEXT_EVENT_PROJECTION_COLUMNS}
+       FROM context_event_projection
+       WHERE context_session_id = ? AND event_id = ?
+       LIMIT 1`,
+    )
+    .get(contextSessionId, eventId) as Record<string, unknown> | null;
+  return row === null ? null : contextEventProjectionRow(row);
 }
 
 export function queryContextEventKindCounts(db: Database): Record<string, number> {
@@ -649,28 +676,94 @@ export function querySessionLengths(db: Database): unknown[] {
     .all();
 }
 
-export async function backfillCacheWrite(db: Database, corpusDir: string): Promise<number> {
-  db.run("CREATE TABLE IF NOT EXISTS analysis_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  if (db.query("SELECT value FROM analysis_meta WHERE key='cache_write_backfill_v1'").get())
-    return 0;
-  const update = db.prepare("UPDATE conversations SET cache_write_tokens=? WHERE content_hash=?");
-  let count = 0;
-  db.transaction(() => {
-    for (const rel of new Bun.Glob("objects/**/*.json").scanSync({
-      cwd: corpusDir,
-      onlyFiles: true,
-    })) {
-      const conversation = JSON.parse(readFileSync(`${corpusDir}/${rel}`, "utf8")) as Conversation;
-      const tokens = conversation.turns.reduce(
-        (sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0),
-        0,
+export class CacheWriteBackfillError extends Data.TaggedError("CacheWriteBackfillError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+type CacheWriteBackfillAttempt =
+  | { readonly ok: true; readonly value: number }
+  | { readonly ok: false; readonly error: CacheWriteBackfillError };
+
+export function backfillCacheWrite(
+  db: Database,
+  corpusDir: string,
+): Effect.Effect<number, CacheWriteBackfillError> {
+  const attempt = Effect.try({
+    try: (): CacheWriteBackfillAttempt => {
+      db.run(
+        "CREATE TABLE IF NOT EXISTS analysis_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       );
-      update.run(tokens, conversation.contentHash);
-      count++;
-    }
-    db.query(
-      "INSERT OR REPLACE INTO analysis_meta(key,value) VALUES ('cache_write_backfill_v1',?)",
-    ).run(new Date().toISOString());
-  })();
-  return count;
+      if (db.query("SELECT value FROM analysis_meta WHERE key='cache_write_backfill_v1'").get())
+        return { ok: true, value: 0 };
+      const updates: Array<{ readonly tokens: number; readonly contentHash: string }> = [];
+      for (const rel of new Bun.Glob("objects/**/*.json").scanSync({
+        cwd: corpusDir,
+        onlyFiles: true,
+      })) {
+        const objectPath = join(corpusDir, rel);
+        const result = readBoundedFileSync(
+          objectPath,
+          EXPORT_MAX_CORPUS_OBJECT_BYTES,
+          `${objectPath} (canonical corpus object)`,
+          corpusDir,
+        );
+        if (!result.ok)
+          return {
+            ok: false,
+            error: new CacheWriteBackfillError({
+              message: result.error.message,
+              cause: result.error,
+            }),
+          };
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(result.value.text);
+        } catch (cause) {
+          return {
+            ok: false,
+            error: new CacheWriteBackfillError({
+              message: `${objectPath}: canonical object is not valid JSON`,
+              cause,
+            }),
+          };
+        }
+        const contentHash = basename(rel, ".json");
+        const sourcePath =
+          parsed && typeof parsed === "object" && "sourcePath" in parsed
+            ? String(parsed.sourcePath)
+            : "";
+        const conversation = validateCanonicalConversation(parsed, { contentHash, sourcePath });
+        if (!conversation)
+          return {
+            ok: false,
+            error: new CacheWriteBackfillError({
+              message: `${objectPath}: canonical object hash or shape mismatch`,
+            }),
+          };
+        updates.push({
+          tokens: conversation.turns.reduce((sum, turn) => sum + (turn.tokens?.cacheWrite ?? 0), 0),
+          contentHash: conversation.contentHash,
+        });
+      }
+      db.transaction(() => {
+        const update = db.prepare(
+          "UPDATE conversations SET cache_write_tokens=? WHERE content_hash=?",
+        );
+        for (const item of updates) update.run(item.tokens, item.contentHash);
+        db.query(
+          "INSERT OR REPLACE INTO analysis_meta(key,value) VALUES ('cache_write_backfill_v1',?)",
+        ).run(new Date().toISOString());
+      })();
+      return { ok: true, value: updates.length };
+    },
+    catch: (cause) =>
+      new CacheWriteBackfillError({
+        message: "cannot backfill canonical conversation cache-write totals",
+        cause,
+      }),
+  });
+  return Effect.flatMap(attempt, (result) =>
+    result.ok ? Effect.succeed(result.value) : Effect.fail(result.error),
+  );
 }

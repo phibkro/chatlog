@@ -141,7 +141,10 @@ test("recipe replay creates new immutable batch and receipt objects", async () =
         ...batch,
         origin: {
           ...batch.origin,
-          source: { ...batch.origin.source, adapterRecipe: "chatlog-agent-events-v3" },
+          source: {
+            ...batch.origin.source,
+            adapterRecipe: "chatlog-agent-events-test-replay-v1",
+          },
         },
       };
     },

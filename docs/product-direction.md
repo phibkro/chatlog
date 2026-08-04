@@ -8,15 +8,28 @@ that deployment understandable and repeatable for other technical users.
 
 ## Near-term product
 
+- Make workflow evolution the primary insight loop: identify repeated operator
+  patterns, deduplicate instructions propagated through agent fan-out, show
+  when boundaries are revised, and only then compare outcome indicators. Keep
+  every claim evidence-backed and distinguish association from causation.
+- Treat repeated-pattern synthesis as the bridge from individual events to an
+  operator profile: require distinct multi-day episodes, avoid presenting
+  session lineages as statistical independence, separate wording revision from
+  policy effect, and expose outcome direction only above declared coverage
+  floors.
 - Connect local harness logs and explicit provider exports through reviewable
   adapters.
 - Turn them into project recall, bounded evidence, source health, and measured
   reusable findings for both humans and agents.
 - Ship a straightforward self-host path with reproducible packaging, setup
   guidance, backups, upgrades, privacy documentation, and a safe demo corpus.
-- Keep Workbench read-only over HTTP. Authority-changing source lifecycle
-  operations remain explicit local commands until their durable intent,
-  invalidation, receipt, and recovery contracts are complete.
+- Keep canonical evidence, derived claims, harness policy, and
+  authority-changing source lifecycle operations read-only over Workbench
+  HTTP. A private deployment may explicitly enable a narrowly scoped,
+  same-origin mutation surface for append-only operator annotations; it never
+  edits evidence or agent configuration. Source lifecycle operations remain
+  explicit local commands until their durable intent, invalidation, receipt,
+  and recovery contracts are complete.
 - Treat private-network ingress as deployment policy. The canonical operator
   deployment is `https://chatlog.home.phibkro.org`, restricted to the
   LAN/tailnet; Chatlog itself remains loopback-only.

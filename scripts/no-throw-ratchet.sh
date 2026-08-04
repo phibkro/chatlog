@@ -5,9 +5,9 @@
 # callers and to the type checker — an unhandled throw in src/adapters/codex.ts
 # halted ingestion for five days (2026-07-22..27) because a new upstream item
 # type was an unrecoverable error rather than a value the caller had to handle.
-# The fix is typed errors. But the tree has ~112 throws today, and a rule that
-# fails every commit on day one gets disabled rather than satisfied. So: the
-# count may fall, never rise. New code carries typed errors; existing throws
+# The fix is typed errors. After reconciling the prerelease branch with upstream
+# workflow modules written before this ratchet, the merged tree has ~216 throws.
+# The count may fall, never rise. New code carries typed errors; existing throws
 # convert as they are touched, and the Effect migration drives this toward zero.
 #
 # WHY grep and not a lint rule: oxlint has no `no-restricted-syntax`, and its

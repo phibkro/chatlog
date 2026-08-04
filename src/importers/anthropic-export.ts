@@ -1,10 +1,11 @@
-import { chmod, lstat, mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { lstat } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
-import { projectConversation } from "../conversation-projection";
+import { projectConversation, validateCanonicalConversation } from "../conversation-projection";
 import { validateBoundedRecord } from "../bounded-input";
 import { normalizeConversationDomain } from "../domain";
-import { deriveCorpus, type DeriveSummary } from "../derive";
+import type { DeriveSummary } from "../derive";
+import { durableAtomicWrite } from "../durable-fs";
 import { persistEventBatch } from "../event-store";
 import {
   capture,
@@ -19,9 +20,15 @@ import {
 } from "../events";
 import { redact } from "../redact";
 import type { Conversation, ConversationDomain } from "../types";
-import { manifestSourcesHash, writeImportReceipt, type ImportReceipt } from "../import-receipts";
+import { manifestSourcesHash, type ImportReceipt } from "../import-receipts";
 import { withIngestLock } from "../lock";
-import { refineCorpus, type RefinerySummary } from "../refinery";
+import {
+  createOperationIntent,
+  recoverPendingOperations,
+  resolveManifestWriteFailure,
+  resumeCommittedOperation,
+} from "../operation-intents";
+import type { RefinerySummary } from "../refinery";
 import { reconcileSourceAuthority } from "../source-authority";
 import {
   buildSourceReceipt,
@@ -128,6 +135,7 @@ interface CorpusManifest {
 export interface AnthropicImportOptions {
   domain?: ConversationDomain;
   derive?: boolean;
+  preview: Pick<AnthropicPreviewSummary, "source" | "sourceContentHash" | "proposalId">;
 }
 
 export interface AnthropicImportSummary {
@@ -689,11 +697,7 @@ export function adaptAnthropicConversation(
 }
 
 async function atomicWrite(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await durableAtomicWrite(path, text);
 }
 
 async function loadManifest(path: string, root: string): Promise<CorpusManifest> {
@@ -736,6 +740,7 @@ async function loadManifest(path: string, root: string): Promise<CorpusManifest>
 async function readPriorConversation(
   root: string,
   contentHash: string,
+  sourcePath: string,
 ): Promise<Conversation | null> {
   const path = join(root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`);
   let info;
@@ -759,8 +764,9 @@ async function readPriorConversation(
     root,
   );
   if (!contentResult.ok) return boundedFailure(contentResult.error);
+  let parsed: unknown;
   try {
-    return JSON.parse(contentResult.value.text) as Conversation;
+    parsed = JSON.parse(contentResult.value.text);
   } catch (error: unknown) {
     failClosed(
       `cannot parse Anthropic prior corpus object ${path}: ${redact(
@@ -769,6 +775,9 @@ async function readPriorConversation(
       error,
     );
   }
+  const conversation = validateCanonicalConversation(parsed, { contentHash, sourcePath });
+  if (!conversation) failClosed(`${path}: Anthropic prior corpus object hash or shape mismatch`);
+  return conversation;
 }
 
 export async function previewAnthropicExport(
@@ -853,7 +862,11 @@ export async function previewAnthropicExport(
     } else {
       let domainOnly = false;
       try {
-        const previousConversation = await readPriorConversation(root, previous.contentHash);
+        const previousConversation = await readPriorConversation(
+          root,
+          previous.contentHash,
+          conversation.sourcePath,
+        );
         if (previousConversation) {
           const previousDomain = normalizeConversationDomain(
             previousConversation.domain ?? "general",
@@ -892,6 +905,7 @@ export async function previewAnthropicExport(
       schema: "chatlog/anthropic-import-preview-v1",
       source: resolved,
       sourceContentHash,
+      manifestAuthorityHash: manifestSourcesHash(manifest.sources),
       domain,
       proposed,
       invalid,
@@ -937,14 +951,31 @@ export async function previewAnthropicExport(
 export async function importAnthropicExport(
   sourcePath: string,
   root: string,
-  options: AnthropicImportOptions = {},
+  options: AnthropicImportOptions,
 ): Promise<AnthropicImportSummary> {
+  const expectedPreview = options.preview;
+  if (!expectedPreview) failClosed("Anthropic import requires preview proposal pins");
   return withIngestLock(root, async () => {
+    await recoverPendingOperations(root);
     const domain = normalizeConversationDomain(options.domain ?? "general");
+    const current = await previewAnthropicExport(sourcePath, root, { domain });
+    if (
+      !current.ready ||
+      current.source !== expectedPreview.source ||
+      current.sourceContentHash !== expectedPreview.sourceContentHash ||
+      current.proposalId !== expectedPreview.proposalId
+    )
+      failClosed(`${resolve(sourcePath)}: source no longer matches the preview proposal`);
     const resolved = resolve(sourcePath);
     const source = await lstat(resolved);
     const exportText = await readExportJson(resolved, "conversations.json");
     const sourceContentHash = sha256(exportText);
+    if (
+      expectedPreview &&
+      (resolved !== expectedPreview.source ||
+        sourceContentHash !== expectedPreview.sourceContentHash)
+    )
+      failClosed(`${resolved}: source changed after the preview proposal was checked`);
     const conversations = JSON.parse(exportText) as ExportConversation[];
     if (!Array.isArray(conversations))
       failClosed("Anthropic conversations.json must contain an array");
@@ -956,6 +987,7 @@ export async function importAnthropicExport(
     const corpusDir = join(root, "corpus");
     const manifestPath = join(corpusDir, "manifest.json");
     const manifest = await loadManifest(manifestPath, root);
+    const beforeManifest = structuredClone(manifest);
     const beforeHash = manifestSourcesHash(manifest.sources);
     const beforeSources = Object.keys(manifest.sources).length;
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
@@ -1021,6 +1053,18 @@ export async function importAnthropicExport(
           );
         summary.turns += conversation.turns.length;
         const previous = manifest.sources[conversation.sourcePath];
+        const objectPath = join(
+          corpusDir,
+          "objects",
+          conversation.contentHash.slice(0, 2),
+          `${conversation.contentHash}.json`,
+        );
+        const existing = await readPriorConversation(
+          root,
+          conversation.contentHash,
+          conversation.sourcePath,
+        );
+        if (!existing) await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
         if (
           previous?.contentHash === conversation.contentHash &&
           previous.eventBatchHash === batchHash &&
@@ -1033,14 +1077,6 @@ export async function importAnthropicExport(
         if (previous) replaced++;
         else added++;
 
-        const objectPath = join(
-          corpusDir,
-          "objects",
-          conversation.contentHash.slice(0, 2),
-          `${conversation.contentHash}.json`,
-        );
-        if (!(await Bun.file(objectPath).exists()))
-          await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
         indexEventBatch(db, batch, batchHash, conversation.contentHash);
         indexConversation(db, conversation, source.mtimeMs, source.size);
         manifest.sources[conversation.sourcePath] = {
@@ -1053,57 +1089,59 @@ export async function importAnthropicExport(
         };
         summary.imported++;
       }
-      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      await reconcileSourceAuthority(root, db, manifest.sources);
     } finally {
       db.close();
     }
 
-    let derivationError: unknown;
-    if (options.derive !== false) {
-      try {
-        summary.derived = await deriveCorpus(root);
-        summary.refinery = await refineCorpus(root);
-      } catch (error) {
-        derivationError = error;
-      }
-    }
-    const receipt = await writeImportReceipt(root, {
-      source: {
-        path: resolved,
-        contentHash: sourceContentHash,
-        bytes: source.size,
-        modifiedAt: source.mtime.toISOString(),
+    const intent = await createOperationIntent(root, {
+      operation: "anthropic-import",
+      before: beforeManifest,
+      after: manifest,
+      derive: options.derive !== false,
+      receipt: {
+        kind: "import",
+        input: {
+          source: {
+            path: resolved,
+            contentHash: sourceContentHash,
+            bytes: source.size,
+            modifiedAt: source.mtime.toISOString(),
+          },
+          domain,
+          counts: {
+            discovered: summary.discovered,
+            imported: summary.imported,
+            skipped: summary.skipped,
+            turns: summary.turns,
+            attachments: summary.attachments,
+            files: summary.files,
+          },
+          manifest: {
+            beforeHash,
+            afterHash: manifestSourcesHash(manifest.sources),
+            beforeSources,
+            afterSources: Object.keys(manifest.sources).length,
+            added,
+            replaced,
+            unchanged: summary.skipped,
+          },
+          deriveEnabled: options.derive !== false,
+        },
       },
-      domain,
-      counts: {
-        discovered: summary.discovered,
-        imported: summary.imported,
-        skipped: summary.skipped,
-        turns: summary.turns,
-        attachments: summary.attachments,
-        files: summary.files,
-      },
-      manifest: {
-        beforeHash,
-        afterHash: manifestSourcesHash(manifest.sources),
-        beforeSources,
-        afterSources: Object.keys(manifest.sources).length,
-        added,
-        replaced,
-        unchanged: summary.skipped,
-      },
-      deriveEnabled: options.derive !== false,
-      derivationStatus:
-        options.derive === false ? "not-requested" : derivationError ? "failed" : "completed",
-      derived: summary.derived,
-      refinery: summary.refinery,
     });
-    if (derivationError) {
-      const message =
-        derivationError instanceof Error ? derivationError.message : String(derivationError);
-      failClosed(
-        `import committed as receipt ${receipt.receiptId}, but derivation failed: ${redact(message)}`,
+    try {
+      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    } catch (error) {
+      await resolveManifestWriteFailure(root, intent, error);
+    }
+    const operation = await resumeCommittedOperation(root, intent);
+    const receipt = operation.receipt;
+    if (!receipt) throw new Error("committed import operation produced no receipt");
+    summary.derived = operation.derived;
+    summary.refinery = operation.refinery;
+    if (operation.derivationFailed) {
+      throw new Error(
+        `import committed as receipt ${receipt.receiptId}, but derived state was explicitly invalidated after derivation failed`,
       );
     }
     return { ...summary, receipt };

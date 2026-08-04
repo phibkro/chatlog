@@ -40,6 +40,33 @@ test("mobile navigation exposes state and supports dismissal", async () => {
   expect(app).toContain('event.key === "Escape"');
   expect(app).toContain('!event.target.closest("#primary-sidebar")');
 });
+test("Workbench document IDs are unique across routed views", async () => {
+  const html = await readFile(join(publicRoot, "index.html"), "utf8");
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]!);
+  const duplicates = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))].toSorted();
+
+  expect(duplicates).toEqual([]);
+  expect(ids.filter((id) => id === "view-patterns")).toHaveLength(1);
+});
+test("Workbench session rows open a bounded canonical turn browser", async () => {
+  const [html, app] = await Promise.all([
+    readFile(join(publicRoot, "index.html"), "utf8"),
+    readFile(join(publicRoot, "app.js"), "utf8"),
+  ]);
+
+  expect(html).toContain('id="session-dialog"');
+  expect(html).toContain('id="session-turns"');
+  expect(app).toContain("data-session-hash");
+  expect(app).toContain("/api/session?contentHash=");
+  expect(app).toContain("evidenceUri");
+});
+test("Workbench replaces loading skeletons with actionable authentication failures", async () => {
+  const app = await readFile(join(publicRoot, "app.js"), "utf8");
+
+  expect(app).toContain("renderWorkbenchError");
+  expect(app).toContain("Open a fresh bootstrap URL");
+  expect(app).toContain("error.status = response.status");
+});
 
 test("Context view consumes the governed read and feedback contracts", async () => {
   const [html, app, css] = await Promise.all([
@@ -68,6 +95,7 @@ test("Context view consumes the governed read and feedback contracts", async () 
   expect(app).toContain("Agent assertion");
   expect(app).toContain("Record human feedback for this delivered event");
   expect(app).toContain("Context plane unavailable");
+  expect(app).toContain("No governed context yet");
 
   expect(css).toContain(".context-workspace");
   expect(css).toContain(".context-event-ledger");
@@ -98,7 +126,7 @@ test("Memory Lab is a standalone mobile-first Foldkit surface", async () => {
   expect(main).toContain("data-[checked]:bg-primary");
   expect(main).not.toContain("data-[selected]:bg-primary");
   expect(memoryLab).toContain("operator-reviews.draft.json");
-  expect(main).toContain("does not promote memory, run a model, or reveal source identities");
+  expect(main).toContain("finalizing by itself never publishes memory");
   expect(main).toContain("@min-[48rem]:grid-cols");
   expect(main).toContain('fetch("/api/memory-lab/draft"');
   expect(main).toContain('"X-Chatlog-Memory-Lab": "1"');
@@ -107,4 +135,10 @@ test("Memory Lab is a standalone mobile-first Foldkit surface", async () => {
   expect(css).toContain("@theme inline");
   expect(config).toContain('base: "/memory/"');
   expect(config).toContain('outDir: "../../src/workbench/public/memory"');
+  expect(config).toContain('"/auth": workbenchBackendProxy');
+  expect(config).toContain('"/api": workbenchBackendProxy');
+  expect(config).toContain("changeOrigin: true");
+  expect(config).toContain('request.setHeader("origin", workbenchBackendOrigin)');
+  expect(config).toContain('cookieDomainRewrite: ""');
+  expect(config).toContain("CHATLOG_WORKBENCH_BACKEND_ORIGIN");
 });

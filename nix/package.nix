@@ -8,7 +8,7 @@
 
 bun2nix.mkDerivation {
   pname = "chatlog";
-  version = "0.1.0-rc.1";
+  version = (builtins.fromJSON (builtins.readFile ../package.json)).version;
 
   # Keep the runtime tree, lock inputs, workspace manifest, and provider
   # plugin together so the installed artifact is independent of a checkout.

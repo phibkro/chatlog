@@ -3,7 +3,7 @@ import { describe, test } from "bun:test";
 import { Scene } from "foldkit";
 
 import { memoryLabFixture } from "./fixture";
-import { LoadedMemoryLab, SelectedJudgment, init, update, view } from "./main";
+import { FailedMemoryLab, LoadedMemoryLab, SelectedJudgment, init, update, view } from "./main";
 
 if (globalThis.CSS === undefined)
   Object.defineProperty(globalThis, "CSS", {
@@ -39,6 +39,17 @@ describe("Memory Lab scene", () => {
       Scene.with(readyModel()),
       Scene.expect(Scene.text("<img src=x alt=owned> is inert historical text.")).toExist(),
       Scene.expect(Scene.role("img", { name: "owned" })).toBeAbsent(),
+    );
+  });
+
+  test("treats a missing review packet as an expected empty state", () => {
+    const pending = update(init()[0], FailedMemoryLab({ status: 404, error: "not found" }))[0];
+    Scene.scene(
+      { update, view },
+      Scene.with(pending),
+      Scene.expect(Scene.role("heading", { name: "No review packet is ready" })).toExist(),
+      Scene.expect(Scene.role("status")).toExist(),
+      Scene.expect(Scene.text("Memory Lab is unavailable")).toBeAbsent(),
     );
   });
 

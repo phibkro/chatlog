@@ -1,11 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { isAbsolute, join, normalize, sep } from "node:path";
-import { loadCorpusManifest } from "./source-authority";
+import {
+  assertDerivedNotInvalidated,
+  ExplicitDerivedInvalidationError,
+} from "./derived-invalidation";
+import { loadCorpusManifest, manifestSourcesHash } from "./source-authority";
 
 export interface DerivedProjectionReceipt {
   contentHash: string;
   structureProjectionHash: string;
+  structureContentHashes: Record<string, string>;
   conversations: number;
   conversationHashes: string[];
 }
@@ -64,11 +69,16 @@ function derivedPath(root: string, relativePath: unknown): string {
   return join(root, "derived", normalized);
 }
 
-export async function assertDerivedProjection(root: string): Promise<DerivedProjectionReceipt> {
+export async function assertDerivedProjection(
+  root: string,
+  options: { ignoreExplicitInvalidation?: boolean } = {},
+): Promise<DerivedProjectionReceipt> {
   try {
     const corpus = await loadCorpusManifest(root);
     const expectedText = serializeCurrentProjection(corpus.sources);
     const expectedHash = sha256(expectedText);
+    if (!options.ignoreExplicitInvalidation)
+      await assertDerivedNotInvalidated(root, manifestSourcesHash(corpus.sources));
     const manifest = JSON.parse(await readFile(join(root, "derived", "manifest.json"), "utf8"));
     const projection = manifest.currentProjection;
     const actualText = await readFile(derivedPath(root, projection?.path), "utf8");
@@ -129,11 +139,16 @@ export async function assertDerivedProjection(root: string): Promise<DerivedProj
           structures,
         }),
       ),
+      structureContentHashes: Object.fromEntries(structures),
       conversations: conversationHashes.length,
       conversationHashes,
     };
   } catch (error) {
     if (error instanceof DerivedProjectionDriftError) return Effect.runPromise(Effect.fail(error));
+    if (error instanceof ExplicitDerivedInvalidationError)
+      return Effect.runPromise(
+        Effect.fail(new DerivedProjectionDriftError(error.message, { cause: error })),
+      );
     return Effect.runPromise(
       Effect.fail(new DerivedProjectionDriftError(undefined, { cause: error })),
     );

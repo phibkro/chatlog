@@ -1,4 +1,5 @@
 import {
+  readContextEvent,
   readContextEventKindCounts,
   readContextEvents,
   recordContextFeedback,
@@ -462,12 +463,13 @@ async function deliveredIntervention(
       return failure(400, "context session does not exist");
     return eventFailure(loaded.error.message);
   }
-  const events = await readContextEvents(root, {
+  const event = await readContextEvent(root, {
     contextSessionId,
+    eventId: interventionEventId,
     recoverPending: false,
   });
-  if (!events.ok) return eventFailure(events.error.message);
-  const intervention = events.value.find((event) => event.eventId === interventionEventId);
+  if (!event.ok) return eventFailure(event.error.message);
+  const intervention = event.value;
   return intervention && DELIVERED_EVENT_KINDS.has(intervention.kind)
     ? { ok: true, value: intervention }
     : failure(400, "intervention event does not belong to the context session");
@@ -478,7 +480,14 @@ export class ContextManagement {
 
   async get(): Promise<ContextManagementResult<ContextManagementView>> {
     const published = await readPublishedInsightMemory(this.root);
-    if (!published.ok) return eventFailure(published.error.message);
+    if (!published.ok) {
+      if (/\bENOENT\b/u.test(published.error.message))
+        return failure(
+          409,
+          "No current insight projection exists. Compile and authorize one before releasing context.",
+        );
+      return eventFailure(published.error.message);
+    }
 
     const releaseResult = await readAuthorizedContextRelease(this.root);
     if (!releaseResult.ok && releaseResult.error.code !== "not-authorized")

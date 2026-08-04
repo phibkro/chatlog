@@ -9,7 +9,9 @@ import {
 } from "../refinery-adjudication";
 import { assembleInsightCommand } from "../insight-assembler";
 import {
+  appendInsightTransition,
   applyInsightCommand,
+  createEmptyInsightLedger,
   readCurrentInsightLedger,
   readInsightPublicationContext,
   type InsightCommandInput,
@@ -18,6 +20,7 @@ import { loadRefinery } from "../refinery";
 import type { InsightTransitionCommand } from "../insights";
 
 const PACKET_GLOB = "*/public/packet.json";
+const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_REVIEWER_ID = 80;
 const MAX_GENERATOR_FIELD = 200;
 const MAX_LESSON = 2_000;
@@ -75,6 +78,13 @@ export interface MemoryLabProgress {
   unsure: number;
   unanswered: number;
 }
+export interface MemoryLabAppliedInsight {
+  status: "candidate" | "active" | "rejected" | "disputed" | "superseded" | "expired" | "retired";
+  transitionId: string;
+  ledgerHash: string;
+  command: InsightTransitionCommand;
+  projectIdentity: string;
+}
 
 export interface MemoryLabView {
   packet: AdjudicationPacket;
@@ -83,6 +93,7 @@ export interface MemoryLabView {
   reviews: OperatorReviews;
   progress: MemoryLabProgress;
   finalized: boolean;
+  applications: Record<string, MemoryLabAppliedInsight>;
 }
 
 export interface MemoryLabSaveInput {
@@ -102,7 +113,7 @@ export interface MemoryLabFinalizeInput {
 export interface MemoryLabInsightTransitionInput {
   packetHash: string;
   proposalSetHash: string;
-  candidateId: string;
+  candidateAlias: string;
   reviewerId: string;
   projectIdentity: string;
   correctedProposition?: string;
@@ -110,10 +121,12 @@ export interface MemoryLabInsightTransitionInput {
   priorLedgerHash?: string | null;
   transitionCommand?: InsightTransitionCommand;
   recordedAt?: string;
+  previewCommandHash?: string;
 }
 
 export interface MemoryLabInsightPreview {
   command: InsightCommandInput;
+  commandHash: string;
   changedStartupContext: boolean;
   currentStatus:
     | "candidate"
@@ -410,7 +423,12 @@ function progress(reviews: OperatorReviews): MemoryLabProgress {
   };
 }
 
-function view(files: PacketFiles, reviews: OperatorReviews, finalized: boolean): MemoryLabView {
+function view(
+  files: PacketFiles,
+  reviews: OperatorReviews,
+  finalized: boolean,
+  applications: Record<string, MemoryLabAppliedInsight> = {},
+): MemoryLabView {
   return {
     packet: files.packet,
     proposalSet: files.proposalSet,
@@ -418,6 +436,7 @@ function view(files: PacketFiles, reviews: OperatorReviews, finalized: boolean):
     reviews,
     progress: progress(reviews),
     finalized,
+    applications,
   };
 }
 
@@ -477,6 +496,60 @@ export class MemoryLab {
 
   constructor(root: string) {
     this.root = resolve(root);
+  }
+  private async hydrateApplications(
+    files: PacketFiles,
+    value: MemoryLabView,
+  ): Promise<MemoryLabResult<MemoryLabView>> {
+    const current = await readCurrentInsightLedger(this.root);
+    if (!current.ok) {
+      if (current.error.message.includes("ENOENT")) return { ok: true, value };
+      return {
+        ok: false,
+        status: 409,
+        error: `current insight ledger is unavailable: ${current.error.message}`,
+      };
+    }
+    const manifestResult = await jsonFile(
+      join(
+        this.root,
+        "derived",
+        "adjudication",
+        "refinery-private",
+        files.packet.packetHash,
+        "manifest.json",
+      ),
+    );
+    if (
+      manifestResult.status !== "found" ||
+      !objectRow(manifestResult.value) ||
+      !Array.isArray(manifestResult.value.candidates)
+    )
+      return { ok: false, status: 409, error: "private blinded mapping is invalid" };
+    const applications: Record<string, MemoryLabAppliedInsight> = {};
+    for (const mapping of manifestResult.value.candidates) {
+      if (
+        !objectRow(mapping) ||
+        typeof mapping.candidateAlias !== "string" ||
+        typeof mapping.candidateId !== "string"
+      )
+        return { ok: false, status: 409, error: "private blinded mapping is invalid" };
+      const revision = current.value.projection.current[mapping.candidateId];
+      if (!revision) continue;
+      const transition = current.value.ledger.transitions.findLast(
+        (item) => item.revision.revisionId === revision.revisionId,
+      );
+      if (!transition)
+        return { ok: false, status: 409, error: "current insight transition is unavailable" };
+      applications[mapping.candidateAlias] = {
+        status: revision.status,
+        transitionId: transition.transitionId,
+        ledgerHash: current.value.ledger.ledgerHash,
+        command: transition.command,
+        projectIdentity: revision.scope.project ?? revision.scope.repository ?? "",
+      };
+    }
+    return { ok: true, value: { ...value, applications } };
   }
 
   private async packetFiles(): Promise<MemoryLabResult<PacketFiles>> {
@@ -560,19 +633,19 @@ export class MemoryLab {
       );
       if (!finalized)
         return { ok: false, status: 409, error: "finalized memory lab reviews are invalid" };
-      return { ok: true, value: view(files, finalized, true) };
+      return this.hydrateApplications(files, view(files, finalized, true));
     }
     const draftValue = await jsonFile(join(files.directory, "operator-reviews.draft.json"));
     if (draftValue.status === "missing")
-      return {
-        ok: true,
-        value: view(files, blankReviews(files.packet, files.proposalSetHash), false),
-      };
+      return this.hydrateApplications(
+        files,
+        view(files, blankReviews(files.packet, files.proposalSetHash), false),
+      );
     if (draftValue.status === "invalid")
       return { ok: false, status: 409, error: "memory lab review draft is invalid" };
     const draft = operatorReviews(files.packet, files.proposalSetHash, draftValue.value, false);
     if (!draft) return { ok: false, status: 409, error: "memory lab review draft is invalid" };
-    return { ok: true, value: view(files, draft, false) };
+    return this.hydrateApplications(files, view(files, draft, false));
   }
 
   async get(): Promise<MemoryLabResult<MemoryLabView>> {
@@ -628,7 +701,7 @@ export class MemoryLab {
     );
     if (!saved)
       return { ok: false, status: 500, error: "memory lab review draft could not be saved" };
-    return { ok: true, value: view(files.value, validated, false) };
+    return this.hydrateApplications(files.value, view(files.value, validated, false));
   }
 
   finalize(value: unknown): Promise<MemoryLabResult<MemoryLabView>> {
@@ -693,7 +766,7 @@ export class MemoryLab {
       if (winner.ok && winner.value.finalized) return winner;
       return { ok: false, status: 500, error: "memory lab reviews could not be finalized" };
     }
-    return { ok: true, value: view(files.value, validated, true) };
+    return this.hydrateApplications(files.value, view(files.value, validated, true));
   }
   async previewInsightTransition(
     value: unknown,
@@ -704,7 +777,7 @@ export class MemoryLab {
     if (
       typeof input.packetHash !== "string" ||
       typeof input.proposalSetHash !== "string" ||
-      typeof input.candidateId !== "string" ||
+      typeof input.candidateAlias !== "string" ||
       typeof input.reviewerId !== "string" ||
       typeof input.projectIdentity !== "string"
     )
@@ -751,6 +824,13 @@ export class MemoryLab {
     );
     if (manifestResult.status !== "found" || !objectRow(manifestResult.value))
       return { ok: false, status: 409, error: "private blinded mapping is unavailable" };
+    const privateManifest = manifestResult.value as unknown as AdjudicationPrivateManifest;
+    if (!Array.isArray(privateManifest.candidates))
+      return { ok: false, status: 409, error: "private blinded mapping is invalid" };
+    const mapping = privateManifest.candidates.find(
+      (row) => row.candidateAlias === input.candidateAlias,
+    );
+    if (!mapping) return { ok: false, status: 404, error: "memory lab candidate not found" };
     let refinery;
     try {
       refinery = await loadRefinery(this.root);
@@ -761,12 +841,45 @@ export class MemoryLab {
         error: `refinery artifact unavailable: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
-    const candidate = refinery.candidates.find((row) => row.id === input.candidateId);
+    const candidate = refinery.candidates.find((row) => row.id === mapping.candidateId);
+    if (
+      privateManifest.packetHash !== files.value.packet.packetHash ||
+      privateManifest.sourceBindingHash !== files.value.packet.sourceBindingHash ||
+      !objectRow(privateManifest.source) ||
+      privateManifest.source.inputProjectionHash !== refinery.inputProjectionHash ||
+      privateManifest.source.refineryRecipeHash !== refinery.recipeHash ||
+      privateManifest.source.refineryThreshold !== refinery.threshold ||
+      privateManifest.source.refineryCandidates !== refinery.candidates.length ||
+      !objectRow(privateManifest.artifacts) ||
+      privateManifest.artifacts.packetSha256 !==
+        createHash("sha256")
+          .update(`${JSON.stringify(files.value.packet, null, 2)}\n`)
+          .digest("hex")
+    )
+      return {
+        ok: false,
+        status: 409,
+        error: "private blinded mapping is stale or not bound to the current refinery artifact",
+      };
     if (!candidate) return { ok: false, status: 404, error: "refinery candidate not found" };
     const currentLedger = await readCurrentInsightLedger(this.root);
-    const currentStatus = currentLedger.ok
-      ? (currentLedger.value.projection.current[candidate.id]?.status ?? "none")
-      : "none";
+    if (!currentLedger.ok && !currentLedger.error.message.includes("ENOENT"))
+      return {
+        ok: false,
+        status: 409,
+        error: `current insight ledger is unavailable: ${currentLedger.error.message}`,
+      };
+    const currentLedgerHash = currentLedger.ok ? currentLedger.value.ledger.ledgerHash : null;
+    if (input.priorLedgerHash !== undefined && input.priorLedgerHash !== currentLedgerHash)
+      return {
+        ok: false,
+        status: 409,
+        error: "insight preview is stale; preview the application again",
+      };
+    const currentRevision = currentLedger.ok
+      ? currentLedger.value.projection.current[candidate.id]
+      : undefined;
+    const currentStatus = currentRevision?.status ?? "none";
     if (!files.value.adjudicationAnswers || !files.value.adjudicationAnswersHash)
       return { ok: false, status: 409, error: "finalized adjudication answers are unavailable" };
     const publicationContext = await readInsightPublicationContext(this.root);
@@ -774,12 +887,33 @@ export class MemoryLab {
       return { ok: false, status: 409, error: "active source projection is unavailable" };
     if (!publicationContext.ok)
       return { ok: false, status: 409, error: publicationContext.error.message };
+    const transitionCommand =
+      input.transitionCommand ??
+      (input.correctedProposition !== undefined || input.correctedProcedure !== undefined
+        ? "accept-with-correction"
+        : currentStatus === "disputed"
+          ? "resolve-dispute"
+          : "accept");
+    if (
+      ![
+        "accept",
+        "accept-with-correction",
+        "reject",
+        "dispute",
+        "resolve-dispute",
+        "supersede",
+        "expire",
+        "retire",
+      ].includes(transitionCommand)
+    )
+      return { ok: false, status: 400, error: "unsupported insight transition command" };
+    const retiring = transitionCommand === "retire" && currentRevision !== undefined;
     const assembled = assembleInsightCommand({
       projectIdentity: input.projectIdentity,
       candidate,
       refinery,
       packet: files.value.packet,
-      privateManifest: manifestResult.value as unknown as AdjudicationPrivateManifest,
+      privateManifest,
       proposalSet: files.value.proposalSet,
       operatorReviews: current.value.reviews,
       adjudicationAnswers: files.value.adjudicationAnswers,
@@ -787,22 +921,15 @@ export class MemoryLab {
       operatorReviewHash: reviewBytes.hash,
       adjudicationAnswersHash: files.value.adjudicationAnswersHash,
       actor: { id: input.reviewerId, kind: "operator" },
-      correctedProposition: input.correctedProposition,
-      correctedProcedure: input.correctedProcedure,
-      transitionCommand:
-        input.transitionCommand ??
-        (input.correctedProposition !== undefined || input.correctedProcedure !== undefined
-          ? "accept-with-correction"
-          : currentStatus === "disputed"
-            ? "resolve-dispute"
-            : "accept"),
-      priorLedgerHash: currentLedger.ok ? currentLedger.value.ledger.ledgerHash : null,
-      priorRevisionId: currentLedger.ok
-        ? (currentLedger.value.projection.current[candidate.id]?.revisionId ?? null)
-        : null,
+      correctedProposition: retiring ? currentRevision.proposition : input.correctedProposition,
+      correctedProcedure: retiring ? currentRevision.procedure : input.correctedProcedure,
+      transitionCommand,
+      priorLedgerHash: currentLedgerHash,
+      priorRevisionId: currentRevision?.revisionId ?? null,
       inputProjectionHash: publicationContext.value.inputProjectionHash,
       sourceAuthorityHash: publicationContext.value.sourceAuthorityHash,
       activeEvidence: publicationContext.value.activeEvidence,
+      ...(retiring ? { scope: currentRevision.scope } : {}),
       recordedAt: input.recordedAt,
     });
     if (!assembled.ok)
@@ -821,11 +948,27 @@ export class MemoryLab {
         status: 409,
         error: "selected evidence is not active in the canonical source projection",
       };
+    const previewLedger = currentLedger.ok
+      ? currentLedger.value.ledger
+      : createEmptyInsightLedger(
+          assembled.value.revision.scope.project ??
+            assembled.value.revision.scope.repository ??
+            "unknown-project",
+        );
+    const applicable = appendInsightTransition(previewLedger, assembled.value);
+    if (!applicable.ok)
+      return {
+        ok: false,
+        status: 409,
+        error: `${applicable.error.code}: ${applicable.error.message}`,
+      };
+    const nextActive = assembled.value.revision.status === "active";
     return {
       ok: true,
       value: {
         command: assembled.value,
-        changedStartupContext: assembled.value.revision.status === "active",
+        commandHash: createHash("sha256").update(JSON.stringify(assembled.value)).digest("hex"),
+        changedStartupContext: (currentStatus === "active") !== nextActive,
         currentStatus,
       },
     };
@@ -837,8 +980,24 @@ export class MemoryLab {
     const operation: Promise<
       MemoryLabResult<{ preview: MemoryLabInsightPreview; applied: unknown }>
     > = this.writeQueue.then(async () => {
+      if (
+        !objectRow(value) ||
+        typeof value.previewCommandHash !== "string" ||
+        !SHA256.test(value.previewCommandHash)
+      )
+        return {
+          ok: false as const,
+          status: 400,
+          error: "insight transition apply requires the preview command hash",
+        };
       const preview = await this.previewInsightTransition(value);
       if (!preview.ok) return { ok: false as const, status: preview.status, error: preview.error };
+      if (preview.value.commandHash !== value.previewCommandHash)
+        return {
+          ok: false as const,
+          status: 409,
+          error: "insight preview is stale; preview the application again",
+        };
       const applied = await applyInsightCommand(this.root, preview.value.command);
       if (!applied.ok)
         return {

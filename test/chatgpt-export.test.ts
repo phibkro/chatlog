@@ -16,8 +16,15 @@ import {
   parseChatGPTConversation,
   previewChatGPTExport,
   readChatGPTExport,
+  type ChatGPTImportOptions,
 } from "../src/importers/chatgpt-export";
 import { readEventBatch } from "../src/event-store";
+import {
+  createOperationIntent,
+  listPendingOperationIntents,
+  recoverPendingOperations,
+} from "../src/operation-intents";
+import type { CorpusManifest } from "../src/source-authority";
 
 // Fixture provenance: fresh inert synthetic data informed by the source-verified
 // MIT parser report (jcollins-bioinfo/chatgpt-archive-compiler 0.4.0a2,
@@ -26,6 +33,14 @@ const fixturePath = new URL("./fixtures/providers/chatgpt/conversations.json", i
   .pathname;
 const emptyZip =
   "UEsDBAoDAAAAAJxRBF0pu0wNAgAAAAIAAAASAAAAY29udmVyc2F0aW9ucy5qc29uW11QSwECPwMKAwAAAACcUQRdKbtMDQIAAAACAAAAEgAkAAAAAAAAACCApIEAAAAAY29udmVyc2F0aW9ucy5qc29uCgAgAAAAAAABABgAgB1kDekj3QGAHWQN6SPdAYAdZA3pI90BUEsFBgAAAAABAAEAZAAAADIAAAAAAA==";
+
+async function importPreviewedChatGPT(
+  root: string,
+  options: Omit<ChatGPTImportOptions, "preview">,
+) {
+  const preview = await previewChatGPTExport(fixturePath, root, { domain: options.domain });
+  return importChatGPTExport(fixturePath, root, { ...options, preview });
+}
 
 test("schema reader preserves graph nodes, declared branch, and opaque metadata", async () => {
   const result = await readChatGPTExport(fixturePath);
@@ -257,16 +272,88 @@ test("preview is aggregate-only and creates no corpus, event, or receipt state",
   expect(await readdir(root)).toHaveLength(0);
 });
 
+test("ChatGPT import requires preview proposal pins", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-preview-required-"));
+  await expect(
+    importChatGPTExport(fixturePath, root, {
+      domain: "personal",
+      derive: false,
+      preview: undefined as never,
+    }),
+  ).rejects.toThrow("ChatGPT import requires preview proposal pins");
+});
+
+test("import rejects a source that no longer matches its ChatGPT preview", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-preview-pin-"));
+  const source = join(base, "conversations.json");
+  const root = join(base, "data");
+  const original = await readFile(fixturePath, "utf8");
+  await writeFile(source, original);
+  const preview = await previewChatGPTExport(source, root, { domain: "personal" });
+  await writeFile(source, `${original}\n`);
+
+  await expect(
+    importChatGPTExport(source, root, { domain: "personal", derive: false, preview }),
+  ).rejects.toThrow("source no longer matches the preview proposal");
+  expect(await Bun.file(join(root, "corpus", "manifest.json")).exists()).toBe(false);
+});
+
+test("ChatGPT import rejects preview pins after manifest authority changes", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-manifest-preview-pin-"));
+  const source = join(base, "conversations.json");
+  const root = join(base, "data");
+  await writeFile(source, await readFile(fixturePath, "utf8"));
+  const preview = await previewChatGPTExport(source, root, { domain: "personal" });
+  const manifestPath = join(root, "corpus", "manifest.json");
+  await mkdir(join(root, "corpus"), { recursive: true });
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      version: 1,
+      sources: { "/unrelated": { contentHash: "a".repeat(64) } },
+    }),
+  );
+
+  await expect(
+    importChatGPTExport(source, root, { domain: "personal", derive: false, preview }),
+  ).rejects.toThrow("source no longer matches the preview proposal");
+});
+
+test("import completes a ChatGPT operation intent without an Anthropic receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-operation-"));
+  const result = await importPreviewedChatGPT(root, {
+    domain: "personal",
+    derive: false,
+  });
+  expect(result.receipts).not.toHaveLength(0);
+  expect(result.receipt).toEqual(result.receipts.at(-1)!);
+  const directory = join(root, "operations", "completed");
+  const [name] = await readdir(directory);
+  expect(name).toBeString();
+  const operation = JSON.parse(await readFile(join(directory, name!), "utf8"));
+  expect(operation).toMatchObject({
+    operation: "chatgpt-import",
+    status: "completed",
+    derivation: {
+      requested: false,
+      resolution: { status: "not-requested" },
+    },
+  });
+  expect(operation.receipt).toBeUndefined();
+});
+
 test("import preserves alternate branches, receipts, and idempotence", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-import-"));
-  const first = await importChatGPTExport(fixturePath, root, { domain: "personal", derive: false });
+  const first = await importPreviewedChatGPT(root, { domain: "personal", derive: false });
   expect(first.imported).toBe(2);
   expect(first.receipts).toHaveLength(2);
-  const second = await importChatGPTExport(fixturePath, root, {
+  const second = await importPreviewedChatGPT(root, {
     domain: "personal",
     derive: false,
   });
   expect(second.skipped).toBe(2);
+  expect(second.receipts).toEqual(first.receipts);
+  expect(second.receipt).toEqual(first.receipt);
   const batch = await readEventBatch(root, first.receipts[1]!.eventBatchHash);
   expect(batch.events.some((event) => event.payload.nodeId === "branch-alternate")).toBe(true);
   expect(JSON.stringify(batch)).toContain("file-service://synthetic-asset-001");
@@ -284,6 +371,45 @@ test("source changes during read fail before import state is committed", async (
       },
     }),
   ).rejects.toThrow("source changed while it was being read");
+});
+
+test("recovers a committed ChatGPT intent across the manifest authority boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-recovery-"));
+  await importPreviewedChatGPT(root, { domain: "personal", derive: false });
+  const after = JSON.parse(
+    await readFile(join(root, "corpus", "manifest.json"), "utf8"),
+  ) as CorpusManifest;
+  await createOperationIntent(root, {
+    operation: "chatgpt-import",
+    before: { version: 1, sources: {} },
+    after,
+    derive: false,
+    operationId: "chatgpt-authority-recovery",
+    createdAt: "2026-08-04T10:00:00.000Z",
+  });
+  expect(await listPendingOperationIntents(root)).toHaveLength(1);
+  expect(await recoverPendingOperations(root)).toEqual({
+    discovered: 1,
+    completed: 1,
+    aborted: 0,
+  });
+  const completed = JSON.parse(
+    await readFile(
+      join(root, "operations", "completed", "chatgpt-authority-recovery.json"),
+      "utf8",
+    ),
+  );
+  expect(completed).toMatchObject({
+    operation: "chatgpt-import",
+    status: "completed",
+    projection: { activeSources: 2 },
+  });
+  expect(await listPendingOperationIntents(root)).toHaveLength(0);
+  expect(await recoverPendingOperations(root)).toEqual({
+    discovered: 0,
+    completed: 0,
+    aborted: 0,
+  });
 });
 
 test("dangling parents remain evidence and produce an empty visible projection", () => {
@@ -313,7 +439,7 @@ test("dangling parents remain evidence and produce an empty visible projection",
 
 test("domain-only changes are classified as reclassification", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-reclassify-"));
-  await importChatGPTExport(fixturePath, root, { domain: "personal", derive: false });
+  await importPreviewedChatGPT(root, { domain: "personal", derive: false });
   const preview = await previewChatGPTExport(fixturePath, root, { domain: "research" });
   expect(preview.reclassified).toBe(2);
 });

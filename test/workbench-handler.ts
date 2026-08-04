@@ -1,6 +1,7 @@
 import { WorkbenchData } from "../src/workbench/data";
 import {
   workbenchHandler as productionWorkbenchHandler,
+  type WorkbenchAnnotationHttpConfig,
   type WorkbenchHandlerOptions,
 } from "../src/workbench/server";
 import { ContextManagement } from "../src/workbench/context-management";
@@ -12,7 +13,7 @@ const TEST_CREDENTIAL = "chatlog-workbench-test-credential";
 export function workbenchHandler(
   data: WorkbenchData,
   publicRoot?: string,
-  memoryLab: MemoryLab | null = null,
+  memoryLab: MemoryLab | WorkbenchAnnotationHttpConfig | null = null,
   memoryLabWrites = false,
   contextManagement?: ContextManagement | null,
   contextWrites = false,
@@ -38,7 +39,7 @@ export function workbenchHandler(
   return (request: Request): Promise<Response> => {
     const headers = new Headers(request.headers);
     headers.set("Host", "localhost");
-    headers.set("Origin", TEST_ORIGIN);
+    if (!headers.has("Origin")) headers.set("Origin", TEST_ORIGIN);
     headers.set("Authorization", `Bearer ${TEST_CREDENTIAL}`);
     return handler(new Request(request, { headers }));
   };

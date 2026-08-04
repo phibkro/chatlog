@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createWorkbenchAuth,
+  resolveAnnotationConfig,
   workbenchBootstrapUrl,
   workbenchHandler,
   type WorkbenchAuthConfig,
@@ -114,8 +115,64 @@ test("Workbench API requires credentials and exact listener boundaries", async (
     data.close();
   }
 });
+test("Workbench accepts only exact configured reverse-proxy origins", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-proxy-auth-"));
+  const data = new WorkbenchData(root);
+  const externalOrigin = "https://chatlog.example.net";
+  const handler = workbenchHandler(
+    data,
+    undefined,
+    null,
+    false,
+    null,
+    false,
+    authOptions({ allowedOrigins: new Set([ORIGIN, externalOrigin]) }),
+  );
+  const externalRequest = (
+    origin: string,
+    host = "chatlog.example.net",
+    requestOrigin = origin,
+  ): Request =>
+    new Request(`${origin}/api/overview`, {
+      headers: {
+        Host: host,
+        Origin: requestOrigin,
+        Authorization: `Bearer ${TOKEN}`,
+      },
+    });
+  try {
+    expect((await handler(externalRequest(externalOrigin))).status).toBe(200);
+    expect((await handler(externalRequest("https://attacker.example.net"))).status).toBe(403);
+    expect((await handler(externalRequest(externalOrigin, "attacker.example.net"))).status).toBe(
+      403,
+    );
+    expect(
+      (await handler(externalRequest(externalOrigin, "chatlog.example.net", ORIGIN))).status,
+    ).toBe(403);
+    expect(workbenchBootstrapUrl(externalOrigin, TOKEN)).toBe(
+      `${externalOrigin}/#chatlog-workbench=${TOKEN}`,
+    );
+  } finally {
+    data.close();
+  }
+});
 
-test("Workbench bootstrap is one-time and authenticates subsequent API reads", async () => {
+test("Workbench rejects cleartext origins outside the loopback boundary", () => {
+  expect(() =>
+    createWorkbenchAuth("127.0.0.1", 4789, undefined, ["http://chatlog.example.net"]),
+  ).toThrow("HTTPS");
+  expect(() =>
+    resolveAnnotationConfig(
+      { host: "127.0.0.1", port: 4789 },
+      {
+        CHATLOG_ALLOW_ANNOTATIONS: "1",
+        CHATLOG_ANNOTATION_ORIGINS: "http://chatlog.example.net",
+      },
+    ),
+  ).toThrow("HTTPS");
+});
+
+test("Workbench dev-proxy bootstrap and API requests use exact listener headers", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-bootstrap-"));
   const data = new WorkbenchData(root);
   const auth = authOptions();
@@ -144,6 +201,57 @@ test("Workbench bootstrap is one-time and authenticates subsequent API reads", a
     expect(workbenchBootstrapUrl(ORIGIN, TOKEN)).toBe(`${ORIGIN}/#chatlog-workbench=${TOKEN}`);
   } finally {
     data.close();
+  }
+});
+test("Workbench credential cookies are Secure for HTTPS but not loopback HTTP", async () => {
+  const httpsRoot = await mkdtemp(join(tmpdir(), "chatlog-workbench-https-cookie-"));
+  const httpsData = new WorkbenchData(httpsRoot);
+  const externalOrigin = "https://chatlog.example.net";
+  const httpsHandler = workbenchHandler(
+    httpsData,
+    undefined,
+    null,
+    false,
+    null,
+    false,
+    authOptions({ allowedOrigins: new Set([ORIGIN, externalOrigin]) }),
+  );
+  try {
+    const response = await httpsHandler(
+      new Request(`${externalOrigin}/auth/bootstrap`, {
+        method: "POST",
+        headers: {
+          Host: "chatlog.example.net",
+          Origin: externalOrigin,
+          Authorization: `Bearer ${TOKEN}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("set-cookie")).toContain("Secure");
+  } finally {
+    httpsData.close();
+  }
+
+  const httpRoot = await mkdtemp(join(tmpdir(), "chatlog-workbench-http-cookie-"));
+  const httpData = new WorkbenchData(httpRoot);
+  const httpHandler = workbenchHandler(
+    httpData,
+    undefined,
+    null,
+    false,
+    null,
+    false,
+    authOptions(),
+  );
+  try {
+    const response = await httpHandler(
+      request("/auth/bootstrap", { method: "POST" }, { Authorization: `Bearer ${TOKEN}` }),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("set-cookie")).not.toContain("Secure");
+  } finally {
+    httpData.close();
   }
 });
 

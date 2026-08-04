@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
@@ -142,5 +142,78 @@ export async function readBoundedFile(
     };
   } finally {
     await handle.close();
+  }
+}
+
+export function readBoundedFileSync(
+  path: string,
+  limit: number,
+  label: string,
+  containmentRoot?: string,
+): ExportLimitResult<BoundedText & { readonly size: number; readonly mtimeMs: number }> {
+  const resolvedPath = resolve(path);
+  if (containmentRoot !== undefined) {
+    try {
+      const root = realpathSync(resolve(containmentRoot));
+      const candidate = realpathSync(resolvedPath);
+      if (candidate !== root && !candidate.startsWith(`${root}${sep}`))
+        return { ok: false, error: new ExportFileTypeError(label) };
+    } catch (error) {
+      return { ok: false, error: new ExportReadError(label, error) };
+    }
+  }
+  let descriptor: number;
+  try {
+    descriptor = openSync(resolvedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error.code === "ELOOP" || error.code === "EMLINK")
+    )
+      return { ok: false, error: new ExportFileTypeError(label) };
+    return { ok: false, error: new ExportReadError(label, error) };
+  }
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile()) return { ok: false, error: new ExportFileTypeError(label) };
+    if (info.size > limit)
+      return {
+        ok: false,
+        error: new ExportLimitError("file", limit, info.size, label),
+      };
+    let encoded = Buffer.allocUnsafe(Math.min(limit + 1, Math.max(info.size + 1, 4096)));
+    let bytes = 0;
+    for (;;) {
+      if (bytes === encoded.byteLength) {
+        if (bytes > limit)
+          return {
+            ok: false,
+            error: new ExportLimitError("file", limit, bytes, label),
+          };
+        const expanded = Buffer.allocUnsafe(
+          Math.min(limit + 1, Math.max(encoded.byteLength * 2, bytes + 1)),
+        );
+        encoded.copy(expanded, 0, 0, bytes);
+        encoded = expanded;
+      }
+      const count = readSync(descriptor, encoded, bytes, encoded.byteLength - bytes, null);
+      if (count === 0) break;
+      bytes += count;
+    }
+    return {
+      ok: true,
+      value: {
+        text: encoded.subarray(0, bytes).toString("utf8"),
+        bytes,
+        size: bytes,
+        mtimeMs: info.mtimeMs,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error: new ExportReadError(label, error) };
+  } finally {
+    closeSync(descriptor);
   }
 }

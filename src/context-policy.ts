@@ -1,10 +1,12 @@
+import { recallPathWithin } from "./recall-budget";
 import { sha256, stableStringify } from "./events";
-import type {
-  ContextCandidate,
-  ContextOmissionReason,
-  ContextRequest,
-  ContextRiskClass,
-  ContextSession,
+import {
+  MAX_CONTEXT_BUDGET,
+  type ContextCandidate,
+  type ContextOmissionReason,
+  type ContextRequest,
+  type ContextRiskClass,
+  type ContextSession,
 } from "./context-types";
 
 export const CONTEXT_POLICY_VERSION = "chatlog-context-policy-v1";
@@ -19,11 +21,6 @@ const RISK_ORDER: Readonly<Record<ContextRiskClass, number>> = {
 export type ContextPolicyDecision =
   | { allowed: true }
   | { allowed: false; reason: ContextOmissionReason };
-
-function pathContains(scopePath: string, requestPath: string): boolean {
-  const normalizedScope = scopePath.endsWith("/") ? scopePath : `${scopePath}/`;
-  return requestPath === scopePath || requestPath.startsWith(normalizedScope);
-}
 
 function scopeDecision(
   candidate: ContextCandidate,
@@ -46,7 +43,7 @@ function scopeDecision(
     return { allowed: false, reason: "repository-mismatch" };
   if (
     candidateScope.path !== null &&
-    (requestScope.path === null || !pathContains(candidateScope.path, requestScope.path))
+    (requestScope.path === null || !recallPathWithin(requestScope.path, candidateScope.path))
   )
     return { allowed: false, reason: "path-mismatch" };
   if (candidateScope.harness !== null && candidateScope.harness !== requestScope.harness)
@@ -64,6 +61,7 @@ export function evaluateContextCandidate(
 ): ContextPolicyDecision {
   if (!request.allowedItemKinds.includes(candidate.kind))
     return { allowed: false, reason: "kind-not-allowed" };
+  if (candidate.scores.lexical <= 0) return { allowed: false, reason: "task-mismatch" };
   if (request.exposure === "evidence-only" && candidate.kind !== "evidence")
     return { allowed: false, reason: "exposure-denied" };
   if (request.exposure !== "shadow" && candidate.riskClass === "high")
@@ -85,11 +83,17 @@ export function validateContextRequest(
   session: ContextSession,
 ):
   | { ok: true }
-  | { ok: false; code: "invalid-request" | "session-mismatch" | "scope-denied"; message: string } {
+  | {
+      ok: false;
+      code: "invalid-request" | "session-mismatch" | "scope-denied";
+      message: string;
+    } {
   if (!request.task.trim() || !request.query.trim())
     return { ok: false, code: "invalid-request", message: "task and query must be explicit" };
   if (!Number.isFinite(Date.parse(request.now)))
     return { ok: false, code: "invalid-request", message: "now must be an ISO timestamp" };
+  if (request.freshAfter !== null && !Number.isFinite(Date.parse(request.freshAfter)))
+    return { ok: false, code: "invalid-request", message: "freshAfter must be an ISO timestamp" };
   if (request.contextSessionId !== session.contextSessionId)
     return { ok: false, code: "session-mismatch", message: "context session does not match" };
   if (
@@ -103,8 +107,33 @@ export function validateContextRequest(
       code: "session-mismatch",
       message: "provider target does not match pinned session",
     };
+
+  // The session schema does not carry user, organization, tool, or item
+  // permissions. Requests must therefore use their neutral values rather than
+  // smuggling a different authority scope through the planner.
+  if (
+    request.scope.user !== null ||
+    request.scope.organization !== null ||
+    request.scope.tool !== null
+  )
+    return {
+      ok: false,
+      code: "scope-denied",
+      message: "request user, organization, and tool must use the neutral null scope",
+    };
+  const itemPermissions = request.scope.itemPermissions;
+  if (
+    itemPermissions !== undefined &&
+    (!Array.isArray(itemPermissions) || itemPermissions.length > 0)
+  )
+    return {
+      ok: false,
+      code: "scope-denied",
+      message: "request itemPermissions must use the neutral empty scope",
+    };
   if (
     request.scope.project !== session.projectIdentity ||
+    request.scope.repository !== session.projectIdentity ||
     request.scope.harness !== session.target.harness ||
     request.scope.model !== session.target.model ||
     !session.domainPolicy.includes(request.scope.domain)
@@ -115,13 +144,24 @@ export function validateContextRequest(
       message: "request is outside the pinned session scope",
     };
   if (
-    session.path !== null &&
-    (request.scope.path === null || !pathContains(session.path, request.scope.path))
+    session.path === null
+      ? request.scope.path !== null
+      : request.scope.path === null || !recallPathWithin(session.path, request.scope.path)
   )
     return {
       ok: false,
       code: "scope-denied",
       message: "request path is outside the pinned session path",
+    };
+  if (
+    !Number.isSafeInteger(request.fixedInstructionTokens) ||
+    request.fixedInstructionTokens < 0 ||
+    request.fixedInstructionTokens > MAX_CONTEXT_BUDGET.tokens
+  )
+    return {
+      ok: false,
+      code: "invalid-request",
+      message: "fixedInstructionTokens must be a bounded non-negative integer",
     };
   if (
     request.capabilities.maximumContextTokens < 0 ||

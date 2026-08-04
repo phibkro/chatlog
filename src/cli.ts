@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
+import { readClosedLoopArtifactFile } from "./closed-loop-artifact-file";
+import { readBoundedFile } from "./importers/export-limits";
 import { join, resolve } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude";
 import { CodexAdapter } from "./adapters/codex";
-import { PiAdapter } from "./adapters/pi";
+import { OmpAdapter, PiAdapter } from "./adapters/pi";
 import { ingest } from "./ingest";
 import { openAnalysis, queryModels, querySearch, queryStats } from "./analysis";
 import { deriveCorpus } from "./derive";
@@ -55,6 +57,19 @@ import {
 } from "./insight-ledger";
 import { proposeInsightConsolidations } from "./insight-compiler";
 import type { InsightCommandInput } from "./insight-ledger";
+import { ContextPlane } from "./context-plane";
+import type {
+  ConfirmContextEmissionInput,
+  DeliverContextInput,
+  PrepareContextInput,
+  PreparedContext,
+  StartContextPlaneSessionInput,
+} from "./context-plane";
+import { readContextEvents } from "./context-events";
+import type { ContextFeedbackInput, ContextOutcomeInput } from "./context-events";
+import { authorizeContextRelease } from "./context-release";
+import type { ContextReceiptEvidence } from "./context-types";
+import { isMcpDataFailure, McpData } from "./mcp/data";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
 const root = resolveDataRoot();
@@ -64,8 +79,62 @@ const localAdapters = () => {
     new ClaudeAdapter(`${home}/.claude/projects`),
     new CodexAdapter(`${home}/.codex/sessions`),
     new PiAdapter(`${home}/.pi/agent/sessions`),
+    new OmpAdapter(`${home}/.omp/agent/sessions`),
   ];
 };
+
+function cliContextAssertion<T extends ContextFeedbackInput | ContextOutcomeInput>(input: T): T {
+  return {
+    ...input,
+    actor: { kind: "tool", name: "chatlog-cli" },
+    actorAuthority: "tool",
+  } as T;
+}
+const CLI_JSON_INPUT_MAX_BYTES = 1_048_576;
+type CliJsonResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: { code: "invalid-input"; message: string } };
+
+async function readCliJson(path: string, label: string): Promise<CliJsonResult> {
+  try {
+    const content = await readBoundedFile(resolve(path), CLI_JSON_INPUT_MAX_BYTES, `${label} JSON`);
+    if (!content.ok)
+      return {
+        ok: false,
+        error: {
+          code: "invalid-input",
+          message: `could not read ${label}: ${content.error.message}`,
+        },
+      };
+    return { ok: true, value: JSON.parse(content.value.text) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid-input",
+        message: `${label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+}
+
+async function readContextGateJson(
+  path: string,
+): Promise<
+  { ok: true; value: unknown } | { ok: false; error: { code: "invalid-input"; message: string } }
+> {
+  const decoded = await readClosedLoopArtifactFile(path);
+  return decoded.ok
+    ? decoded
+    : {
+        ok: false,
+        error: {
+          code: "invalid-input",
+          message: `could not decode context gate: ${decoded.error}`,
+        },
+      };
+}
+
 if (command === "ingest") {
   console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
 } else if (command === "preview") {
@@ -363,8 +432,10 @@ if (command === "ingest") {
     } else if (args[0] === "migrate") {
       result = await applyInsightMigration(root);
     } else {
-      const commandInput = (await Bun.file(resolve(args[0])).json()) as InsightCommandInput;
-      result = await applyInsightCommand(root, commandInput);
+      const commandInput = await readCliJson(args[0], "insight command");
+      result = commandInput.ok
+        ? await applyInsightCommand(root, commandInput.value as InsightCommandInput)
+        : commandInput;
     }
   } else {
     result = {
@@ -372,6 +443,102 @@ if (command === "ingest") {
       error: {
         code: "invalid-insight-command",
         message: "usage: chatlog insight <migrate|preview|apply|current|recompile>",
+      },
+    };
+  }
+  console.log(JSON.stringify(result, null, 2));
+  if (typeof result === "object" && result !== null && "ok" in result && result.ok === false)
+    process.exitCode = 1;
+} else if (command === "context") {
+  const plane = new ContextPlane(root);
+  let result: unknown;
+  if (subcommand === "start" && args[0]) {
+    const decoded = await readCliJson(args[0], "context start input");
+    result = decoded.ok
+      ? await plane.startSession(decoded.value as StartContextPlaneSessionInput)
+      : decoded;
+  } else if (subcommand === "list" && args.length === 0) {
+    result = await plane.listSessions();
+  } else if (subcommand === "events" && args[0]) {
+    result = await readContextEvents(root, { contextSessionId: args[0] });
+  } else if (subcommand === "prepare" && args[0]) {
+    const decoded = await readCliJson(args[0], "context prepare input");
+    result = decoded.ok ? await plane.prepare(decoded.value as PrepareContextInput) : decoded;
+  } else if (subcommand === "authorize" && args[0]) {
+    const gate = await readContextGateJson(resolve(args[0]));
+    result = gate.ok ? await authorizeContextRelease(root, gate.value) : gate;
+  } else if (subcommand === "deliver" && args[0]) {
+    const decoded = await readCliJson(args[0], "context deliver input");
+    result = decoded.ok ? await plane.deliver(decoded.value as DeliverContextInput) : decoded;
+  } else if (subcommand === "recall" && args[0]) {
+    const decoded = await readCliJson(args[0], "context recall input");
+    if (!decoded.ok) {
+      result = decoded;
+    } else {
+      const data = new McpData(root);
+      try {
+        const recalled = await data.boundedRecall(decoded.value as Record<string, unknown>);
+        result = isMcpDataFailure(recalled)
+          ? {
+              ok: false,
+              error: { code: "recall-failed", message: recalled.error.message },
+            }
+          : { ok: true, value: recalled };
+      } catch (error) {
+        result = {
+          ok: false,
+          error: {
+            code: "recall-failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        };
+      } finally {
+        data.close();
+      }
+    }
+  } else if (subcommand === "confirm" && args[0] && args[1] && args[2]) {
+    const receiptEvidence = args[2] as ContextReceiptEvidence;
+    if (
+      !["hook-output", "tool-result", "prompt-artifact", "provider-acknowledgment"].includes(
+        receiptEvidence,
+      )
+    )
+      throw new Error("context receipt evidence is not recognized");
+    const preparedInput = await readCliJson(args[0], "context prepared input");
+    const receiptInput = args[3]
+      ? await readCliJson(args[3], "context receipt input")
+      : ({ ok: true, value: {} } as const);
+    if (!preparedInput.ok || !receiptInput.ok) {
+      result = !preparedInput.ok ? preparedInput : receiptInput;
+    } else {
+      const prepared = preparedInput.value as PreparedContext;
+      const releaseGateHash = args[1];
+      const receipt = receiptInput.value as Record<string, unknown>;
+      const input: ConfirmContextEmissionInput = {
+        prepared,
+        releaseGateHash,
+        receiptEvidence,
+        receipt,
+      };
+      result = await plane.confirmEmission(input);
+    }
+  } else if (subcommand === "feedback" && args[0]) {
+    const decoded = await readCliJson(args[0], "context feedback input");
+    result = decoded.ok
+      ? await plane.feedback(cliContextAssertion(decoded.value as ContextFeedbackInput))
+      : decoded;
+  } else if (subcommand === "outcome" && args[0]) {
+    const decoded = await readCliJson(args[0], "context outcome input");
+    result = decoded.ok
+      ? await plane.outcome(cliContextAssertion(decoded.value as ContextOutcomeInput))
+      : decoded;
+  } else {
+    result = {
+      ok: false,
+      error: {
+        code: "invalid-context-command",
+        message:
+          "usage: chatlog context <start <session.json>|list|events <session-id>|prepare <request.json>|authorize <gate.json>|deliver <request.json>|recall <request.json>|confirm <prepared.json> <gate-hash> <receipt-evidence> [receipt.json]|feedback <feedback.json>|outcome <outcome.json>>",
       },
     };
   }
@@ -391,6 +558,6 @@ if (command === "ingest") {
   console.log(JSON.stringify(await emitVault(root, outputDir, { limit, since }), null, 2));
 } else {
   throw new Error(
-    "usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|memory|insight|vault>",
+    "usage: bun run src/cli.ts <ingest|preview|import|receipts|source|derive|refine|query|bridge|memory|insight|context|vault>",
   );
 }

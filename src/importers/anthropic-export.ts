@@ -1,9 +1,10 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
 import { projectConversation } from "../conversation-projection";
-import { deriveCorpus, type DeriveSummary } from "../derive";
+import { validateBoundedRecord } from "../bounded-input";
 import { normalizeConversationDomain } from "../domain";
+import { deriveCorpus, type DeriveSummary } from "../derive";
 import { persistEventBatch } from "../event-store";
 import {
   capture,
@@ -13,9 +14,11 @@ import {
   makeSemanticLoss,
   redactedHash,
   type AgentEventEnvelope,
+  type CaptureDisposition,
   type EventBatch,
 } from "../events";
 import { redact } from "../redact";
+import type { Conversation, ConversationDomain } from "../types";
 import { manifestSourcesHash, writeImportReceipt, type ImportReceipt } from "../import-receipts";
 import { withIngestLock } from "../lock";
 import { refineCorpus, type RefinerySummary } from "../refinery";
@@ -25,7 +28,28 @@ import {
   persistSourceReceipt,
   persistUnknownShapeNominations,
 } from "../source-receipts";
-import type { Conversation, ConversationDomain } from "../types";
+import {
+  EXPORT_MAX_ARCHIVE_BYTES,
+  EXPORT_MAX_CORPUS_OBJECT_BYTES,
+  EXPORT_MAX_FILE_BYTES,
+  EXPORT_MAX_MANIFEST_BYTES,
+  EXPORT_MAX_MEMBER_BYTES,
+  EXPORT_MAX_STDERR_BYTES,
+  EXPORT_MAX_TOTAL_BYTES,
+  ExportFileTypeError,
+  ExportLimitError,
+  type ExportLimitFailure,
+  readBoundedFile,
+  readBoundedTextStream,
+} from "./export-limits";
+export {
+  EXPORT_MAX_ARCHIVE_BYTES as ANTHROPIC_MAX_ARCHIVE_BYTES,
+  EXPORT_MAX_CORPUS_OBJECT_BYTES as ANTHROPIC_MAX_CORPUS_OBJECT_BYTES,
+  EXPORT_MAX_FILE_BYTES as ANTHROPIC_MAX_FILE_BYTES,
+  EXPORT_MAX_MANIFEST_BYTES as ANTHROPIC_MAX_MANIFEST_BYTES,
+  EXPORT_MAX_MEMBER_BYTES as ANTHROPIC_MAX_MEMBER_BYTES,
+  EXPORT_MAX_TOTAL_BYTES as ANTHROPIC_MAX_TOTAL_BYTES,
+} from "./export-limits";
 export class AnthropicExportError extends Error {
   readonly code = "anthropic-export-invalid";
 }
@@ -33,6 +57,22 @@ export class AnthropicExportError extends Error {
 function failClosed(message: string, cause?: unknown): never {
   throw new AnthropicExportError(message, cause === undefined ? undefined : { cause });
 }
+export const ANTHROPIC_MAX_CONVERSATIONS = 4_096;
+export const ANTHROPIC_MAX_MESSAGES_PER_CONVERSATION = 100_000;
+export const ANTHROPIC_MAX_CONTENT_BLOCKS_PER_MESSAGE = 100_000;
+export const ANTHROPIC_MAX_ATTACHMENTS_PER_MESSAGE = 16_384;
+export const ANTHROPIC_MAX_FILES_PER_MESSAGE = 16_384;
+export const ANTHROPIC_MAX_ATTACHMENTS = 200_000;
+export const ANTHROPIC_MAX_FILES = 200_000;
+export const ANTHROPIC_MAX_EMITTED_EVENTS = 200_000;
+export const ANTHROPIC_MAX_SEMANTIC_LOSSES = 32_768;
+const ANTHROPIC_RECORD_LIMITS = {
+  maxDepth: 32,
+  maxKeys: 500_000,
+  maxArrayItems: ANTHROPIC_MAX_CONTENT_BLOCKS_PER_MESSAGE,
+  maxStringLength: 4 * 1024 * 1024,
+  maxBytes: EXPORT_MAX_MEMBER_BYTES,
+} as const;
 
 interface ExportContentBlock {
   type?: string;
@@ -142,25 +182,94 @@ function sha256(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
 }
 
-async function readExportJson(path: string, member: string): Promise<string> {
-  const source = resolve(path);
-  const info = await stat(source);
-  if (info.isDirectory()) return readFile(join(source, member), "utf8");
-  if (extname(source).toLowerCase() !== ".zip")
-    failClosed("Anthropic export must be a directory or .zip archive");
+function boundedFailure(error: ExportLimitFailure): never {
+  return failClosed(error.message, error);
+}
 
-  const child = Bun.spawn(["unzip", "-p", source, member], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [text, error, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0)
-    failClosed(`cannot read ${member} from Anthropic export: ${redact(error.trim())}`);
-  return text;
+function rejectUnknown<T>(error: unknown): Promise<T> {
+  return Promise.reject(error);
+}
+
+async function readExportJson(path: string, member: string): Promise<string> {
+  try {
+    const source = resolve(path);
+    const info = await lstat(source);
+    if (info.isDirectory()) {
+      const contentResult = await readBoundedFile(
+        join(source, member),
+        EXPORT_MAX_FILE_BYTES,
+        `${source}#${member}`,
+        source,
+      );
+      if (!contentResult.ok) return boundedFailure(contentResult.error);
+      const content = contentResult.value;
+      if (content.bytes > EXPORT_MAX_TOTAL_BYTES)
+        return boundedFailure(
+          new ExportLimitError("total", EXPORT_MAX_TOTAL_BYTES, content.bytes, source),
+        );
+      return content.text;
+    }
+    if (extname(source).toLowerCase() !== ".zip")
+      failClosed("Anthropic export must be a directory or .zip archive");
+    if (!info.isFile()) failClosed(`${source}: Anthropic archive is not a regular file`);
+    if (info.size > EXPORT_MAX_ARCHIVE_BYTES)
+      return boundedFailure(
+        new ExportLimitError("archive", EXPORT_MAX_ARCHIVE_BYTES, info.size, source),
+      );
+
+    const child = Bun.spawn(["unzip", "-p", source, member], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    let stopped = false;
+    const stop = (): void => {
+      if (stopped) return;
+      stopped = true;
+      child.kill();
+    };
+    try {
+      if (!child.stdout || !child.stderr)
+        failClosed("Anthropic export reader did not provide pipes");
+      const [textResult, errorResult, exitCode] = await Promise.all([
+        readBoundedTextStream(
+          child.stdout,
+          EXPORT_MAX_MEMBER_BYTES,
+          "member",
+          `${source}#${member}`,
+          stop,
+        ),
+        readBoundedTextStream(
+          child.stderr,
+          EXPORT_MAX_STDERR_BYTES,
+          "stderr",
+          "Anthropic export diagnostic output",
+          stop,
+        ),
+        child.exited,
+      ]);
+      if (!textResult.ok) return boundedFailure(textResult.error);
+      if (!errorResult.ok) return boundedFailure(errorResult.error);
+      const text = textResult.value;
+      const error = errorResult.value;
+      if (exitCode !== 0)
+        failClosed(`cannot read ${member} from Anthropic export: ${redact(error.text.trim())}`);
+      if (text.bytes > EXPORT_MAX_TOTAL_BYTES)
+        return boundedFailure(
+          new ExportLimitError("total", EXPORT_MAX_TOTAL_BYTES, text.bytes, `${source}#${member}`),
+        );
+      return text.text;
+    } catch (error) {
+      child.kill();
+      await child.exited.catch(() => undefined);
+      if (error instanceof ExportLimitError || error instanceof ExportFileTypeError)
+        return boundedFailure(error);
+      return rejectUnknown(error);
+    }
+  } catch (error) {
+    if (error instanceof ExportLimitError || error instanceof ExportFileTypeError)
+      return boundedFailure(error);
+    return rejectUnknown(error);
+  }
 }
 
 function safeJson(value: unknown): string {
@@ -199,10 +308,57 @@ export function adaptAnthropicEventBatch(
   item: ExportConversation,
   domain: ConversationDomain = "general",
 ): EventBatch {
+  const bounded = validateBoundedRecord(item, sourcePath, ANTHROPIC_RECORD_LIMITS);
+  if (!bounded.ok) failClosed(bounded.error);
   if (!item.uuid) failClosed(`${sourcePath}: conversation without uuid`);
+  const messages = item.chat_messages ?? [];
+  if (!Array.isArray(messages))
+    failClosed(`${sourcePath}#${item.uuid}: chat_messages must be an array`);
+  if (messages.length > ANTHROPIC_MAX_MESSAGES_PER_CONVERSATION)
+    failClosed(
+      `${sourcePath}#${item.uuid}: Anthropic export exceeds the ${ANTHROPIC_MAX_MESSAGES_PER_CONVERSATION}-message limit`,
+    );
+  for (const [messageIndex, message] of messages.entries()) {
+    const boundedMessage = validateBoundedRecord(
+      message,
+      `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}`,
+      ANTHROPIC_RECORD_LIMITS,
+    );
+    if (!boundedMessage.ok) failClosed(boundedMessage.error);
+    if (
+      message.content !== undefined &&
+      message.content !== null &&
+      !Array.isArray(message.content)
+    )
+      failClosed(
+        `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}/content must be an array`,
+      );
+    if (
+      message.attachments !== undefined &&
+      message.attachments !== null &&
+      !Array.isArray(message.attachments)
+    )
+      failClosed(
+        `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}/attachments must be an array`,
+      );
+    if (message.files !== undefined && message.files !== null && !Array.isArray(message.files))
+      failClosed(`${sourcePath}#${item.uuid}/chat_messages/${messageIndex}/files must be an array`);
+    if ((message.content?.length ?? 0) > ANTHROPIC_MAX_CONTENT_BLOCKS_PER_MESSAGE)
+      failClosed(
+        `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}: Anthropic export exceeds the ${ANTHROPIC_MAX_CONTENT_BLOCKS_PER_MESSAGE}-content-block limit`,
+      );
+    if ((message.attachments?.length ?? 0) > ANTHROPIC_MAX_ATTACHMENTS_PER_MESSAGE)
+      failClosed(
+        `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}: Anthropic export exceeds the ${ANTHROPIC_MAX_ATTACHMENTS_PER_MESSAGE}-attachment limit`,
+      );
+    if ((message.files?.length ?? 0) > ANTHROPIC_MAX_FILES_PER_MESSAGE)
+      failClosed(
+        `${sourcePath}#${item.uuid}/chat_messages/${messageIndex}: Anthropic export exceeds the ${ANTHROPIC_MAX_FILES_PER_MESSAGE}-file limit`,
+      );
+  }
   const resolvedSource = `${resolve(sourcePath)}#conversations/${item.uuid}`;
   const sessionId = item.uuid;
-  const records: unknown[] = [item, ...(item.chat_messages ?? [])];
+  const records: unknown[] = [item, ...messages];
   const sourceBase = {
     provider: "anthropic",
     harness: "claude-web",
@@ -232,6 +388,10 @@ export function adaptAnthropicEventBatch(
     recordIndex: number,
     recoverable: boolean,
   ): void => {
+    if (semanticLoss.length >= ANTHROPIC_MAX_SEMANTIC_LOSSES)
+      failClosed(
+        `${sourcePath}#${item.uuid}: Anthropic export exceeds the ${ANTHROPIC_MAX_SEMANTIC_LOSSES}-semantic-loss limit`,
+      );
     semanticLoss.push(
       makeSemanticLoss({
         code,
@@ -261,10 +421,14 @@ export function adaptAnthropicEventBatch(
       occurredAt?: string;
       relations?: Record<string, unknown>;
       actor?: AgentEventEnvelope["actor"];
-      capture?: ReturnType<typeof capture>;
+      capture?: CaptureDisposition;
       scope?: AgentEventEnvelope["scope"];
     },
   ): AgentEventEnvelope => {
+    if (events.length >= ANTHROPIC_MAX_EMITTED_EVENTS)
+      failClosed(
+        `${sourcePath}#${item.uuid}: Anthropic export exceeds the ${ANTHROPIC_MAX_EMITTED_EVENTS}-event limit`,
+      );
     const source = makeObservedSource(
       {
         ...sourceBase,
@@ -532,14 +696,78 @@ async function atomicWrite(path: string, text: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
-async function loadManifest(path: string): Promise<CorpusManifest> {
+async function loadManifest(path: string, root: string): Promise<CorpusManifest> {
+  let info;
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as CorpusManifest;
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+      return { version: 1, sources: {} };
+    failClosed(
+      `cannot read Anthropic corpus manifest ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+  if (!info.isFile()) failClosed(`${path}: Anthropic corpus manifest is not a regular file`);
+  const contentResult = await readBoundedFile(
+    path,
+    EXPORT_MAX_MANIFEST_BYTES,
+    `${path} (Anthropic corpus manifest)`,
+    root,
+  );
+  if (!contentResult.ok) return boundedFailure(contentResult.error);
+  try {
+    const parsed = JSON.parse(contentResult.value.text) as CorpusManifest;
     if (parsed.version !== 1 || !parsed.sources) failClosed("unsupported corpus manifest");
     return parsed;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return { version: 1, sources: {} };
-    failClosed(error instanceof Error ? error.message : String(error), error);
+  } catch (error: unknown) {
+    if (error instanceof AnthropicExportError) throw error;
+    failClosed(
+      `cannot parse Anthropic corpus manifest ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+}
+
+async function readPriorConversation(
+  root: string,
+  contentHash: string,
+): Promise<Conversation | null> {
+  const path = join(root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`);
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+      return null;
+    failClosed(
+      `cannot read Anthropic prior corpus object ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+  if (!info.isFile()) failClosed(`${path}: Anthropic prior corpus object is not a regular file`);
+  const contentResult = await readBoundedFile(
+    path,
+    EXPORT_MAX_CORPUS_OBJECT_BYTES,
+    `${path} (Anthropic prior corpus object)`,
+    root,
+  );
+  if (!contentResult.ok) return boundedFailure(contentResult.error);
+  try {
+    return JSON.parse(contentResult.value.text) as Conversation;
+  } catch (error: unknown) {
+    failClosed(
+      `cannot parse Anthropic prior corpus object ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
   }
 }
 
@@ -550,13 +778,17 @@ export async function previewAnthropicExport(
 ): Promise<AnthropicPreviewSummary> {
   const domain = normalizeConversationDomain(options.domain ?? "general");
   const resolved = resolve(sourcePath);
-  const sourceInfo = await stat(resolved);
+  const sourceInfo = await lstat(resolved);
   const exportText = await readExportJson(resolved, "conversations.json");
   const conversations = JSON.parse(exportText) as ExportConversation[];
   if (!Array.isArray(conversations))
     failClosed("Anthropic conversations.json must contain an array");
+  if (conversations.length > ANTHROPIC_MAX_CONVERSATIONS)
+    failClosed(
+      `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_CONVERSATIONS}-conversation limit`,
+    );
 
-  const manifest = await loadManifest(join(root, "corpus", "manifest.json"));
+  const manifest = await loadManifest(join(root, "corpus", "manifest.json"), root);
   const proposed: Array<{ sourcePath: string; contentHash: string }> = [];
   const observed: Array<{
     sourcePath: string;
@@ -578,15 +810,32 @@ export async function previewAnthropicExport(
     let conversation: Conversation;
     try {
       conversation = adaptAnthropicConversation(resolved, item, domain);
-    } catch {
+    } catch (error) {
+      if (error instanceof AnthropicExportError) throw error;
       invalid++;
       continue;
     }
     importable++;
+    let itemAttachments = 0;
+    let itemFiles = 0;
     for (const message of item.chat_messages ?? []) {
-      attachments += message.attachments?.length ?? 0;
-      files += message.files?.length ?? 0;
+      itemAttachments += message.attachments?.length ?? 0;
+      itemFiles += message.files?.length ?? 0;
     }
+    if (attachments > ANTHROPIC_MAX_ATTACHMENTS - itemAttachments)
+      failClosed(
+        `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_ATTACHMENTS}-attachment export limit`,
+      );
+    if (files > ANTHROPIC_MAX_FILES - itemFiles)
+      failClosed(
+        `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_FILES}-file export limit`,
+      );
+    if (turns > ANTHROPIC_MAX_EMITTED_EVENTS - conversation.turns.length)
+      failClosed(
+        `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_EMITTED_EVENTS}-turn export limit`,
+      );
+    attachments += itemAttachments;
+    files += itemFiles;
     turns += conversation.turns.length;
     timestamps.push(conversation.startedAt, conversation.endedAt);
     proposed.push({
@@ -604,28 +853,20 @@ export async function previewAnthropicExport(
     } else {
       let domainOnly = false;
       try {
-        const previousConversation = JSON.parse(
-          await readFile(
-            join(
-              root,
-              "corpus",
-              "objects",
-              previous.contentHash.slice(0, 2),
-              `${previous.contentHash}.json`,
-            ),
-            "utf8",
-          ),
-        ) as Conversation;
-        const previousDomain = normalizeConversationDomain(
-          previousConversation.domain ?? "general",
-        );
-        domainOnly =
-          previousDomain !== domain &&
-          adaptAnthropicConversation(resolved, item, previousDomain).contentHash ===
-            previous.contentHash;
-      } catch {
-        // A missing prior object means preview cannot prove this is a
-        // domain-only change, so it remains conservatively "changed".
+        const previousConversation = await readPriorConversation(root, previous.contentHash);
+        if (previousConversation) {
+          const previousDomain = normalizeConversationDomain(
+            previousConversation.domain ?? "general",
+          );
+          domainOnly =
+            previousDomain !== domain &&
+            adaptAnthropicConversation(resolved, item, previousDomain).contentHash ===
+              previous.contentHash;
+        }
+      } catch (error) {
+        if (error instanceof AnthropicExportError) throw error;
+        // A missing or unreadable prior object means preview cannot prove
+        // this is a domain-only change, so it remains conservatively changed.
       }
       if (domainOnly) {
         reclassified++;
@@ -701,16 +942,20 @@ export async function importAnthropicExport(
   return withIngestLock(root, async () => {
     const domain = normalizeConversationDomain(options.domain ?? "general");
     const resolved = resolve(sourcePath);
-    const source = await stat(resolved);
+    const source = await lstat(resolved);
     const exportText = await readExportJson(resolved, "conversations.json");
     const sourceContentHash = sha256(exportText);
     const conversations = JSON.parse(exportText) as ExportConversation[];
     if (!Array.isArray(conversations))
       failClosed("Anthropic conversations.json must contain an array");
+    if (conversations.length > ANTHROPIC_MAX_CONVERSATIONS)
+      failClosed(
+        `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_CONVERSATIONS}-conversation limit`,
+      );
 
     const corpusDir = join(root, "corpus");
     const manifestPath = join(corpusDir, "manifest.json");
-    const manifest = await loadManifest(manifestPath);
+    const manifest = await loadManifest(manifestPath, root);
     const beforeHash = manifestSourcesHash(manifest.sources);
     const beforeSources = Object.keys(manifest.sources).length;
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
@@ -726,15 +971,41 @@ export async function importAnthropicExport(
     };
     let added = 0;
     let replaced = 0;
+    let totalEvents = 0;
+    let totalSemanticLosses = 0;
 
     try {
       await reconcileSourceAuthority(root, db, manifest.sources);
       for (const item of conversations) {
-        for (const message of item.chat_messages ?? []) {
-          summary.attachments += message.attachments?.length ?? 0;
-          summary.files += message.files?.length ?? 0;
-        }
         const batch = adaptAnthropicEventBatch(resolved, item, domain);
+        if (totalEvents > ANTHROPIC_MAX_EMITTED_EVENTS - batch.events.length)
+          failClosed(
+            `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_EMITTED_EVENTS}-event export limit`,
+          );
+        if (totalSemanticLosses > ANTHROPIC_MAX_SEMANTIC_LOSSES - batch.semanticLoss.length)
+          failClosed(
+            `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_SEMANTIC_LOSSES}-semantic-loss export limit`,
+          );
+        totalEvents += batch.events.length;
+        totalSemanticLosses += batch.semanticLoss.length;
+        const itemAttachments = (item.chat_messages ?? []).reduce(
+          (sum, message) => sum + (message.attachments?.length ?? 0),
+          0,
+        );
+        const itemFiles = (item.chat_messages ?? []).reduce(
+          (sum, message) => sum + (message.files?.length ?? 0),
+          0,
+        );
+        if (summary.attachments > ANTHROPIC_MAX_ATTACHMENTS - itemAttachments)
+          failClosed(
+            `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_ATTACHMENTS}-attachment export limit`,
+          );
+        if (summary.files > ANTHROPIC_MAX_FILES - itemFiles)
+          failClosed(
+            `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_FILES}-file export limit`,
+          );
+        summary.attachments += itemAttachments;
+        summary.files += itemFiles;
         const batchHash = await persistEventBatch(root, batch);
         const conversation = projectConversation(batch);
         const sourceReceipt = buildSourceReceipt({
@@ -744,6 +1015,10 @@ export async function importAnthropicExport(
         });
         await persistSourceReceipt(root, sourceReceipt);
         await persistUnknownShapeNominations(root, [batch], sourceReceipt.source.hash);
+        if (summary.turns > ANTHROPIC_MAX_EMITTED_EVENTS - conversation.turns.length)
+          failClosed(
+            `${resolved}: Anthropic export exceeds the ${ANTHROPIC_MAX_EMITTED_EVENTS}-turn export limit`,
+          );
         summary.turns += conversation.turns.length;
         const previous = manifest.sources[conversation.sourcePath];
         if (

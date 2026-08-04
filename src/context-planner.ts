@@ -24,6 +24,15 @@ function policyHash(session: ContextSession): string {
   );
 }
 
+export function contextBundleHash(bundle: Omit<ContextBundle, "bundleHash">): string {
+  return sha256(stableStringify(bundle));
+}
+
+export function validateContextBundleHash(bundle: ContextBundle): boolean {
+  const { bundleHash: actual, ...withoutHash } = bundle;
+  return actual === contextBundleHash(withoutHash);
+}
+
 export function planContext(
   request: ContextRequest,
   session: ContextSession,
@@ -118,6 +127,9 @@ export function planContext(
   };
   return {
     ok: true,
-    value: { ...bundleWithoutHash, bundleHash: sha256(stableStringify(bundleWithoutHash)) },
+    value: {
+      ...bundleWithoutHash,
+      bundleHash: contextBundleHash(bundleWithoutHash),
+    },
   };
 }

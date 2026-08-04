@@ -41,6 +41,41 @@ test("mobile navigation exposes state and supports dismissal", async () => {
   expect(app).toContain('!event.target.closest("#primary-sidebar")');
 });
 
+test("Context view consumes the governed read and feedback contracts", async () => {
+  const [html, app, css] = await Promise.all([
+    readFile(join(publicRoot, "index.html"), "utf8"),
+    readFile(join(publicRoot, "app.js"), "utf8"),
+    readFile(join(publicRoot, "styles.css"), "utf8"),
+  ]);
+
+  expect(html).toContain('data-view="context"');
+  expect(html).toContain('id="view-context"');
+  expect(html).toContain('id="context-release"');
+  expect(html).toContain('id="context-insights"');
+  expect(html).toContain('id="context-sessions"');
+  expect(html).toContain("Loading governed context");
+
+  expect(app).toContain('api("/api/context")');
+  expect(app).toContain('api("/api/context/feedback"');
+  expect(app).toContain('"X-Chatlog-Context": "1"');
+  expect(app).toContain("contextSessionId,");
+  expect(app).toContain("interventionEventId,");
+  expect(app).toContain("operatorId,");
+  for (const signal of ["helpful", "harmful", "stale", "mis-scoped", "irrelevant", "incorrect"]) {
+    expect(app).toContain(`["${signal}",`);
+  }
+  expect(app).toContain("Provider-observed outcome");
+  expect(app).toContain("Agent assertion");
+  expect(app).toContain("Record human feedback for this delivered event");
+  expect(app).toContain("Context plane unavailable");
+
+  expect(css).toContain(".context-workspace");
+  expect(css).toContain(".context-event-ledger");
+  expect(css).toContain(".context-budget-row progress");
+  expect(css).toContain(".context-feedback-grid");
+  expect(css).toContain("min-height: var(--control-min)");
+});
+
 test("Memory Lab is a standalone mobile-first Foldkit surface", async () => {
   const appRoot = join(import.meta.dir, "../apps/workbench-web");
   const [html, main, css, config, memoryLab] = await Promise.all([

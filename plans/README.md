@@ -140,14 +140,18 @@ Do not start Plan 001 until these conditions are true:
 
 ## Execution order and status
 
-| Plan                                       | Title                                                     | Priority | Effort | Depends on                             | Status |
-| ------------------------------------------ | --------------------------------------------------------- | -------- | ------ | -------------------------------------- | ------ |
-| [001](001-canonical-agent-events.md)       | Make agent events the canonical evidence model            | P1       | L      | Existing source-lifecycle prerequisite | DONE   |
-| [002](002-adapter-conformance-and-loss.md) | Enforce provider conformance and semantic-loss accounting | P1       | L      | 001                                    | DONE   |
-| [003](003-expand-provider-sources.md)      | Add ChatGPT export and generic event import               | P2       | L      | 002                                    | DONE   |
-| [004](004-governed-insight-ledger.md)      | Add a governed temporal insight ledger                    | P1       | L      | 002                                    | DONE   |
-| [005](005-context-intervention-loop.md)    | Connect context delivery to observed outcomes             | P1       | L      | 004                                    | TODO   |
-| [006](006-bounded-recall-and-advisor.md)   | Add bounded recall and shadow supervision                 | P3       | L      | 005 and a positive closed-loop gate    | TODO   |
+| Plan                                          | Title                                                     | Priority | Effort | Depends on                             | Status |
+| --------------------------------------------- | --------------------------------------------------------- | -------- | ------ | -------------------------------------- | ------ |
+| [001](001-canonical-agent-events.md)          | Make agent events the canonical evidence model            | P1       | L      | Existing source-lifecycle prerequisite | DONE   |
+| [002](002-adapter-conformance-and-loss.md)    | Enforce provider conformance and semantic-loss accounting | P1       | L      | 001                                    | DONE   |
+| [003](003-expand-provider-sources.md)         | Add ChatGPT export and generic event import               | P2       | L      | 002                                    | DONE   |
+| [004](004-governed-insight-ledger.md)         | Add a governed temporal insight ledger                    | P1       | L      | 002                                    | DONE   |
+| [005](005-context-intervention-loop.md)       | Connect context delivery to observed outcomes             | P1       | L      | 004                                    | DONE   |
+| [006](006-bounded-recall-and-advisor.md)      | Add bounded recall and shadow supervision                 | P3       | L      | 005 and a positive closed-loop gate    | DONE   |
+| [007](007-observation-reflection-research.md) | Evaluate observation and reflection memory                | —        | —      | 005–006 and operator authorization     | FUTURE |
+
+Plan 006 used the operator exception in its [implementation decision](006-bounded-recall-and-advisor.md#implementation-decision).
+The exception does not authorize broader exposure or blocking authority.
 
 Plans 003 and 004 can run in parallel after Plan 002. Plan 005 needs only Plan 004.
 

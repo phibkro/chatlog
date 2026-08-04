@@ -408,19 +408,19 @@ Add deterministic fake provider capabilities. Do not call hosted providers in pe
 
 ## Done criteria
 
-- [ ] Every context proposal, rendering, emission, recall, and failure has a typed event.
-- [ ] Recall evaluates session, scope, domain, freshness, and budget.
-- [ ] Provider delivery uses one target-neutral bundle and capability contract.
-- [ ] Every returned context item has selection and policy provenance.
-- [ ] Feedback is actor-typed and cannot mutate current memory directly.
-- [ ] Outcomes link to intervention lineage with an evidence grade.
-- [ ] Self-repetition cannot count as independent reinforcement.
-- [ ] Shadow and crossover evaluations produce source-bound recommendations.
-- [ ] Shadow, evidence-only, and limited-injection stage reviews pass before the next exposure stage starts.
-- [ ] `bun run gate:verify -- <evaluation-artifact>` validates the limited-injection keep gate.
-- [ ] No provider-native store is forged.
-- [ ] `bun run check` exits 0.
-- [ ] `plans/README.md` marks Plan 005 `DONE`.
+- [x] Every context proposal, rendering, emission, recall, and failure has a typed event.
+- [x] Recall evaluates session, scope, domain, freshness, and budget.
+- [x] Provider delivery uses one target-neutral bundle and capability contract.
+- [x] Every returned context item has selection and policy provenance.
+- [x] Feedback is actor-typed and cannot mutate current memory directly.
+- [x] Outcomes link to intervention lineage with an evidence grade.
+- [x] Self-repetition cannot count as independent reinforcement.
+- [x] Shadow and crossover evaluations produce source-bound recommendations.
+- [x] Shadow, evidence-only, and limited-injection stage reviews pass before the next exposure stage starts.
+- [x] `bun run gate:verify -- <evaluation-artifact>` validates the limited-injection keep gate.
+- [x] No provider-native store is forged.
+- [x] `bun run check` exits 0.
+- [x] `plans/README.md` marks Plan 005 `DONE`.
 
 ## STOP conditions
 

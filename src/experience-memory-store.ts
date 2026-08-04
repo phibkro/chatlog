@@ -267,7 +267,7 @@ export async function readPublishedMemory(
     } catch (error: unknown) {
       const code =
         typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
-      if (code !== "ENOENT") throw error;
+      if (code !== "ENOENT") return storageFailure(error);
     }
     const directory = join(resolve(root), "memory");
     const pointerInput: unknown = JSON.parse(

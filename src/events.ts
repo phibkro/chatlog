@@ -20,6 +20,23 @@ export const SEMANTIC_LOSS_CODE_SET: ReadonlySet<string> = new Set(SEMANTIC_LOSS
 
 export const ACTIVE_SOURCE_AUTHORITY_VERSION = "chatlog-active-sources-v1";
 
+export const CONTEXT_EVENT_KINDS = [
+  "context.bundle.proposed",
+  "context.bundle.rendered",
+  "context.bundle.emitted",
+  "context.bundle.acknowledged",
+  "context.recall.returned",
+  "context.recall.branch.started",
+  "context.recall.branch.completed",
+  "context.recall.branch.failed",
+  "context.recall.branch.cancelled",
+  "context.recall.terminated",
+  "context.procedure.returned",
+  "context.advisor.advice",
+  "context.delivery.failed",
+  "context.feedback.asserted",
+  "context.outcome.observed",
+] as const;
 export const AGENT_EVENT_KINDS = [
   "session.started",
   "session.ended",
@@ -38,9 +55,14 @@ export const AGENT_EVENT_KINDS = [
   "human.correction",
   "evaluation.recorded",
   "provider.opaque",
+  ...CONTEXT_EVENT_KINDS,
 ] as const;
 
 export type AgentEventKind = (typeof AGENT_EVENT_KINDS)[number];
+
+export const CONTEXT_EVENT_PROCESSOR = "chatlog-context-events";
+export const CONTEXT_EVENT_RECIPE = "chatlog-context-intervention-v1";
+export type ContextEventKind = (typeof CONTEXT_EVENT_KINDS)[number];
 export type CaptureDispositionName = "normalized" | "opaque" | "redacted" | "omitted";
 
 export interface CaptureDisposition {
@@ -201,7 +223,7 @@ export class EventValidationError extends Error {
   override readonly name = "EventValidationError";
 }
 
-function invalidEvent(message: string): never {
+export function invalidEvent(message: string): never {
   throw new EventValidationError(message);
 }
 
@@ -396,6 +418,15 @@ function validateOrigin(value: unknown, label: string): EventOrigin {
   }
   invalidEvent(`${label}.kind must be observed or chatlog`);
 }
+function validateContextEventOrigin(origin: EventOrigin, kind: string, label: string): void {
+  if (!CONTEXT_EVENT_KINDS.includes(kind as ContextEventKind)) return;
+  if (origin.kind !== "chatlog")
+    invalidEvent(`${label}.kind must be chatlog for reserved context event kinds`);
+  if (origin.processor !== CONTEXT_EVENT_PROCESSOR)
+    invalidEvent(`${label}.processor must be ${CONTEXT_EVENT_PROCESSOR}`);
+  if (origin.recipe !== CONTEXT_EVENT_RECIPE)
+    invalidEvent(`${label}.recipe must be ${CONTEXT_EVENT_RECIPE}`);
+}
 
 function validateBatchOrigin(value: unknown, label: string): EventBatchOrigin {
   if (!isRecord(value)) invalidEvent(`${label} must be an object`);
@@ -497,7 +528,8 @@ export function validateAgentEvent(value: unknown, label = "event"): AgentEventE
   if (!isRecord(value.scope)) invalidEvent(`${label}.scope must be an object`);
   for (const key of ["sessionId", "conversationId", "branchId", "project", "cwd"])
     if (value.scope[key] !== undefined) assertString(value.scope[key], `${label}.scope.${key}`);
-  validateOrigin(value.origin, `${label}.origin`);
+  const origin = validateOrigin(value.origin, `${label}.origin`);
+  validateContextEventOrigin(origin, value.kind, `${label}.origin`);
   validateRelations(value.relations, `${label}.relations`);
   if (!isRecord(value.payload)) invalidEvent(`${label}.payload must be an object`);
   const normalizedCapture = validateCapture(value.capture, `${label}.capture`);

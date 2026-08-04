@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readContextEvents, stageContextEvent } from "../src/context-events";
+import { validateContextRequest } from "../src/context-policy";
 import { planContext } from "../src/context-planner";
 import {
   commitContextBundleBudget,
+  contextSessionIdentity,
   createContextSession,
   listContextSessions,
   openContextSession,
+  readContextSession,
 } from "../src/context-session";
 import type {
   ContextCandidate,
@@ -142,6 +146,70 @@ test("context planning is deterministic and rejects mis-scoped candidates with a
   expect(first.value.policyHash).toHaveLength(64);
   expect(first.value.bundleHash).toHaveLength(64);
 });
+test("context planning rejects fixed instruction tokens that could credit the budget", () => {
+  const session = sessionFor("native-negative-fixed-tokens");
+  const input = request(session.contextSessionId);
+
+  for (const fixedInstructionTokens of [-1, 0.5, Number.NaN]) {
+    expect(planContext({ ...input, fixedInstructionTokens }, session, [])).toMatchObject({
+      ok: false,
+      error: { code: "invalid-request" },
+    });
+  }
+});
+test("context planning rejects a malformed freshness boundary", () => {
+  const session = sessionFor("native-invalid-freshness");
+  const input = request(session.contextSessionId);
+
+  expect(planContext({ ...input, freshAfter: "not-a-timestamp" }, session, [])).toMatchObject({
+    ok: false,
+    error: { code: "invalid-request" },
+  });
+});
+
+test("context candidates stay within the request path boundary", () => {
+  const session = sessionFor("native-path-scope");
+  const input = request(session.contextSessionId);
+  const result = planContext(input, session, [
+    candidate("ancestor", {
+      scope: { ...candidate("scope").scope, path: "/repo" },
+    }),
+    candidate("descendant", {
+      scope: { ...candidate("scope").scope, path: "/repo/src/module" },
+    }),
+    candidate("prefix-collision", {
+      scope: { ...candidate("scope").scope, path: "/repo/src-private" },
+    }),
+  ]);
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.value.items.map((item) => item.id)).toEqual(["descendant"]);
+  expect(result.value.omissions).toContainEqual({
+    itemId: "ancestor",
+    reason: "path-mismatch",
+  });
+  expect(result.value.omissions).toContainEqual({
+    itemId: "prefix-collision",
+    reason: "path-mismatch",
+  });
+});
+
+test("context requests cannot widen repository or neutral session dimensions", () => {
+  const session = sessionFor("native-scope-binding");
+  const input = request(session.contextSessionId);
+  for (const scope of [
+    { ...input.scope, repository: "/other" },
+    { ...input.scope, user: "user-1" },
+    { ...input.scope, organization: "org-1" },
+    { ...input.scope, tool: "tool-1" },
+    { ...input.scope, itemPermissions: ["item-1"] },
+  ]) {
+    const result = validateContextRequest({ ...input, scope }, session);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("scope-denied");
+  }
+});
 
 test("opening the same native session preserves its initial projection and policy pins", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-context-session-"));
@@ -181,6 +249,185 @@ test("opening the same native session preserves its initial projection and polic
   expect(second.value.selectionPolicyVersion).toBe("selection-v1");
 });
 
+test("a native session ID cannot be rebound to a different immutable identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-native-binding-"));
+  const initial: ContextSessionInput = {
+    nativeSessionId: "native-binding",
+    provider: "anthropic",
+    harness: "claude-code",
+    model: "claude-test",
+    role: "coding-agent",
+    projectIdentity: "/repo",
+    cwd: "/repo",
+    domainPolicy: ["coding"],
+    path: "/repo/src",
+    pinnedInsightProjectionHash: HASH_A,
+    pinnedEvidenceProjectionHash: HASH_B,
+    selectionPolicyVersion: "selection-v1",
+    deliveryPolicyVersion: "delivery-v1",
+    totalBudget: { tokens: 100, results: 4, latencyMs: 100, costUsd: 0 },
+    createdAt: AT,
+  };
+  const first = await openContextSession(root, initial);
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+
+  for (const change of [
+    { provider: "openai" },
+    { harness: "codex" },
+    { model: "other-model" },
+    { role: "reviewer" },
+    { projectIdentity: "/other-project" },
+    { cwd: "/other-project" },
+    { domainPolicy: ["research"] as string[] },
+    { path: "/repo/other" },
+  ] as const) {
+    const rebound = await openContextSession(root, {
+      ...initial,
+      ...change,
+      createdAt: "2026-08-04T12:00:00.000Z",
+    });
+    expect(rebound.ok).toBe(false);
+    if (rebound.ok) continue;
+    expect(rebound.error.code).toBe("session-conflict");
+  }
+});
+
+test("stored context sessions reject malformed exact fields instead of coercing them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-session-parser-"));
+  const input: ContextSessionInput = {
+    nativeSessionId: "native-parser",
+    provider: "anthropic",
+    harness: "claude-code",
+    model: "claude-test",
+    role: "coding-agent",
+    projectIdentity: "/repo",
+    cwd: "/repo",
+    domainPolicy: ["coding"],
+    path: "/repo/src",
+    pinnedInsightProjectionHash: HASH_A,
+    pinnedEvidenceProjectionHash: HASH_B,
+    selectionPolicyVersion: "selection-v1",
+    deliveryPolicyVersion: "delivery-v1",
+    totalBudget: { tokens: 100, results: 4, latencyMs: 100, costUsd: 0 },
+    createdAt: AT,
+  };
+  const opened = await openContextSession(root, input);
+  expect(opened.ok).toBe(true);
+  if (!opened.ok) return;
+  const path = join(root, "memory", "context-sessions", `${opened.value.contextSessionId}.json`);
+  const base = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const legacy = { ...base };
+  delete legacy.pendingEventBatchHashes;
+  delete legacy.consumedRecallHashes;
+  delete legacy.sessionNonce;
+  await writeFile(path, JSON.stringify(legacy));
+  const migrated = await readContextSession(root, opened.value.contextSessionId);
+  expect(migrated.ok).toBe(true);
+  if (migrated.ok) expect(migrated.value.pendingEventBatchHashes).toEqual([]);
+  const total = {
+    ...((base.budget as Record<string, unknown>).total as Record<string, unknown>),
+  };
+  const missingBudgetKey = { ...total };
+  delete missingBudgetKey.costUsd;
+  const extraBudgetKey = { ...total, unexpected: 0 };
+  const malformedCases = [
+    { ...base, budget: { ...(base.budget as object), total: missingBudgetKey } },
+    { ...base, budget: { ...(base.budget as object), total: extraBudgetKey } },
+    { ...base, target: { ...(base.target as object), provider: 42 } },
+    { ...base, domainPolicy: ["coding", 42] },
+    { ...base, consumedRecallHashes: [42] },
+    { ...base, extra: true },
+  ];
+  for (const malformed of malformedCases) {
+    await writeFile(path, JSON.stringify(malformed));
+    const parsed = await readContextSession(root, opened.value.contextSessionId);
+    expect(parsed.ok).toBe(false);
+  }
+  await writeFile(path, "{");
+  const malformedJson = await readContextSession(root, opened.value.contextSessionId);
+  expect(malformedJson.ok).toBe(false);
+});
+
+test("legacy anonymous sessions migrate a stable nonce in place", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-session-legacy-anonymous-"));
+  const input: ContextSessionInput = {
+    nativeSessionId: null,
+    provider: "openai",
+    harness: "codex",
+    model: "test-model",
+    role: "coding-agent",
+    projectIdentity: "/repo",
+    cwd: "/repo",
+    domainPolicy: ["coding"],
+    path: "/repo/src",
+    pinnedInsightProjectionHash: HASH_A,
+    pinnedEvidenceProjectionHash: HASH_B,
+    selectionPolicyVersion: "selection-v1",
+    deliveryPolicyVersion: "delivery-v1",
+    totalBudget: { tokens: 100, results: 4, latencyMs: 100, costUsd: 0 },
+    createdAt: AT,
+  };
+  const created = createContextSession(input);
+  expect(created.ok).toBe(true);
+  if (!created.ok) return;
+  const contextSessionId = contextSessionIdentity(input);
+  const legacy = { ...created.value } as Record<string, unknown>;
+  legacy.contextSessionId = contextSessionId;
+  delete legacy.sessionNonce;
+  const path = join(root, "memory", "context-sessions", `${contextSessionId}.json`);
+  await mkdir(join(root, "memory", "context-sessions"), { recursive: true });
+  await writeFile(path, JSON.stringify(legacy));
+
+  const first = await readContextSession(root, contextSessionId);
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  expect(first.value.contextSessionId).toBe(contextSessionId);
+  expect(first.value.nativeSessionId).toBeNull();
+  expect(first.value.sessionNonce).toBeString();
+  expect(first.value.sessionNonce).not.toHaveLength(0);
+  const persisted = await readFile(path, "utf8");
+  const persistedValue = JSON.parse(persisted) as Record<string, unknown>;
+  expect(persistedValue.contextSessionId).toBe(contextSessionId);
+  expect(persistedValue.sessionNonce).toBe(first.value.sessionNonce);
+
+  const second = await readContextSession(root, contextSessionId);
+  expect(second.ok).toBe(true);
+  if (!second.ok) return;
+  expect(second.value.contextSessionId).toBe(contextSessionId);
+  expect(second.value.sessionNonce).toBe(first.value.sessionNonce);
+  expect(await readFile(path, "utf8")).toBe(persisted);
+});
+
+test("anonymous context deliveries receive distinct session identities", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-anonymous-"));
+  const input: ContextSessionInput = {
+    nativeSessionId: null,
+    provider: "openai",
+    harness: "codex",
+    model: "model",
+    role: "coding-agent",
+    projectIdentity: "/repo",
+    cwd: "/repo",
+    domainPolicy: ["coding"],
+    path: "/repo",
+    pinnedInsightProjectionHash: HASH_A,
+    pinnedEvidenceProjectionHash: HASH_B,
+    selectionPolicyVersion: "selection-v1",
+    deliveryPolicyVersion: "delivery-v1",
+    totalBudget: { tokens: 100, results: 4, latencyMs: 100, costUsd: 0 },
+    createdAt: AT,
+  };
+  const first = await openContextSession(root, input);
+  const second = await openContextSession(root, input);
+
+  expect(first.ok).toBe(true);
+  expect(second.ok).toBe(true);
+  if (!first.ok || !second.ok) return;
+  expect(second.value.contextSessionId).not.toBe(first.value.contextSessionId);
+  expect(second.value.nativeSessionId).toBeNull();
+});
+
 test("high-risk inferred preferences remain shadow-only", () => {
   const session = sessionFor("native-2");
   const highRisk = candidate("inferred-preference", { riskClass: "high" });
@@ -206,6 +453,18 @@ test("high-risk inferred preferences remain shadow-only", () => {
   ]);
 });
 
+test("context with no lexical task match is omitted", () => {
+  const session = sessionFor("native-unrelated");
+  const unrelated = candidate("unrelated", {
+    scores: { lexical: 0, semantic: 0, temporal: 1, procedure: 1, total: 2 },
+  });
+  const planned = planContext(request(session.contextSessionId), session, [unrelated]);
+  expect(planned.ok).toBe(true);
+  if (!planned.ok) return;
+  expect(planned.value.items).toEqual([]);
+  expect(planned.value.omissions).toEqual([{ itemId: "unrelated", reason: "task-mismatch" }]);
+});
+
 test("committing a delivered bundle spends session budget exactly once", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-context-budget-"));
   const opened = await openContextSession(root, {
@@ -227,20 +486,131 @@ test("committing a delivered bundle spends session budget exactly once", async (
   });
   expect(opened.ok).toBe(true);
   if (!opened.ok) return;
-  const planned = planContext(request(opened.value.contextSessionId), opened.value, [
-    candidate("eligible"),
-  ]);
+  const planned = planContext(
+    { ...request(opened.value.contextSessionId), deliveryMode: "tool-recall" },
+    opened.value,
+    [candidate("eligible")],
+  );
   expect(planned.ok).toBe(true);
   if (!planned.ok) return;
 
-  const first = await commitContextBundleBudget(root, planned.value, AT);
-  const retry = await commitContextBundleBudget(root, planned.value, AT);
+  const rendered = await stageContextEvent(root, {
+    kind: "context.bundle.rendered",
+    contextSessionId: opened.value.contextSessionId,
+    idempotencyKey: `${planned.value.bundleHash}:context.bundle.rendered`,
+    actor: { kind: "system", id: "context-planner-test" },
+    bundleHash: planned.value.bundleHash,
+    inputHash: planned.value.inputHash,
+    inputHashes: [HASH_A, HASH_B],
+    policyHash: planned.value.policyHash,
+    bounds: { ...planned.value.budget },
+    payload: { itemIds: [planned.value.items[0]!.id], omissionCount: 0 },
+    occurredAt: AT,
+  });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) return;
+  const staged = await stageContextEvent(root, {
+    kind: "context.recall.returned",
+    contextSessionId: opened.value.contextSessionId,
+    idempotencyKey: `${planned.value.bundleHash}:context.recall.returned`,
+    actor: { kind: "system", id: "context-planner-test" },
+    bundleHash: planned.value.bundleHash,
+    itemId: planned.value.items[0]!.id,
+    inputHash: planned.value.inputHash,
+    inputHashes: [rendered.value.batchHash],
+    contentHash: planned.value.bundleHash,
+    candidateContentHash: HASH_A,
+    policyHash: planned.value.policyHash,
+    inputEventIds: [rendered.value.event.eventId],
+    bounds: { ...planned.value.budget },
+    payload: { receiptEvidence: "prompt-artifact" },
+    occurredAt: AT,
+  });
+  expect(staged.ok).toBe(true);
+  if (!staged.ok) return;
+  const forgedDelivery = await stageContextEvent(root, {
+    kind: "context.recall.returned",
+    contextSessionId: opened.value.contextSessionId,
+    idempotencyKey: `${planned.value.bundleHash}:context.recall.returned`,
+    actor: { kind: "system", id: "context-planner-test" },
+    bundleHash: planned.value.bundleHash,
+    itemId: planned.value.items[0]!.id,
+    inputHash: planned.value.inputHash,
+    inputHashes: [rendered.value.batchHash],
+    contentHash: planned.value.bundleHash,
+    candidateContentHash: HASH_B,
+    policyHash: planned.value.policyHash,
+    inputEventIds: [rendered.value.event.eventId],
+    bounds: { ...planned.value.budget },
+    payload: { receiptEvidence: "prompt-artifact" },
+    occurredAt: AT,
+  });
+  expect(forgedDelivery.ok).toBe(true);
+  if (!forgedDelivery.ok) return;
+  const blocked = await stageContextEvent(root, {
+    kind: "context.recall.returned",
+    contextSessionId: opened.value.contextSessionId,
+    idempotencyKey: "blocked-recall-return",
+    actor: { kind: "system", id: "context-planner-test" },
+    payload: { contentHash: HASH_A, traceHash: HASH_B },
+    occurredAt: AT,
+  });
+  expect(blocked.ok).toBe(true);
+  if (!blocked.ok) return;
+  const sessionPath = join(
+    root,
+    "memory",
+    "context-sessions",
+    `${opened.value.contextSessionId}.json`,
+  );
+  const stored = JSON.parse(await readFile(sessionPath, "utf8")) as Record<string, unknown>;
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      ...stored,
+      pendingEventBatchHashes: [blocked.value.batchHash, forgedDelivery.value.batchHash],
+    })}\n`,
+    "utf8",
+  );
+  const renderedTokens = planned.value.budget.beforeTokens - planned.value.budget.afterTokens;
+  const batchHashes = [staged.value.batchHash];
+  const first = await commitContextBundleBudget(
+    root,
+    planned.value,
+    AT,
+    renderedTokens,
+    batchHashes,
+  );
+  const retry = await commitContextBundleBudget(
+    root,
+    planned.value,
+    AT,
+    renderedTokens,
+    batchHashes,
+  );
 
   expect(first.ok).toBe(true);
-  expect(retry).toEqual(first);
-  if (!first.ok) return;
-  expect(first.value.budget.remaining.tokens).toBe(80);
-  expect(first.value.consumedBundleHashes).toEqual([planned.value.bundleHash]);
+  expect(retry.ok).toBe(true);
+  if (!first.ok || !retry.ok) return;
+  expect(first.value.committed).toBe(true);
+  expect(retry.value.committed).toBe(false);
+  expect(retry.value.session.budget).toEqual(first.value.session.budget);
+  expect(retry.value.session.consumedBundleHashes).toEqual(
+    first.value.session.consumedBundleHashes,
+  );
+  expect(retry.value.session.pendingEventBatchHashes).toEqual([
+    blocked.value.batchHash,
+    forgedDelivery.value.batchHash,
+  ]);
+  expect(first.value.session.budget.remaining.tokens).toBe(80);
+  expect(first.value.session.consumedBundleHashes).toEqual([planned.value.bundleHash]);
+  expect(first.value.session.committedDeliveryBatchHashes).toEqual([staged.value.batchHash]);
+  const recoveredEvents = await readContextEvents(root, {
+    contextSessionId: opened.value.contextSessionId,
+  });
+  expect(recoveredEvents.ok).toBe(true);
+  if (!recoveredEvents.ok) return;
+  expect(recoveredEvents.value.map((event) => event.kind)).toEqual(["context.recall.returned"]);
 });
 
 test("context sessions are listed newest first for operator inspection", async () => {

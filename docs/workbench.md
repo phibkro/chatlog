@@ -22,6 +22,9 @@ hosted telemetry product.
   operator only whether the proposal is correct, incorrect, or uncertain and
   whether the outcome is positive, negative, or neutral. Written correction or
   missing-context feedback is optional. Reviews never promote or inject memory.
+- **Context** — release authority, active insights, provider receipts, session
+  budgets, recall branches, stop reasons, feedback, and outcome evidence. It
+  distinguishes delivery, provider use, and causal evidence.
 - **Patterns** — inferred role boundaries, measured agent experiments, and
   knowledge-refinery candidates. A candidate is a prompt for review, never an
   automatic configuration change. The server returns an artifact only when its
@@ -66,22 +69,34 @@ write request binds both the packet hash and this proposal-set hash. Replacing
 or even rewriting the proposal sidecar therefore cannot silently reinterpret
 an existing judgment.
 
-### Memory Lab write boundary
+### Operator write boundaries
 
-Workbench remains read-only except for two narrow, packet-bound Memory Lab
-actions, and those writes require an explicit server-side write capability:
+Workbench has three bounded operator write paths. Each path requires an explicit
+server capability:
 
 - `POST /api/memory-lab/draft` replaces one candidate review in the current
   local draft;
 - `POST /api/memory-lab/finalize` validates all rows and writes the locked
   operator-review file.
+- `POST /api/context/feedback` records operator feedback for one delivered
+  context event.
 
 `GET /api/memory-lab` remains readable whenever Memory Lab is injected; it does
 not require the write capability.
 
-When the write capability is enabled, both endpoints require JSON plus
-`X-Chatlog-Memory-Lab: 1`, reject bodies over 16 KiB, accept no paths, validate
-the exact current packet hash and aliases, and write atomically with mode `0600`.
+`GET /api/context` returns the current release, active insights, context
+sessions, bounded event traces, recall lifecycle events, and aggregate counts.
+It fails with HTTP 503 when an authority projection is unavailable or stale.
+
+Memory Lab write endpoints require JSON plus `X-Chatlog-Memory-Lab: 1`. They
+reject bodies over 16 KiB, accept no paths, validate current packet hashes, and
+write atomically with mode `0600`.
+
+Context feedback requires JSON plus `X-Chatlog-Context: 1`. The server rejects
+bodies over 16 KiB. It also rejects unknown sessions, cross-session events, and
+events that did not deliver context. The operator ID records attribution. It
+does not authenticate a person.
+
 `derived/adjudication/refinery/<hash>/public/` bundles with an exact
 packet-bound `proposals.json` are discoverable; legacy directories that
 co-locate private mapping data are ignored. Drafts use
@@ -89,13 +104,13 @@ co-locate private mapping data are ignored. Drafts use
 `operator-reviews.json`. Existing expert `answers.draft.json` and
 `answers.json` files are ignored and preserved. A malformed operator draft or
 final file fails closed rather than being overwritten. Finalized reviews cannot
-be edited through Workbench. Every other non-GET route still returns `405`.
+be edited through Workbench. All other non-GET routes return `405`.
 
-Loopback binds enable the Memory Lab write capability by default. Non-loopback
-binds keep it disabled, even when the caller supplies the write header.
-`CHATLOG_ALLOW_REMOTE=1` grants only permission to bind to a non-loopback host;
-it does not enable Memory Lab writes. Set `CHATLOG_MEMORY_LAB_WRITES=1` as an
-additional explicit opt-in when remote writes are required.
+Loopback binds enable both write capabilities by default. Non-loopback binds
+disable them, even when the caller supplies a write header.
+`CHATLOG_ALLOW_REMOTE=1` permits a non-loopback bind. It does not enable writes.
+Set `CHATLOG_MEMORY_LAB_WRITES=1` for remote Memory Lab writes. Set
+`CHATLOG_CONTEXT_WRITES=1` for remote context feedback.
 
 ### Repository identity
 
@@ -282,29 +297,35 @@ bun run refine
 bun run workbench
 ```
 
-Open `http://127.0.0.1:4789`. The server binds to loopback by default. Its
-corpus and evidence routes are read-only; the only writes are the bounded
-Memory Lab draft/finalize actions described above.
+Open the bootstrap URL that the server prints. The URL contains a random
+launch credential in its fragment. The page exchanges this credential for an
+`HttpOnly` and `SameSite=Strict` cookie. Then the page removes the fragment.
+
+The server requires this credential on each API route. It also requires the
+exact listener `Host` and `Origin` values. Corpus and evidence routes are
+read-only. The bounded operator writes are described above.
 
 Environment variables:
 
-| Variable                | Default                                    | Purpose                                   |
-| ----------------------- | ------------------------------------------ | ----------------------------------------- |
-| `CHATLOG_DATA_ROOT`     | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB     |
-| `CHATLOG_SOURCE_CONFIG` | `~/.config/chatlog/sources.json`           | Additional source catalog                 |
-| `CHATLOG_HOST`          | `127.0.0.1`                                | Listen address                            |
-| `CHATLOG_PORT`          | `4789`                                     | Listen port                               |
-| `CHATLOG_ALLOW_REMOTE`  | unset                                      | Must equal `1` before a non-loopback bind |
+| Variable                    | Default                                    | Purpose                                   |
+| --------------------------- | ------------------------------------------ | ----------------------------------------- |
+| `CHATLOG_DATA_ROOT`         | `${XDG_DATA_HOME:-~/.local/share}/chatlog` | Corpus, derived data, and analysis DB     |
+| `CHATLOG_SOURCE_CONFIG`     | `~/.config/chatlog/sources.json`           | Additional source catalog                 |
+| `CHATLOG_HOST`              | `127.0.0.1`                                | Listen address                            |
+| `CHATLOG_PORT`              | `4789`                                     | Listen port                               |
+| `CHATLOG_OPERATOR_ID`       | `local-workbench-operator`                 | Server-owned identity for operator writes |
+| `CHATLOG_ALLOW_REMOTE`      | unset                                      | Must equal `1` before a non-loopback bind |
+| `CHATLOG_MEMORY_LAB_WRITES` | loopback only                              | Enable remote Memory Lab writes           |
+| `CHATLOG_CONTEXT_WRITES`    | loopback only                              | Enable remote context feedback            |
 
 Remote access is deliberately opt-in. If access from another machine is needed,
 prefer a private overlay or authenticated reverse proxy rather than exposing
 the port directly.
 
-The operator deployment keeps Workbench on loopback and publishes
-`https://chatlog.home.phibkro.org` only inside the LAN/tailnet through the
-Homelab entry plane. This is deployment policy rather than an application
-feature: the public Internet remains outside the trust boundary while Chatlog
-has no application authentication.
+The operator deployment keeps Workbench on loopback. It publishes
+`https://chatlog.home.phibkro.org` only inside the LAN or tailnet through the
+Homelab entry plane. The application credential protects the API. The private
+network and reverse proxy remain separate security boundaries.
 
 ## Connect sources
 
@@ -472,29 +493,31 @@ receipts through read-only source data; it has no mutating HTTP import route.
 
 Workbench's JSON endpoints expose the same bounded views used by the UI:
 
-| Endpoint                                                 | Result                                                                                    |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `/api/health`                                            | Lightweight manifest-backed readiness and active-source count                             |
-| `/api/overview`                                          | Corpus counts, recent sessions, project concentration                                     |
-| `/api/projects`                                          | Project activity and harness mix                                                          |
-| `/api/sessions?project=…`                                | Session metadata for a project                                                            |
-| `/api/search?q=…&limit=…`                                | Ranked local FTS results and evidence pointers                                            |
-| `/api/prior-attempts?q=…`                                | Zero-egress chronological attempts from current content-role matches                      |
-| `/api/project-intelligence?project=…`                    | Exact current totals, bounded derived sample, then current sessions                       |
-| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads                                |
-| `/api/knowledge-candidate?id=…`                          | Read-only curation/evaluation detail with bounded evidence pointers                       |
-| `/api/themes?limit=…&scanLimit=…&topicLimit=…`           | On-demand completed-cache clustering with exact-or-fail-closed bounds                     |
-| `/api/evidence?uri=chatlog://…`                          | One canonical redacted turn                                                               |
-| `/api/insights`                                          | Projection provenance plus bounded orchestration, role, experiment, and refinery findings |
-| `/api/sources`                                           | Connector state and import actions                                                        |
-| `/api/receipts?limit=…`                                  | Newest bounded completed-import receipts                                                  |
+| Endpoint                                                 | Result                                                                                          |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `/api/health`                                            | Lightweight manifest-backed readiness and active-source count                                   |
+| `/api/overview`                                          | Corpus counts, recent sessions, project concentration                                           |
+| `/api/projects`                                          | Project activity and harness mix                                                                |
+| `/api/sessions?project=…`                                | Session metadata for a project                                                                  |
+| `/api/search?q=…&limit=…`                                | Ranked local FTS results and evidence pointers                                                  |
+| `/api/prior-attempts?q=…`                                | Zero-egress chronological attempts from current content-role matches                            |
+| `/api/project-intelligence?project=…`                    | Exact current totals, bounded derived sample, then current sessions                             |
+| `/api/knowledge-candidates?q=…&type=…&page=…&pageSize=…` | Bounded search and pagination across refinery review leads                                      |
+| `/api/knowledge-candidate?id=…`                          | Read-only curation/evaluation detail with bounded evidence pointers                             |
+| `/api/themes?limit=…&scanLimit=…&topicLimit=…`           | On-demand completed-cache clustering with exact-or-fail-closed bounds                           |
+| `/api/evidence?uri=chatlog://…`                          | One canonical redacted turn                                                                     |
+| `/api/insights`                                          | Projection provenance plus bounded orchestration, role, experiment, and refinery findings       |
+| `/api/sources`                                           | Connector state and import actions                                                              |
+| `/api/receipts?limit=…`                                  | Newest bounded completed-import receipts                                                        |
+| `/api/context`                                           | Authorized release, active insights, sessions, budgets, delivery events, feedback, and outcomes |
+| `/api/context/feedback`                                  | Operator feedback for one same-session delivered context event                                  |
 
 These endpoints are useful for local dashboards and small agent tools. The
 existing CLI remains the broad operator contract because it is composable and
-does not require a resident server. The implemented Wave 1 MCP server exposes a
-smaller policy-filtered subset over stdio: search, one-turn evidence, recent
-project work, and bounded project briefs. Both surfaces use the same analysis
-store.
+does not require a resident server. The MCP server exposes a smaller
+policy-filtered subset over stdio. It includes search, one-turn evidence,
+recent work, project briefs, governed context delivery, and bounded recall.
+Both surfaces use the same analysis store and domain policy.
 
 ## Package and deploy
 
@@ -550,14 +573,16 @@ aggregations; it returns HTTP 503 when the database is absent or the projection
 has drifted.
 
 Remote access is deliberately not this module's job. Front Workbench with
-Tailscale Serve or another authenticated reverse proxy pointed at
-`127.0.0.1:<port>`. That remains an operator action at the network boundary;
-the module and package never configure Tailscale ACLs, certificates, Serve
-state, or DNS. Workbench has no application login and exposes every local
-conversation domain, so tailnet ACLs are the authorization boundary: only
-devices and users trusted with the complete corpus should be able to reach the
-Serve endpoint. The Home Manager module rejects non-loopback hosts rather than
-creating a crash-looping service.
+Tailscale Serve or another authenticated reverse proxy that targets
+`127.0.0.1:<port>`. This remains an operator action at the network boundary.
+The module and package never configure Tailscale ACLs, certificates, Serve
+state, or DNS.
+
+Workbench also requires its random launch credential. This credential is
+defense in depth, not a replacement for transport security or tailnet ACLs.
+Only users trusted with the complete corpus can reach the Serve endpoint. The
+Home Manager module rejects non-loopback hosts instead of creating a
+crash-looping service.
 
 The workstation consumes Chatlog as a pinned `github:phibkro/chatlog` flake
 input. Homelab enables the user service at `127.0.0.1:4789`, keeps mutable

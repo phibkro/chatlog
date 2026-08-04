@@ -115,6 +115,16 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
       domain: "coding",
       privacy: "Read-only local discovery; canonical output is secret-redacted.",
     },
+    {
+      id: "omp",
+      kind: "session-log",
+      label: "Oh My Pi",
+      description: "Local OMP lead and delegated-agent sessions across configured providers.",
+      path: `${home}/.omp/agent/sessions`,
+      probe: `${home}/.omp/agent/sessions`,
+      domain: "coding",
+      privacy: "Read-only local discovery; canonical output is secret-redacted.",
+    },
   ];
 
   const resolved: SourceCatalogItem[] = [];

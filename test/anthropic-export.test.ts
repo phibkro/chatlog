@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, symlink, truncate, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import {
+  ANTHROPIC_MAX_MANIFEST_BYTES,
   adaptAnthropicConversation,
   importAnthropicExport,
   previewAnthropicExport,
@@ -65,6 +66,56 @@ test("adapts Claude Web exports without indexing thinking or attachment bodies",
   expect(conversation.turns[1].toolCalls?.[0]).toMatchObject({ name: "search", output: "result" });
   expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*")).toThrow(
     "invalid conversation domain",
+  );
+});
+
+test("rejects deeply nested Anthropic records before adaptation", () => {
+  let nested: Record<string, unknown> = { value: "leaf" };
+  for (let depth = 0; depth < 40; depth += 1) nested = { nested };
+  const conversation = {
+    ...fixture,
+    chat_messages: [
+      {
+        ...fixture.chat_messages[0],
+        content: [{ type: "tool_use", id: "deep-tool", input: nested }],
+      },
+    ],
+  };
+  expect(() => adaptAnthropicConversation("/export.zip", conversation)).toThrow(/nested depth/u);
+});
+
+test("rejects symlinked Anthropic export members before reading them", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-symlink-"));
+  const source = join(base, "source");
+  const outside = join(base, "outside.json");
+  await mkdir(source);
+  await writeFile(outside, JSON.stringify([fixture]));
+  await symlink(outside, join(source, "conversations.json"));
+  await expect(previewAnthropicExport(source, join(base, "chatlog"))).rejects.toThrow(
+    "is not a regular file",
+  );
+  const validSource = join(base, "valid-source");
+  const sourceAlias = join(base, "source-alias");
+  await mkdir(validSource);
+  await writeFile(join(validSource, "conversations.json"), JSON.stringify([fixture]));
+  await symlink(validSource, sourceAlias);
+  await expect(previewAnthropicExport(sourceAlias, join(base, "chatlog"))).rejects.toThrow(
+    "must be a directory or .zip archive",
+  );
+});
+
+test("rejects an oversized Anthropic corpus manifest before parsing", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-manifest-limit-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
+  const manifestPath = join(root, "corpus", "manifest.json");
+  await mkdir(dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, "");
+  await truncate(manifestPath, ANTHROPIC_MAX_MANIFEST_BYTES + 1);
+  await expect(previewAnthropicExport(source, root)).rejects.toThrow(
+    /Anthropic corpus manifest.*file limit/u,
   );
 });
 

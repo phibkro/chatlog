@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test";
-import { cp, mkdtemp, readFile, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ClaudeAdapter } from "../src/adapters/claude";
 import { CodexAdapter } from "../src/adapters/codex";
 import { PiAdapter } from "../src/adapters/pi";
+import {
+  AdaptError,
+  discoverJsonl,
+  NATIVE_JSONL_MAX_ACCEPTED_FILES,
+  NATIVE_JSONL_MAX_DIRECTORY_DEPTH,
+  NATIVE_JSONL_MAX_DIRECTORY_ENTRIES,
+} from "../src/adapters/common";
 import { adaptAnthropicEventBatch } from "../src/importers/anthropic-export";
 import { canonicalEventBatch } from "../src/events";
 import { serializeEventBatch } from "../src/event-store";
@@ -126,6 +133,63 @@ async function adaptJsonl(
   const source = { path: sourcePath, size: info.size, mtimeMs: info.mtimeMs };
   return adapter.adapt(source);
 }
+
+test("rejects a deeply nested native JSONL record before adaptation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-native-deep-record-"));
+  const path = join(root, "deep.jsonl");
+  let nested: Record<string, unknown> = { value: "leaf" };
+  for (let depth = 0; depth < 40; depth += 1) nested = { nested };
+  await writeFile(path, `${JSON.stringify({ type: "session", nested })}\n`);
+  const info = await stat(path);
+  await expect(
+    new ClaudeAdapter(root).adapt({ path, size: info.size, mtimeMs: info.mtimeMs }),
+  ).rejects.toThrow(/record limit|depth/u);
+});
+
+test("rejects native JSONL traversal beyond the explicit directory depth ceiling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-native-directory-depth-"));
+  let nested = root;
+  for (let depth = 0; depth <= NATIVE_JSONL_MAX_DIRECTORY_DEPTH; depth += 1) {
+    nested = join(nested, `nested-${depth}`);
+    await mkdir(nested);
+  }
+  await writeFile(join(nested, "session.jsonl"), "");
+  await expect(discoverJsonl(root)).rejects.toMatchObject({
+    code: "directory-depth-limit",
+  });
+});
+
+test("rejects native JSONL discovery when accepted files exceed the cap", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-native-accepted-files-"));
+  await Promise.all(
+    Array.from({ length: NATIVE_JSONL_MAX_ACCEPTED_FILES + 1 }, (_, index) =>
+      writeFile(join(root, `session-${index}.jsonl`), ""),
+    ),
+  );
+  let error: unknown;
+  try {
+    await discoverJsonl(root);
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBeInstanceOf(AdaptError);
+  if (error instanceof AdaptError) expect(error.code).toBe("accepted-file-limit");
+});
+
+test("rejects native JSONL discovery when visited directory entries exceed the cap", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-native-directory-entries-"));
+  for (let offset = 0; offset <= NATIVE_JSONL_MAX_DIRECTORY_ENTRIES; offset += 2_048) {
+    const end = Math.min(offset + 2_048, NATIVE_JSONL_MAX_DIRECTORY_ENTRIES + 1);
+    await Promise.all(
+      Array.from({ length: end - offset }, (_, index) =>
+        writeFile(join(root, `ignored-${offset + index}`), ""),
+      ),
+    );
+  }
+  await expect(discoverJsonl(root)).rejects.toMatchObject({
+    code: "directory-entry-limit",
+  });
+});
 
 test("production adapters account for every synthetic fixture position", async () => {
   const cases: Array<{

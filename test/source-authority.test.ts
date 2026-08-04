@@ -3,14 +3,17 @@ import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { indexConversation, openAnalysis } from "../src/analysis";
+import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysis";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
   assertActiveProjection,
   reconcileActiveSources,
   reconcileSourceAuthority,
+  type ManifestSourceEntry,
 } from "../src/source-authority";
+import { buildSourceReceipt, persistSourceReceipt } from "../src/source-receipts";
+import { syntheticEventBatch } from "./event-fixture";
 import type { Conversation } from "../src/types";
 
 function conversation(contentHash: string, endedAt: string, content: string): Conversation {
@@ -42,7 +45,7 @@ function hashedConversation(endedAt: string, content: string): Conversation {
 
 async function writeManifest(
   root: string,
-  sources: Record<string, { contentHash: string }>,
+  sources: Record<string, ManifestSourceEntry>,
 ): Promise<void> {
   await mkdir(join(root, "corpus"), { recursive: true });
   await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
@@ -130,6 +133,46 @@ test("detects manifest, metadata, and active-row drift", async () => {
   expect(() => guard.assert(reader)).toThrow(ActiveProjectionDriftError);
   reader.close();
   corruptor.close();
+});
+
+test("long-lived projection guards revalidate mapped source receipts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-source-authority-receipt-drift-"));
+  const path = join(root, "analysis", "chatlog.sqlite");
+  const canonical = hashedConversation("2026-07-01T00:01:00Z", "active");
+  const { contentHash, ...withoutHash } = canonical;
+  const batch = syntheticEventBatch(withoutHash);
+  const receipt = buildSourceReceipt({
+    batch,
+    conversationProjectionHash: contentHash,
+  });
+  await persistSourceReceipt(root, receipt);
+  const sources: Record<string, ManifestSourceEntry> = {
+    "/source": {
+      contentHash,
+      eventBatchHash: receipt.eventBatchHash,
+      conversationProjectionHash: contentHash,
+      receiptHash: receipt.receiptHash,
+    },
+  };
+  await writeManifest(root, sources);
+
+  const db = openAnalysis(path);
+  indexConversation(db, canonical, 1, 1);
+  indexEventBatch(db, batch, receipt.eventBatchHash);
+  reconcileActiveSources(db, sources);
+  const guard = new ActiveProjectionGuard(root);
+  expect(guard.assert(db).activeSources).toBe(1);
+
+  const receiptPath = join(
+    root,
+    "receipts",
+    "sources",
+    receipt.receiptHash.slice(0, 2),
+    `${receipt.receiptHash}.json`,
+  );
+  await writeFile(receiptPath, "{}");
+  expect(() => guard.assert(db)).toThrow("source receipt");
+  db.close();
 });
 
 test("failed reconciliation rolls back the prior projection receipt", async () => {

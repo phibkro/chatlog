@@ -6,10 +6,11 @@ import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysi
 import { deriveCorpus } from "../src/derive";
 import { assertDerivedProjection, type DerivedProjectionReceipt } from "../src/derived-authority";
 import { persistEventBatch } from "../src/event-store";
+import { canonicalizeConversation } from "../src/conversation-projection";
 import { eventEvidenceUri } from "../src/evidence-uri";
 import { capture, makeEvent, makeObservedSource } from "../src/events";
 import { WorkbenchData } from "../src/workbench/data";
-import { resolveBindConfig, workbenchHandler } from "../src/workbench/server";
+import { resolveBindConfig } from "../src/workbench/server";
 import { writeImportReceipt } from "../src/import-receipts";
 import {
   buildSourceReceipt,
@@ -20,6 +21,7 @@ import { reconcileActiveSources } from "../src/source-authority";
 import type { Conversation } from "../src/types";
 import { topicCacheKey, VAULT_TOPIC_RECIPE } from "../src/vault";
 import { syntheticEventBatch } from "./event-fixture";
+import { workbenchHandler } from "./workbench-handler";
 
 function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -223,7 +225,7 @@ async function slice2Fixture(): Promise<{
       { role: "assistant", content: "The old repair was fixed." },
     ],
   };
-  const current: Conversation = {
+  const current = canonicalizeConversation({
     ...base,
     id: "current-one",
     title: "Current projection repair",
@@ -231,7 +233,6 @@ async function slice2Fixture(): Promise<{
     startedAt: "2026-07-01T10:00:00Z",
     endedAt: "2026-07-01T10:01:00Z",
     sourcePath: "/shared-source",
-    contentHash: "2".repeat(64),
     turns: [
       {
         role: "user",
@@ -245,7 +246,7 @@ async function slice2Fixture(): Promise<{
       { role: "tool", content: "Tests passed with exit code 0." },
       { role: "assistant", content: "The projection repair is resolved and checks passed." },
     ],
-  };
+  });
   const second: Conversation = {
     ...base,
     id: "current-two",
@@ -322,7 +323,7 @@ async function slice2Fixture(): Promise<{
 
 test("serves overview, local search, and canonical evidence from one corpus", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-workbench-"));
-  const conversation: Conversation = {
+  const conversation = canonicalizeConversation({
     id: "session",
     title: "Nix source visibility",
     provider: "openai",
@@ -335,12 +336,11 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     startedAt: "2026-01-01T10:00:00Z",
     endedAt: "2026-01-01T10:01:00Z",
     sourcePath: "/source",
-    contentHash: "a".repeat(64),
     turns: [
       { role: "user", content: "Why is the Nix flake source invisible?" },
       { role: "assistant", content: "Track the file before evaluating the flake." },
     ],
-  };
+  });
   const staleHash = "b".repeat(64);
   const superseded = {
     ...conversation,
@@ -426,9 +426,17 @@ test("serves overview, local search, and canonical evidence from one corpus", as
       },
     }),
   );
-  await mkdir(join(root, "corpus", "objects", "aa"), { recursive: true });
+  await mkdir(join(root, "corpus", "objects", conversation.contentHash.slice(0, 2)), {
+    recursive: true,
+  });
   await writeFile(
-    join(root, "corpus", "objects", "aa", `${conversation.contentHash}.json`),
+    join(
+      root,
+      "corpus",
+      "objects",
+      conversation.contentHash.slice(0, 2),
+      `${conversation.contentHash}.json`,
+    ),
     JSON.stringify(conversation),
   );
   await mkdir(join(root, "corpus", "objects", "bb"), { recursive: true });
@@ -486,6 +494,24 @@ test("serves overview, local search, and canonical evidence from one corpus", as
     turnIndex: 0,
     turn: { role: "user" },
   });
+  const conversationObjectPath = join(
+    root,
+    "corpus",
+    "objects",
+    conversation.contentHash.slice(0, 2),
+    `${conversation.contentHash}.json`,
+  );
+  await writeFile(
+    conversationObjectPath,
+    JSON.stringify({
+      ...conversation,
+      turns: conversation.turns.map((turn, index) =>
+        index === 0 ? { ...turn, content: `${turn.content} tampered` } : turn,
+      ),
+    }),
+  );
+  await expect(data.evidence(result.hits[0].evidenceUri)).rejects.toThrow("Evidence not found");
+  await writeFile(conversationObjectPath, JSON.stringify(conversation));
   const eventUri = eventEvidenceUri(eventBatchHash, eventBatch.events[0]!.eventId);
   const eventEvidence = await data.evidence(eventUri);
   expect(eventEvidence).toMatchObject({
@@ -1329,16 +1355,18 @@ test("insights fail closed when authoritative artifacts are stale", async () => 
   }
 });
 
-test("Workbench bind policy keeps remote authority separate from Memory Lab writes", () => {
+test("Workbench bind policy keeps remote authority separate from operator writes", () => {
   expect(resolveBindConfig({})).toEqual({
     host: "127.0.0.1",
     port: 4789,
     memoryLabWrites: true,
+    contextWrites: true,
   });
   expect(resolveBindConfig({ CHATLOG_HOST: "::1", CHATLOG_PORT: "4790" })).toEqual({
     host: "::1",
     port: 4790,
     memoryLabWrites: true,
+    contextWrites: true,
   });
   expect(() => resolveBindConfig({ CHATLOG_HOST: "100.64.0.7" })).toThrow(
     "Refusing non-loopback bind",
@@ -1348,14 +1376,21 @@ test("Workbench bind policy keeps remote authority separate from Memory Lab writ
       CHATLOG_HOST: "100.64.0.7",
       CHATLOG_ALLOW_REMOTE: "1",
     }),
-  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: false });
+  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: false, contextWrites: false });
   expect(
     resolveBindConfig({
       CHATLOG_HOST: "100.64.0.7",
       CHATLOG_ALLOW_REMOTE: "1",
       CHATLOG_MEMORY_LAB_WRITES: "1",
     }),
-  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: true });
+  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: true, contextWrites: false });
+  expect(
+    resolveBindConfig({
+      CHATLOG_HOST: "100.64.0.7",
+      CHATLOG_ALLOW_REMOTE: "1",
+      CHATLOG_CONTEXT_WRITES: "1",
+    }),
+  ).toEqual({ host: "100.64.0.7", port: 4789, memoryLabWrites: false, contextWrites: true });
   expect(() =>
     resolveBindConfig({
       CHATLOG_HOST: "100.64.0.7",

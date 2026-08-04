@@ -57,7 +57,10 @@
     "sourceKind": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 128
+      "maxLength": 128,
+      "not": {
+        "const": "chatlog-closed-loop-evaluator"
+      }
     },
     "domain": {
       "type": "string",
@@ -100,7 +103,10 @@
     "adapterRecipe": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 256
+      "maxLength": 256,
+      "not": {
+        "const": "chatlog-closed-loop-evaluator-v1"
+      }
     }
   },
   "additionalProperties": false

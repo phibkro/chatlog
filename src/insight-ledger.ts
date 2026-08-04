@@ -318,6 +318,7 @@ export async function readInsightPublicationContext(
     await stat(path);
     const db = new Database(path, { readonly: true, create: false });
     try {
+      db.run("PRAGMA busy_timeout=5000");
       const sources = db
         .query(`SELECT source_path sourcePath, content_hash contentHash, event_batch_hash eventBatchHash,
         projection_hash projectionHash, receipt_hash receiptHash FROM active_sources ORDER BY source_path`)

@@ -24,6 +24,7 @@
           </button>
           <button class="nav-item" data-view="projects"><span>◇</span> Projects</button>
           <button class="nav-item" data-view="recall"><span>⌕</span> Recall</button>
+          <button class="nav-item" data-view="context"><span>⇥</span> Context</button>
           <a class="nav-item" href="/memory/"><span>◎</span> Memory</a>
           <button class="nav-item" data-view="patterns"><span>✦</span> Patterns</button>
           <button class="nav-item" data-view="sources"><span>◌</span> Sources</button>
@@ -195,6 +196,116 @@
             <div class="empty spacious">
               Search results will appear here with stable evidence pointers.
             </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-context">
+          <div class="page-intro compact context-intro">
+            <div>
+              <p class="eyebrow">Selection → delivery → observation</p>
+              <h1>Context</h1>
+              <p>
+                Inspect what Chatlog selected, where it crossed the provider boundary, and what was
+                observed afterward.
+              </p>
+            </div>
+            <div
+              class="context-load-state"
+              id="context-view-status"
+              role="status"
+              aria-live="polite"
+            >
+              Loading governed context…
+            </div>
+          </div>
+
+          <article
+            class="panel context-release"
+            id="context-release"
+            aria-labelledby="context-release-heading"
+          >
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Human authority boundary</p>
+                <h2 id="context-release-heading">Release authorization</h2>
+              </div>
+            </div>
+            <div class="empty">Loading release authorization…</div>
+          </article>
+
+          <div
+            class="stat-grid context-totals"
+            id="context-totals"
+            aria-label="Context activity totals"
+            aria-live="polite"
+          >
+            <article class="stat-card">
+              <div class="stat-top"><span>Sessions</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value">—</div>
+              <div class="stat-foot">Loading context activity…</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>Delivered</span><span class="stat-icon">⇥</span></div>
+              <div class="stat-value">—</div>
+              <div class="stat-foot">Loading delivered context events…</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>Feedback</span><span class="stat-icon">◇</span></div>
+              <div class="stat-value">—</div>
+              <div class="stat-foot">Loading human feedback…</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>Outcomes</span><span class="stat-icon">◉</span></div>
+              <div class="stat-value">—</div>
+              <div class="stat-foot">Loading linked observations…</div>
+            </article>
+          </div>
+
+          <div class="context-workspace">
+            <article class="panel context-insights-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Active and governed</p>
+                  <h2>Eligible insights</h2>
+                </div>
+                <span class="badge">Advisory</span>
+              </div>
+              <p class="context-panel-note">
+                These are active revisions only. Human authority and canonical evidence remain
+                visible; activation does not prove an agent used an insight.
+              </p>
+              <div
+                id="context-insights"
+                class="context-insight-list"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <div class="empty">Loading active governed insights…</div>
+              </div>
+            </article>
+
+            <article class="panel context-sessions-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Provider delivery ledger</p>
+                  <h2>Context sessions</h2>
+                </div>
+                <span class="badge">Bounded audit view</span>
+              </div>
+              <p class="context-panel-note">
+                Emission, recall, and procedure returns mean context crossed the Chatlog boundary.
+                Provider acknowledgment and observed outcomes are separate events; use is never
+                inferred.
+              </p>
+              <div
+                id="context-sessions"
+                class="context-session-list"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <div class="empty">Loading provider and harness sessions…</div>
+              </div>
+            </article>
           </div>
         </section>
 

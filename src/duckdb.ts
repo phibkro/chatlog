@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { Effect } from "effect";
 import { resolve } from "node:path";
 import { assertDerivedProjection, DerivedProjectionDriftError } from "./derived-authority";
 
@@ -20,15 +21,16 @@ function source(root: string, expectedConversations: number): string {
     SELECT matched.* FROM matched CROSS JOIN coverage WHERE coverage.coverage_ok)`;
 }
 async function query(sql: string): Promise<any[]> {
-  let result;
   try {
-    result = await $`duckdb -json -c ${sql}`.quiet();
+    const result = await $`duckdb -json -c ${sql}`.quiet();
+    const output = result.stdout.toString().trim();
+    return output ? JSON.parse(output) : [];
   } catch (error: any) {
     const detail = error?.stderr?.toString().trim();
-    throw new Error(detail || error?.message || "DuckDB query failed", { cause: error });
+    return Effect.runPromise(
+      Effect.fail(new Error(detail || error?.message || "DuckDB query failed", { cause: error })),
+    );
   }
-  const output = result.stdout.toString().trim();
-  return output ? JSON.parse(output) : [];
 }
 async function withDerivedProjection<T>(
   root: string,
@@ -41,8 +43,12 @@ async function withDerivedProjection<T>(
     after.contentHash !== before.contentHash ||
     after.structureProjectionHash !== before.structureProjectionHash
   )
-    throw new DerivedProjectionDriftError(
-      "derived projection changed while running analytics; retry",
+    return Effect.runPromise(
+      Effect.fail(
+        new DerivedProjectionDriftError(
+          "derived projection changed while running analytics; retry",
+        ),
+      ),
     );
   return result;
 }

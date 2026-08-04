@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { Effect } from "effect";
 import { dirname, join, resolve } from "node:path";
 import { resolveOrchestrationPointer } from "./orchestration-profile";
 import {
@@ -335,7 +336,8 @@ export async function deriveEffectivenessRanking(
   const roleCurrent = await loadProjectionBoundArtifact(root, "orchestration-roles-manifest.json", {
     optional: true,
   });
-  if (!roleCurrent) throw new Error("role segmentation has not been derived");
+  if (!roleCurrent)
+    return Effect.runPromise(Effect.fail(new Error("role segmentation has not been derived")));
   const runnerText = await readFile(
     join(config.agentEvalRoot, "src", "promotion-runner.ts"),
     "utf8",
@@ -383,7 +385,8 @@ export async function deriveEffectivenessRanking(
         };
       }
     } catch (error) {
-      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+      if (!(error instanceof DerivedProjectionDriftError))
+        return Effect.runPromise(Effect.fail(error));
     }
   }
   const artifact = await buildEffectivenessRanking(root, config);
@@ -411,8 +414,12 @@ export async function loadEffectivenessRanking(root: string): Promise<any> {
   );
   if (!roleCurrent || !current) throw new Error("effectiveness ranking has not been derived");
   if (current.artifact?.roleProfileContentHash !== roleCurrent.contentHash)
-    throw new DerivedProjectionDriftError(
-      "effectiveness ranking does not match the active role projection",
+    return Effect.runPromise(
+      Effect.fail(
+        new DerivedProjectionDriftError(
+          "effectiveness ranking does not match the active role projection",
+        ),
+      ),
     );
   return current.artifact;
 }

@@ -1,12 +1,17 @@
 #!/usr/bin/env bun
-import { resolve } from "node:path";
+import { resolvePluginDataRoot } from "./data-root";
 import { McpData } from "./mcp/data";
 import { runMcpStdio } from "./mcp/server";
 
-const root = resolve(process.env.CHATLOG_DATA_ROOT ?? process.cwd());
-const data = new McpData(root);
-try {
-  await runMcpStdio(data);
-} finally {
-  data.close();
+const resolvedRoot = resolvePluginDataRoot(process.cwd());
+if (!resolvedRoot.ok) {
+  console.error(`chatlog-mcp: ${resolvedRoot.error.message}`);
+  process.exitCode = 1;
+} else {
+  const data = new McpData(resolvedRoot.value);
+  try {
+    await runMcpStdio(data);
+  } finally {
+    data.close();
+  }
 }

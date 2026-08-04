@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
-import { createInterface } from "node:readline";
+import { readBoundedInputLines } from "../bounded-input";
 import { EVIDENCE_URI_PATTERN } from "../evidence-uri";
 import { redact } from "../redact";
 import { resolveDataRoot } from "../data-root";
-import { McpData } from "./data";
+import { McpData, isMcpDataFailure, MCP_RECALL_MAXIMUMS, MCP_TEXT_MAXIMUMS } from "./data";
 
 const SERVER_NAME = "chatlog";
 const SERVER_VERSION = "0.1.0";
+export const MCP_MAX_LINE_BYTES = 256 * 1024;
 const LATEST_STABLE_PROTOCOL = "2025-11-25";
 const SUPPORTED_PROTOCOLS = new Set([
   LATEST_STABLE_PROTOCOL,
@@ -39,7 +40,8 @@ export function createMcpState(): McpState {
 
 const DOMAIN_PROPERTY = {
   type: "array",
-  items: { type: "string" },
+  maxItems: MCP_TEXT_MAXIMUMS.domainCount,
+  items: { type: "string", minLength: 1, maxLength: MCP_TEXT_MAXIMUMS.domain },
   description: "Optional subset of the server's configured conversation domains.",
 } as const;
 
@@ -51,7 +53,12 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Concrete lexical search terms." },
+        query: {
+          type: "string",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.query,
+          description: "Concrete lexical search terms.",
+        },
         limit: { type: "number", minimum: 1, maximum: 20, default: 8 },
         domains: DOMAIN_PROPERTY,
       },
@@ -66,7 +73,11 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        uri: { type: "string", pattern: EVIDENCE_URI_PATTERN },
+        uri: {
+          type: "string",
+          maxLength: MCP_TEXT_MAXIMUMS.evidenceUri,
+          pattern: EVIDENCE_URI_PATTERN,
+        },
         domains: DOMAIN_PROPERTY,
       },
       required: ["uri"],
@@ -79,7 +90,12 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        project: { type: "string", description: "Exact canonical project path." },
+        project: {
+          type: "string",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.path,
+          description: "Exact canonical project path.",
+        },
         limit: { type: "number", minimum: 1, maximum: 20, default: 8 },
         domains: DOMAIN_PROPERTY,
       },
@@ -94,7 +110,12 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        project: { type: "string", description: "Exact canonical project path." },
+        project: {
+          type: "string",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.path,
+          description: "Exact canonical project path.",
+        },
         domains: DOMAIN_PROPERTY,
       },
       required: ["project"],
@@ -102,24 +123,109 @@ export const MCP_TOOLS = [
     },
   },
   {
-    name: "chatlog_recall_memory",
+    name: "chatlog_context",
     description:
-      "Recall one accepted Tier 2 memory card by exact content-addressed snapshot hash and memory ID. Use the hash emitted at session startup.",
+      "Return the single operator-authorized context item relevant to this task, encoded for the current provider. Records a tool-result delivery receipt and spends the pinned session budget.",
     inputSchema: {
       type: "object",
       properties: {
-        snapshotHash: {
+        contextSessionId: {
           type: "string",
           pattern: "^[a-f0-9]{64}$",
-          description: "Exact snapshot hash emitted by the SessionStart routing index.",
+          description: "Hook-issued context session ID bound to provider, scope, and budget.",
         },
-        memoryId: {
+        task: {
           type: "string",
-          pattern: "^[a-z0-9][a-z0-9._-]*[a-z0-9]$",
-          description: "Exact memory ID from the startup routing index.",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.task,
+          description: "Current task statement.",
+        },
+        query: {
+          type: "string",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.query,
+          description: "Concrete task-relevant lookup terms.",
         },
       },
-      required: ["snapshotHash", "memoryId"],
+      required: ["contextSessionId", "task", "query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "chatlog_bounded_recall",
+    description:
+      "Run finite provider-neutral recall inside one existing context session. Returns immutable evidence references plus explicit budget, contradiction, novelty, stability, and termination traces.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contextSessionId: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$",
+          description: "Parent context session ID returned by chatlog_context.",
+        },
+        invocationId: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          description: "Stable caller key for retries; omit to create a new invocation.",
+        },
+        query: {
+          type: "string",
+          minLength: 1,
+          maxLength: MCP_TEXT_MAXIMUMS.query,
+        },
+        budget: {
+          type: "object",
+          properties: {
+            maxDepth: {
+              type: "integer",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxDepth,
+            },
+            maxBranches: {
+              type: "integer",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxBranches,
+            },
+            maxQueries: {
+              type: "integer",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxQueries,
+            },
+            maxResults: {
+              type: "integer",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxResults,
+            },
+            maxTokens: {
+              type: "integer",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxTokens,
+            },
+            maxLatencyMs: {
+              type: "number",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxLatencyMs,
+            },
+            maxCostUsd: {
+              type: "number",
+              minimum: 0,
+              maximum: MCP_RECALL_MAXIMUMS.maxCostUsd,
+            },
+          },
+          required: [
+            "maxDepth",
+            "maxBranches",
+            "maxQueries",
+            "maxResults",
+            "maxTokens",
+            "maxLatencyMs",
+            "maxCostUsd",
+          ],
+          additionalProperties: false,
+        },
+      },
+      required: ["contextSessionId", "query", "budget"],
       additionalProperties: false,
     },
   },
@@ -149,20 +255,22 @@ function argumentsRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function unwrapMcpDataResult(value: unknown): unknown {
+  if (isMcpDataFailure(value)) throw value.error;
+  return value;
+}
+
 async function callTool(
   data: McpData,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  if (name === "chatlog_search") return data.search(args);
-  if (name === "chatlog_get_evidence") return data.evidence(args);
-  if (name === "chatlog_recent_work") return data.recentWork(args);
-  if (name === "chatlog_project_brief") return data.projectBrief(args);
-  if (name === "chatlog_recall_memory") {
-    const recalled = (await data.recallMemory(args)) as any;
-    if (!recalled?.ok) throw new Error(recalled?.error?.message ?? "memory recall failed");
-    return recalled.value;
-  }
+  if (name === "chatlog_search") return unwrapMcpDataResult(data.search(args));
+  if (name === "chatlog_get_evidence") return unwrapMcpDataResult(await data.evidence(args));
+  if (name === "chatlog_recent_work") return unwrapMcpDataResult(data.recentWork(args));
+  if (name === "chatlog_project_brief") return unwrapMcpDataResult(await data.projectBrief(args));
+  if (name === "chatlog_context") return unwrapMcpDataResult(await data.deliverContext(args));
+  if (name === "chatlog_bounded_recall") return unwrapMcpDataResult(await data.boundedRecall(args));
   throw new Error(`unknown tool: ${name}`);
 }
 
@@ -194,7 +302,7 @@ export async function handleMcpMessage(
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Search first, then resolve only the evidence turns needed. Results are local, bounded, redacted, and domain-filtered.",
+        "Search first, resolve only needed evidence, and request Chatlog context only for a concrete task. Results are local, bounded, redacted, domain-filtered, and operator-gated.",
     });
   }
   if (message.method === "ping") return response(id, {});
@@ -219,6 +327,8 @@ export async function processMcpLine(
   line: string,
   state: McpState,
 ): Promise<JsonRpcMessage | null> {
+  if (Buffer.byteLength(line, "utf8") > MCP_MAX_LINE_BYTES)
+    return errorResponse(null, -32600, `JSON-RPC request exceeds ${MCP_MAX_LINE_BYTES} bytes`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -232,8 +342,10 @@ export async function processMcpLine(
 
 export async function runMcpStdio(data: McpData): Promise<void> {
   const state = createMcpState();
-  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const line of lines) {
+  const lines = readBoundedInputLines(process.stdin, MCP_MAX_LINE_BYTES, "Chatlog MCP request");
+  for await (const framed of lines) {
+    if (!framed.ok) throw framed.error;
+    const line = framed.value;
     if (!line.trim()) continue;
     const reply = await processMcpLine(data, line, state);
     if (reply) process.stdout.write(`${JSON.stringify(reply)}\n`);

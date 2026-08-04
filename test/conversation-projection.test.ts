@@ -1,25 +1,39 @@
 import { expect, test } from "bun:test";
-import { cp, mkdir, mkdtemp } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ClaudeAdapter } from "../src/adapters/claude";
 import { CodexAdapter } from "../src/adapters/codex";
 import { PiAdapter } from "../src/adapters/pi";
 import { projectConversation } from "../src/conversation-projection";
+import { projectOf } from "../src/project-identity";
 import { serializeEventBatch } from "../src/event-store";
+
+const claudeProjectKey = (cwd: string): string => cwd.replaceAll(/[^A-Za-z0-9]/g, "-");
 
 test("production adapters emit deterministic batches and projections", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-events-adapters-"));
-  await cp(join(import.meta.dir, "fixtures/events/claude.jsonl"), join(root, "claude.jsonl"));
-  const adapter = new ClaudeAdapter(root);
+  const cwd = join(root, "project");
+  const sourceRoot = join(root, "claude-sessions");
+  const sourceProject = join(sourceRoot, claudeProjectKey(cwd));
+  await mkdir(cwd, { recursive: true });
+  await mkdir(sourceProject, { recursive: true });
+  await writeFile(
+    join(sourceProject, "claude.jsonl"),
+    (await readFile(join(import.meta.dir, "fixtures/events/claude.jsonl"), "utf8")).replaceAll(
+      "/tmp/project",
+      cwd,
+    ),
+  );
+  const adapter = new ClaudeAdapter(sourceRoot);
   const source = (await adapter.discover())[0]!;
   const first = await adapter.adapt(source);
   const second = await adapter.adapt(source);
   expect(serializeEventBatch(first)).toBe(serializeEventBatch(second));
   const conversation = projectConversation(first);
   expect(conversation.harness).toBe("claude-code");
-  expect(conversation.cwd).toBe("/tmp/project");
-  expect(conversation.project).toBe("/tmp/project");
+  expect(conversation.cwd).toBe(cwd);
+  expect(conversation.project).toBe(projectOf(cwd));
   expect(conversation.model).toBe("claude-test");
   expect(conversation.resumeId).toBe("claude-resume");
   expect(conversation.turns.some((turn) => turn.content.includes("private reasoning"))).toBe(false);
@@ -31,16 +45,55 @@ test("production adapters emit deterministic batches and projections", async () 
 
 test("Claude projection retains late metadata without a started record", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-events-claude-late-"));
-  await cp(
-    join(import.meta.dir, "fixtures/events/claude-no-start.jsonl"),
-    join(root, "claude-no-start.jsonl"),
+  const cwd = join(root, "late-project");
+  const sourceRoot = join(root, "claude-sessions");
+  const sourceProject = join(sourceRoot, claudeProjectKey(cwd));
+  await mkdir(cwd, { recursive: true });
+  await mkdir(sourceProject, { recursive: true });
+  await writeFile(
+    join(sourceProject, "claude-no-start.jsonl"),
+    (
+      await readFile(join(import.meta.dir, "fixtures/events/claude-no-start.jsonl"), "utf8")
+    ).replaceAll("/tmp/late-project", cwd),
   );
-  const adapter = new ClaudeAdapter(root);
+  const adapter = new ClaudeAdapter(sourceRoot);
   const conversation = projectConversation(await adapter.adapt((await adapter.discover())[0]!));
-  expect(conversation.cwd).toBe("/tmp/late-project");
-  expect(conversation.project).toBe("/tmp/late-project");
+  expect(conversation.cwd).toBe(cwd);
+  expect(conversation.project).toBe(projectOf(cwd));
   expect(conversation.model).toBe("claude-late-test");
   expect(conversation.resumeId).toBe("claude-late-resume");
+});
+
+test("Claude provider metadata cannot move a session across its source project boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-events-claude-scope-"));
+  const trustedCwd = join(root, "trusted");
+  const forgedCwd = join(root, "forged");
+  const sourceRoot = join(root, "sessions");
+  const sourceProject = join(sourceRoot, claudeProjectKey(trustedCwd));
+  await mkdir(trustedCwd, { recursive: true });
+  await mkdir(forgedCwd, { recursive: true });
+  await mkdir(sourceProject, { recursive: true });
+  await writeFile(
+    join(sourceProject, "forged.jsonl"),
+    `${JSON.stringify({
+      type: "assistant",
+      sessionId: "forged-scope",
+      cwd: forgedCwd,
+      project: forgedCwd,
+      timestamp: "2026-08-01T10:00:00.000Z",
+      message: {
+        role: "assistant",
+        id: "forged-message",
+        model: "claude-test",
+        content: [{ type: "text", text: "cross-project claim" }],
+      },
+    })}\n`,
+  );
+
+  const adapter = new ClaudeAdapter(sourceRoot);
+  const conversation = projectConversation(await adapter.adapt((await adapter.discover())[0]!));
+  expect(conversation.cwd).toBe("");
+  expect(conversation.project).toBe("");
 });
 
 test("adapters treat a missing source root as empty", async () => {

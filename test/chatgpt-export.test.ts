@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  CHATGPT_MAX_CONTENT_PARTS,
+  CHATGPT_MAX_CONTENT_PARTS_PER_MESSAGE,
+  CHATGPT_MAX_DIRECTORY_DEPTH,
+  CHATGPT_MAX_DIRECTORY_ENTRIES,
+  CHATGPT_MAX_MANIFEST_BYTES,
+  CHATGPT_MAX_MAPPING_CHILDREN_EDGES,
+  CHATGPT_MAX_MAPPING_CHILDREN_PER_NODE,
   adaptChatGPTConversation,
+  adaptChatGPTEventBatch,
   importChatGPTExport,
   parseChatGPTConversation,
   previewChatGPTExport,
@@ -16,6 +24,8 @@ import { readEventBatch } from "../src/event-store";
 // commit 64bd7ce; no private export or upstream transcript text is copied).
 const fixturePath = new URL("./fixtures/providers/chatgpt/conversations.json", import.meta.url)
   .pathname;
+const emptyZip =
+  "UEsDBAoDAAAAAJxRBF0pu0wNAgAAAAIAAAASAAAAY29udmVyc2F0aW9ucy5qc29uW11QSwECPwMKAwAAAACcUQRdKbtMDQIAAAACAAAAEgAkAAAAAAAAACCApIEAAAAAY29udmVyc2F0aW9ucy5qc29uCgAgAAAAAAABABgAgB1kDekj3QGAHWQN6SPdAYAdZA3pI90BUEsFBgAAAAABAAEAZAAAADIAAAAAAA==";
 
 test("schema reader preserves graph nodes, declared branch, and opaque metadata", async () => {
   const result = await readChatGPTExport(fixturePath);
@@ -36,6 +46,181 @@ test("schema reader preserves graph nodes, declared branch, and opaque metadata"
   expect(branched.mapping["branch-u1"]?.message?.sourceExtras.future_message_field).toEqual({
     keep: true,
   });
+});
+
+test("reads conversation members from ZIP archives", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-zip-"));
+  const archive = join(root, "export.zip");
+  await writeFile(archive, Buffer.from(emptyZip, "base64"));
+  const result = await readChatGPTExport(archive);
+  expect(result.members.map((member) => member.text)).toEqual(["[]"]);
+  expect(result.conversations).toEqual([]);
+});
+
+test("rejects symlinked export members before reading them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-symlink-"));
+  const source = join(root, "export");
+  await mkdir(source);
+  await symlink(fixturePath, join(source, "conversations.json"));
+  await expect(readChatGPTExport(source)).rejects.toThrow();
+});
+
+test("bounds ignored directory entries before candidate filtering", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-directory-entries-"));
+  const source = join(root, "export");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), "[]");
+  await Promise.all(
+    Array.from({ length: CHATGPT_MAX_DIRECTORY_ENTRIES }, (_, index) =>
+      writeFile(join(source, `ignored-${index}.json`), "[]"),
+    ),
+  );
+  await expect(readChatGPTExport(source)).rejects.toThrow(/entry limit/u);
+});
+
+test("rejects directory traversal beyond the explicit depth ceiling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-directory-depth-"));
+  const source = join(root, "export");
+  await mkdir(source);
+  let nested = source;
+  for (let depth = 0; depth <= CHATGPT_MAX_DIRECTORY_DEPTH; depth += 1) {
+    nested = join(nested, `nested-${depth}`);
+    await mkdir(nested);
+  }
+  await writeFile(join(nested, "conversations.json"), "[]");
+  await expect(readChatGPTExport(source)).rejects.toThrow(/depth limit/u);
+});
+
+test("rejects symlinked directories before traversal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-directory-symlink-"));
+  const source = join(root, "export");
+  const target = join(root, "target");
+  await mkdir(source);
+  await mkdir(target);
+  await writeFile(join(target, "conversations.json"), "[]");
+  await symlink(target, join(source, "linked"));
+  await expect(readChatGPTExport(source)).rejects.toThrow(/symlink/u);
+});
+
+test("rejects deeply nested ChatGPT records before adaptation", () => {
+  let nested: Record<string, unknown> = { value: "leaf" };
+  for (let depth = 0; depth < 40; depth += 1) nested = { nested };
+  const conversation = {
+    id: "synthetic-deep",
+    mapping: {
+      root: {
+        id: "root",
+        parent: null,
+        children: [],
+        message: {
+          id: "message-root",
+          author: { role: "user" },
+          content: { content_type: "text", parts: ["bounded"] },
+        },
+      },
+    },
+    nested,
+  };
+  expect(() => parseChatGPTConversation(conversation)).toThrow(/nested depth/u);
+});
+
+test("rejects aggregate ChatGPT content parts before adaptation", () => {
+  const nodeCount =
+    Math.floor(CHATGPT_MAX_CONTENT_PARTS / CHATGPT_MAX_CONTENT_PARTS_PER_MESSAGE) + 1;
+  const mapping = Object.fromEntries(
+    Array.from({ length: nodeCount }, (_, index) => {
+      const id = `parts-${index}`;
+      return [
+        id,
+        {
+          id,
+          parent: null,
+          children: [],
+          message: {
+            id: `message-${id}`,
+            author: { role: "user" },
+            content: {
+              content_type: "text",
+              parts: Array.from({ length: CHATGPT_MAX_CONTENT_PARTS_PER_MESSAGE }, () => "part"),
+            },
+          },
+        },
+      ];
+    }),
+  );
+  expect(() => parseChatGPTConversation({ id: "parts-limit", mapping })).toThrow(
+    /conversation limit/u,
+  );
+});
+
+test("rejects aggregate ChatGPT mapping child edges before adaptation", () => {
+  const nodeCount =
+    Math.floor(CHATGPT_MAX_MAPPING_CHILDREN_EDGES / CHATGPT_MAX_MAPPING_CHILDREN_PER_NODE) + 1;
+  const mapping = Object.fromEntries(
+    Array.from({ length: nodeCount }, (_, index) => {
+      const id = `edges-${index}`;
+      return [
+        id,
+        {
+          id,
+          parent: null,
+          children: Array.from(
+            { length: CHATGPT_MAX_MAPPING_CHILDREN_PER_NODE },
+            (_, childIndex) => `child-${childIndex}`,
+          ),
+          message: null,
+        },
+      ];
+    }),
+  );
+  expect(() => parseChatGPTConversation({ id: "edge-limit", mapping })).toThrow(/edge limit/u);
+});
+
+test("rejects an oversized ChatGPT corpus manifest before parsing", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-chatgpt-manifest-limit-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), "[]");
+  const manifestPath = join(root, "corpus", "manifest.json");
+  await mkdir(join(root, "corpus"), { recursive: true });
+  await writeFile(manifestPath, "");
+  await truncate(manifestPath, CHATGPT_MAX_MANIFEST_BYTES + 1);
+  await expect(previewChatGPTExport(source, root)).rejects.toThrow(
+    /ChatGPT corpus manifest.*file limit/u,
+  );
+});
+test("orders a wide disconnected mapping deterministically within the node limit", () => {
+  const mapping = Object.fromEntries(
+    Array.from({ length: 2_048 }, (_, index) => {
+      const id = `node-${String(index).padStart(4, "0")}`;
+      return [
+        id,
+        {
+          id,
+          parent: null,
+          children: [],
+          message: {
+            id: `message-${id}`,
+            author: { role: index % 2 ? "assistant" : "user" },
+            content: { content_type: "text", parts: [id] },
+          },
+        },
+      ];
+    }),
+  );
+  const parsed = parseChatGPTConversation(
+    { id: "wide-ordering", current_node: "node-0000", mapping },
+    "synthetic-wide.json",
+  );
+  const batch = adaptChatGPTEventBatch("synthetic-wide.json", parsed, "personal");
+  const nodeIds = batch.events
+    .filter((event) => event.kind === "message.created")
+    .map((event) => event.payload.nodeId);
+  expect(nodeIds).toHaveLength(2_048);
+  expect(nodeIds[0]).toBe("node-0000");
+  expect(nodeIds.at(-1)).toBe("node-2047");
+  expect(nodeIds).toEqual([...nodeIds].toSorted());
 });
 
 test("missing current node fails closed without discarding mapping evidence", () => {

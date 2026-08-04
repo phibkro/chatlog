@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude";
 import { CodexAdapter } from "../src/adapters/codex";
-import { PiAdapter } from "../src/adapters/pi";
+import { OmpAdapter, PiAdapter } from "../src/adapters/pi";
 
 const fixtureRoot = join(import.meta.dir, "fixtures/events");
 
@@ -74,6 +74,12 @@ test("Pi emits canonical project identity, fallback relations, and image loss", 
         details: expect.objectContaining({ blockType: "image" }),
       }),
     ]),
+  );
+
+  const omp = await new OmpAdapter(sourceRoot).adapt((await adapter.discover())[0]!);
+  expect(omp.origin.kind === "observed" ? omp.origin.source.harness : null).toBe("omp");
+  expect(omp.events.find((event) => event.kind === "session.started")?.payload.sourceKind).toBe(
+    "omp-session",
   );
 });
 

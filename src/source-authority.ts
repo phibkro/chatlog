@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { readFileSync, statSync } from "node:fs";
+import { Effect } from "effect";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexConversation, indexEventBatch } from "./analysis";
@@ -59,7 +60,7 @@ export class SourceAuthorityError extends Error {
 }
 
 function invalidSourceAuthority(message: string): never {
-  throw new SourceAuthorityError(message);
+  return Effect.runSync(Effect.fail(new SourceAuthorityError(message)));
 }
 
 function sha256(value: string): string {
@@ -214,14 +215,21 @@ export function reconcileActiveSources(
       ON c.source_path = a.source_path AND c.content_hash = a.content_hash
       WHERE c.content_hash IS NULL ORDER BY a.source_path LIMIT 1`)
       .get() as { sourcePath: string; contentHash: string } | null;
-    if (missing) throw new MissingIndexedSourceError(missing.sourcePath, missing.contentHash);
+    if (missing)
+      return Effect.runSync(
+        Effect.fail(new MissingIndexedSourceError(missing.sourcePath, missing.contentHash)),
+      );
     const missingEvents = db
       .query(`SELECT a.source_path sourcePath, a.event_batch_hash eventBatchHash
       FROM active_sources a LEFT JOIN event_batches e ON e.batch_hash = a.event_batch_hash
       WHERE a.event_batch_hash IS NOT NULL AND e.batch_hash IS NULL LIMIT 1`)
       .get() as { sourcePath: string; eventBatchHash: string } | null;
     if (missingEvents)
-      throw new MissingIndexedSourceError(missingEvents.sourcePath, missingEvents.eventBatchHash);
+      return Effect.runSync(
+        Effect.fail(
+          new MissingIndexedSourceError(missingEvents.sourcePath, missingEvents.eventBatchHash),
+        ),
+      );
     db.query(`INSERT INTO active_projection_meta(singleton, manifest_sources_hash, reconciled_at)
       VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET
       manifest_sources_hash=excluded.manifest_sources_hash, reconciled_at=excluded.reconciled_at`).run(
@@ -269,7 +277,7 @@ export async function reconcileSourceAuthority(
   try {
     return { ...reconcileActiveSources(db, sources), reindexed: 0 };
   } catch (error) {
-    if (!(error instanceof MissingIndexedSourceError)) throw error;
+    if (!(error instanceof MissingIndexedSourceError)) return Effect.runPromise(Effect.fail(error));
   }
 
   let reindexed = 0;
@@ -299,7 +307,9 @@ export async function reconcileSourceAuthority(
     try {
       conversation = JSON.parse(await readFile(objectPath, "utf8")) as Conversation;
     } catch (cause) {
-      throw new MissingIndexedSourceError(sourcePath, entry.contentHash, { cause });
+      return Effect.runPromise(
+        Effect.fail(new MissingIndexedSourceError(sourcePath, entry.contentHash, { cause })),
+      );
     }
     if (
       conversation.contentHash !== entry.contentHash ||
@@ -314,7 +324,9 @@ export async function reconcileSourceAuthority(
       );
     if (indexConversation(db, conversation, entry.mtimeMs ?? 0, entry.size ?? 0)) reindexed++;
     if (!indexedMappingExists(db, sourcePath, entry))
-      throw new MissingIndexedSourceError(sourcePath, entry.contentHash);
+      return Effect.runPromise(
+        Effect.fail(new MissingIndexedSourceError(sourcePath, entry.contentHash)),
+      );
   }
   return { ...reconcileActiveSources(db, sources, { force: reindexed > 0 }), reindexed };
 }
@@ -324,7 +336,6 @@ export function assertActiveProjection(root: string, db: Database): ProjectionRe
 }
 
 export class ActiveProjectionGuard {
-  private manifestCache?: { signature: string; hash: string };
   private verifiedCache?: {
     manifestHash: string;
     reconciledAt: string;
@@ -335,26 +346,21 @@ export class ActiveProjectionGuard {
   constructor(private readonly root: string) {}
 
   private expectedManifestHash(): string {
-    const path = join(this.root, "corpus", "manifest.json");
-    const info = statSync(path, { bigint: true });
-    const signature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}`;
-    if (this.manifestCache?.signature === signature) return this.manifestCache.hash;
     const manifest = loadCorpusManifestSync(this.root);
     validateReceiptMappings(this.root, manifest.sources);
-    const hash = manifestSourcesHash(manifest.sources);
-    this.manifestCache = { signature, hash };
-    return hash;
+    return manifestSourcesHash(manifest.sources);
   }
 
   assert(db: Database): ProjectionReceipt {
     try {
+      db.run("PRAGMA busy_timeout=5000");
       const expectedHash = this.expectedManifestHash();
       const meta = db
         .query(`SELECT manifest_sources_hash manifestSourcesHash, reconciled_at reconciledAt
         FROM active_projection_meta WHERE singleton = 1`)
         .get() as { manifestSourcesHash: string; reconciledAt: string } | null;
       if (!meta || meta.manifestSourcesHash !== expectedHash)
-        throw new ActiveProjectionDriftError();
+        return Effect.runSync(Effect.fail(new ActiveProjectionDriftError()));
       const dataVersion = Number(
         (db.query("PRAGMA data_version").get() as { data_version: number }).data_version,
       );
@@ -392,15 +398,20 @@ export class ActiveProjectionGuard {
           ]),
         ),
       );
-      if (actualHash !== expectedHash) throw new ActiveProjectionDriftError();
+      if (actualHash !== expectedHash)
+        return Effect.runSync(Effect.fail(new ActiveProjectionDriftError()));
       const missingIndexedSource = db
         .query(`SELECT 1 FROM active_sources a
         LEFT JOIN conversations c ON c.source_path = a.source_path AND c.content_hash = a.content_hash
         WHERE c.content_hash IS NULL LIMIT 1`)
         .get();
       if (missingIndexedSource)
-        throw new ActiveProjectionDriftError(
-          "active source projection references missing analysis rows; run `chatlog source reconcile`",
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection references missing analysis rows; run `chatlog source reconcile`",
+            ),
+          ),
         );
       const missingEventBatch = db
         .query(`SELECT 1 FROM active_sources a
@@ -408,8 +419,12 @@ export class ActiveProjectionGuard {
         WHERE a.event_batch_hash IS NOT NULL AND e.batch_hash IS NULL LIMIT 1`)
         .get();
       if (missingEventBatch)
-        throw new ActiveProjectionDriftError(
-          "active source projection references missing event batches; run `chatlog source reconcile`",
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection references missing event batches; run `chatlog source reconcile`",
+            ),
+          ),
         );
       this.verifiedCache = {
         manifestHash: expectedHash,
@@ -423,7 +438,7 @@ export class ActiveProjectionGuard {
         reconciledAt: meta.reconciledAt,
       };
     } catch (error) {
-      if (error instanceof ActiveProjectionDriftError) throw error;
+      if (error instanceof ActiveProjectionDriftError) return Effect.runSync(Effect.fail(error));
       const code =
         typeof error === "object" && error && "code" in error
           ? String((error as { code?: unknown }).code)
@@ -434,28 +449,48 @@ export class ActiveProjectionGuard {
         message.includes("unsupported corpus manifest") ||
         message.includes("invalid source mapping")
       )
-        throw new ActiveProjectionDriftError(
-          "active source projection cannot be verified because the corpus manifest is unavailable",
-          { cause: error },
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection cannot be verified because the corpus manifest is unavailable",
+              { cause: error },
+            ),
+          ),
         );
       if (message.includes("source receipt"))
-        throw new ActiveProjectionDriftError(
-          "active source projection cannot be verified because a source receipt is unavailable or stale",
-          { cause: error },
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection cannot be verified because a source receipt is unavailable or stale",
+              { cause: error },
+            ),
+          ),
         );
       if (message.includes("no such table: active_projection_meta"))
-        throw new ActiveProjectionDriftError(
-          "active source projection is not initialized; run `chatlog source reconcile`",
-          { cause: error },
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection is not initialized; run `chatlog source reconcile`",
+              { cause: error },
+            ),
+          ),
         );
       if (code === "SQLITE_BUSY" || message.includes("database is locked"))
-        throw new ActiveProjectionDriftError(
-          "active source projection verification is temporarily unavailable",
-          { cause: error },
+        return Effect.runSync(
+          Effect.fail(
+            new ActiveProjectionDriftError(
+              "active source projection verification is temporarily unavailable",
+              { cause: error },
+            ),
+          ),
         );
-      throw new ActiveProjectionDriftError("active source projection verification failed", {
-        cause: error,
-      });
+      return Effect.runSync(
+        Effect.fail(
+          new ActiveProjectionDriftError("active source projection verification failed", {
+            cause: error,
+          }),
+        ),
+      );
     }
   }
 }

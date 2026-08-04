@@ -1,8 +1,24 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { indexConversation, indexEventBatch, openAnalysis } from "../analysis";
 import { canonicalizeConversation, projectConversation } from "../conversation-projection";
 import { normalizeConversationDomain } from "../domain";
+import {
+  CLOSED_LOOP_EVALUATOR_ADAPTER_RECIPE,
+  CLOSED_LOOP_EVALUATOR_SOURCE_KIND,
+} from "../closed-loop-evaluation";
+import {
+  GENERIC_EVENT_MAX_BATCH_BYTES,
+  GENERIC_EVENT_MAX_BATCH_EVENTS,
+  GENERIC_EVENT_MAX_BATCH_SEMANTIC_LOSSES,
+  GENERIC_EVENT_MAX_EVENTS,
+  GENERIC_EVENT_MAX_FILE_BYTES,
+  GENERIC_EVENT_MAX_LINES,
+  GENERIC_EVENT_MAX_LINE_BYTES,
+  GENERIC_EVENT_MAX_SEMANTIC_LOSSES,
+  type GenericEventHeader,
+  validateGenericEventHeader,
+} from "../generic-event-schema";
 import {
   capture,
   makeEvent,
@@ -31,13 +47,15 @@ import type { RefinerySummary } from "../refinery";
 import { deriveCorpus } from "../derive";
 import { refineCorpus } from "../refinery";
 import {
-  GENERIC_EVENT_MAX_BATCH_BYTES,
-  GENERIC_EVENT_MAX_BATCH_EVENTS,
-  GENERIC_EVENT_MAX_FILE_BYTES,
-  GENERIC_EVENT_MAX_LINE_BYTES,
-  type GenericEventHeader,
-  validateGenericEventHeader,
-} from "../generic-event-schema";
+  EXPORT_MAX_CORPUS_OBJECT_BYTES,
+  EXPORT_MAX_MANIFEST_BYTES,
+  type ExportLimitFailure,
+  readBoundedFile,
+} from "./export-limits";
+export {
+  EXPORT_MAX_CORPUS_OBJECT_BYTES as GENERIC_MAX_CORPUS_OBJECT_BYTES,
+  EXPORT_MAX_MANIFEST_BYTES as GENERIC_MAX_MANIFEST_BYTES,
+} from "./export-limits";
 export class GenericEventImportError extends Error {
   readonly code = "generic-event-import-invalid";
 }
@@ -46,6 +64,9 @@ function failClosed(message: string, cause?: unknown): never {
   throw new GenericEventImportError(message, cause === undefined ? undefined : { cause });
 }
 
+function boundedFailure(error: ExportLimitFailure): never {
+  return failClosed(error.message, error);
+}
 const GENERIC_RECIPE_PREFIX = "chatlog-generic-events-v1";
 
 export interface GenericEventImportOptions {
@@ -189,6 +210,8 @@ function lineRecord(value: unknown): GenericLineRecord {
       failClosed("generic batch event must be an object");
     const losses = value.semanticLoss === undefined ? [] : value.semanticLoss;
     if (!Array.isArray(losses)) failClosed("generic batch semanticLoss must be an array");
+    if (losses.length > GENERIC_EVENT_MAX_BATCH_SEMANTIC_LOSSES)
+      failClosed("generic event batch exceeds semantic-loss limit");
     return {
       events: value.events,
       losses,
@@ -205,6 +228,11 @@ function recipeForHeader(header: GenericEventHeader): string {
   const recipe =
     header.adapterRecipe ??
     `${GENERIC_RECIPE_PREFIX}:${header.producer.name}@${header.producer.version}`;
+  if (
+    header.sourceKind === CLOSED_LOOP_EVALUATOR_SOURCE_KIND ||
+    recipe === CLOSED_LOOP_EVALUATOR_ADAPTER_RECIPE
+  )
+    failClosed("generic event provenance uses reserved closed-loop evaluator authority");
   if (recipe.length > 256) failClosed("generic event adapter recipe exceeds bounds");
   return recipe;
 }
@@ -418,26 +446,55 @@ function validateExternalBatchOrigin(
     failClosed("generic batch provenance conflicts with header or importer path");
 }
 
+interface GenericTextLine {
+  readonly line: string;
+  readonly lineNumber: number;
+  readonly final: boolean;
+}
+
+function* genericTextLines(text: string): Generator<GenericTextLine> {
+  let start = 0;
+  let lineNumber = 1;
+  while (start < text.length) {
+    const newline = text.indexOf("\n", start);
+    if (newline === -1) {
+      yield { line: text.slice(start), lineNumber, final: true };
+      return;
+    }
+    yield { line: text.slice(start, newline), lineNumber, final: false };
+    start = newline + 1;
+    lineNumber++;
+  }
+}
+
 export function parseGenericEventText(
   text: string,
   sourcePath: string,
   sourceBytes = Buffer.byteLength(text),
   sourceModifiedAt = new Date(0).toISOString(),
 ): GenericStream {
-  if (sourceBytes > GENERIC_EVENT_MAX_FILE_BYTES)
-    failClosed("generic event file exceeds size limit");
+  const actualSourceBytes = Buffer.byteLength(text);
+  if (
+    !Number.isSafeInteger(sourceBytes) ||
+    sourceBytes < 0 ||
+    sourceBytes !== actualSourceBytes ||
+    actualSourceBytes > GENERIC_EVENT_MAX_FILE_BYTES
+  )
+    failClosed("generic event file exceeds size limit or has inconsistent byte metadata");
   const resolvedSource = resolve(sourcePath);
-  const lines = text.split(/\n/);
   const hasTrailingNewline = text.endsWith("\n");
   let partialTail = false;
   let partialTailLine: number | undefined;
   let header: GenericEventHeader | undefined;
   const rawEvents: Array<{ raw: Record<string, unknown>; line: number; record?: number }> = [];
-  const rawLosses: Array<{ value: unknown; line: number; record: number }> = [];
+  const rawLosses: Array<{ value: SemanticLossEntry; line: number; record: number }> = [];
   let lineCount = 0;
   let batchCount = 0;
-  for (const [lineIndex, line] of lines.entries()) {
-    const lineNumber = lineIndex + 1;
+  let physicalLineCount = 0;
+  for (const { line, lineNumber, final } of genericTextLines(text)) {
+    physicalLineCount++;
+    if (physicalLineCount > GENERIC_EVENT_MAX_LINES)
+      failClosed(`${resolvedSource}: physical line count exceeds bound`);
     if (!line.trim()) continue;
     lineCount = lineNumber;
     const bytes = Buffer.byteLength(line);
@@ -447,7 +504,7 @@ export function parseGenericEventText(
     try {
       value = JSON.parse(line);
     } catch (error) {
-      if (!hasTrailingNewline && lineIndex === lines.length - 1) {
+      if (!hasTrailingNewline && final) {
         partialTail = true;
         partialTailLine = lineNumber;
         continue;
@@ -464,13 +521,23 @@ export function parseGenericEventText(
       failClosed(`${resolvedSource}:${lineNumber}: batch exceeds size limit`);
     if (record.isBatch) batchCount++;
     validateExternalBatchOrigin(record.origin, header, resolvedSource, recipeForHeader(header));
+    if (record.events.length > GENERIC_EVENT_MAX_EVENTS - rawEvents.length)
+      failClosed(`${resolvedSource}: event count exceeds bound`);
+    if (record.losses.length > GENERIC_EVENT_MAX_SEMANTIC_LOSSES - rawLosses.length)
+      failClosed(`${resolvedSource}: semantic-loss count exceeds bound`);
     for (const [index, raw] of record.events.entries())
       rawEvents.push({ raw, line: lineNumber, ...(record.isBatch ? { record: index } : {}) });
-    for (const [index, loss] of record.losses.entries())
+    for (const [index, rawLoss] of record.losses.entries()) {
+      const loss = validateSemanticLoss(rawLoss, `${resolvedSource}:${lineNumber} semanticLoss`);
+      if (loss.provider !== header.provider || loss.harness !== header.harness)
+        failClosed(
+          `${resolvedSource}:${lineNumber}: semantic loss provenance conflicts with header`,
+        );
       rawLosses.push({ value: loss, line: lineNumber, record: record.events.length + index });
+    }
   }
   if (!header) failClosed(`${resolvedSource}: missing generic event header`);
-  if (rawEvents.length > GENERIC_EVENT_MAX_BATCH_EVENTS * 1024)
+  if (rawEvents.length > GENERIC_EVENT_MAX_EVENTS)
     failClosed(`${resolvedSource}: event count exceeds bound`);
   const recipe = recipeForHeader(header);
   const events: AgentEventEnvelope[] = [];
@@ -517,10 +584,7 @@ export function parseGenericEventText(
     kinds[kind] = (kinds[kind] ?? 0) + 1;
     if (normalized.loss) losses.push(normalized.loss);
   }
-  for (const { value, line, record } of rawLosses) {
-    const loss = validateSemanticLoss(value, `${resolvedSource}:${line} semanticLoss`);
-    if (loss.provider !== header.provider || loss.harness !== header.harness)
-      failClosed(`${resolvedSource}:${line}: semantic loss provenance conflicts with header`);
+  for (const { value: loss, line, record } of rawLosses) {
     losses.push(
       makeSemanticLoss({
         ...loss,
@@ -562,15 +626,18 @@ export function parseGenericEventText(
 
 export async function readGenericEventFile(sourcePath: string): Promise<GenericStream> {
   const source = resolve(sourcePath);
-  const info = await stat(source);
-  if (!info.isFile()) failClosed(`${source}: generic event source must be a file`);
-  if (info.size > GENERIC_EVENT_MAX_FILE_BYTES)
-    failClosed(`${source}: generic event file exceeds size limit`);
-  const text = await readFile(source, "utf8");
-  const after = await stat(source);
-  if (after.size !== info.size || after.mtimeMs !== info.mtimeMs)
-    failClosed(`${source}: source changed while it was being read`);
-  return parseGenericEventText(text, source, info.size, info.mtime.toISOString());
+  const content = await readBoundedFile(
+    source,
+    GENERIC_EVENT_MAX_FILE_BYTES,
+    `${source} (generic event source)`,
+  );
+  if (!content.ok) boundedFailure(content.error);
+  return parseGenericEventText(
+    content.value.text,
+    source,
+    content.value.bytes,
+    new Date(content.value.mtimeMs).toISOString(),
+  );
 }
 
 async function atomicWrite(path: string, value: string): Promise<void> {
@@ -582,45 +649,102 @@ async function atomicWrite(path: string, value: string): Promise<void> {
 }
 
 async function loadManifest(root: string): Promise<CorpusManifest> {
+  const path = join(root, "corpus", "manifest.json");
+  let info;
   try {
-    const value = JSON.parse(
-      await readFile(join(root, "corpus", "manifest.json"), "utf8"),
-    ) as CorpusManifest;
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+      return { version: 1, sources: {} };
+    failClosed(
+      `cannot read generic-event corpus manifest ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+  if (!info.isFile()) failClosed(`${path}: generic-event corpus manifest is not a regular file`);
+  const contentResult = await readBoundedFile(
+    path,
+    EXPORT_MAX_MANIFEST_BYTES,
+    `${path} (generic-event corpus manifest)`,
+    root,
+  );
+  if (!contentResult.ok) return boundedFailure(contentResult.error);
+  try {
+    const value = JSON.parse(contentResult.value.text) as CorpusManifest;
     if (value.version !== 1 || !value.sources) failClosed("unsupported corpus manifest");
     return value;
   } catch (error: unknown) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
-      return { version: 1, sources: {} };
-    failClosed(error instanceof Error ? error.message : String(error), error);
+    if (error instanceof GenericEventImportError) throw error;
+    failClosed(
+      `cannot parse generic-event corpus manifest ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
   }
 }
 
-function classify(
+async function readPriorConversation(
+  root: string,
+  contentHash: string,
+): Promise<Conversation | null> {
+  const path = join(root, "corpus", "objects", contentHash.slice(0, 2), `${contentHash}.json`);
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+      return null;
+    failClosed(
+      `cannot read generic-event prior corpus object ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+  if (!info.isFile())
+    failClosed(`${path}: generic-event prior corpus object is not a regular file`);
+  const contentResult = await readBoundedFile(
+    path,
+    EXPORT_MAX_CORPUS_OBJECT_BYTES,
+    `${path} (generic-event prior corpus object)`,
+    root,
+  );
+  if (!contentResult.ok) return boundedFailure(contentResult.error);
+  try {
+    return JSON.parse(contentResult.value.text) as Conversation;
+  } catch (error: unknown) {
+    failClosed(
+      `cannot parse generic-event prior corpus object ${path}: ${redact(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      error,
+    );
+  }
+}
+
+async function classify(
   root: string,
   manifest: CorpusManifest,
   conversation: Conversation,
   domain: string,
 ): Promise<"new" | "changed" | "reclassified" | "unchanged"> {
   const previous = manifest.sources[conversation.sourcePath];
-  if (!previous) return Promise.resolve("new");
-  if (previous.contentHash === conversation.contentHash) return Promise.resolve("unchanged");
-  return readFile(
-    join(
-      root,
-      "corpus",
-      "objects",
-      previous.contentHash.slice(0, 2),
-      `${previous.contentHash}.json`,
-    ),
-    "utf8",
-  )
-    .then((value) => {
-      const oldConversation = JSON.parse(value) as Conversation;
-      return normalizeConversationDomain(oldConversation.domain ?? "general") !== domain
-        ? "reclassified"
-        : "changed";
-    })
-    .catch(() => "changed");
+  if (!previous) return "new";
+  if (previous.contentHash === conversation.contentHash) return "unchanged";
+  if (!previous.contentHash) return "changed";
+  try {
+    const oldConversation = await readPriorConversation(root, previous.contentHash);
+    if (!oldConversation) return "changed";
+    return normalizeConversationDomain(oldConversation.domain ?? "general") !== domain
+      ? "reclassified"
+      : "changed";
+  } catch (error) {
+    if (error instanceof GenericEventImportError) throw error;
+    return "changed";
+  }
 }
 
 function lossCounts(batch: EventBatch): Record<string, number> {
@@ -690,7 +814,6 @@ export async function importGenericEvents(
   return withIngestLock(root, async () => {
     const stream = await readGenericEventFile(sourcePath);
     const domain = normalizeConversationDomain(options.domain ?? stream.header.domain);
-    const sourceInfo = await stat(stream.source);
     const manifestPath = join(root, "corpus", "manifest.json");
     const manifest = await loadManifest(root);
     const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
@@ -726,14 +849,19 @@ export async function importGenericEvents(
         if (!(await Bun.file(objectPath).exists()))
           await atomicWrite(objectPath, JSON.stringify(conversation) + "\n");
         indexEventBatch(db, stream.batch, batchHash, conversation.contentHash);
-        indexConversation(db, conversation, sourceInfo.mtimeMs, sourceInfo.size);
+        indexConversation(
+          db,
+          conversation,
+          Date.parse(stream.sourceModifiedAt),
+          stream.sourceBytes,
+        );
         manifest.sources[conversation.sourcePath] = {
           contentHash: conversation.contentHash,
           eventBatchHash: batchHash,
           conversationProjectionHash: conversation.contentHash,
           receiptHash: sourceReceipt.receiptHash,
-          size: sourceInfo.size,
-          mtimeMs: sourceInfo.mtimeMs,
+          size: stream.sourceBytes,
+          mtimeMs: Date.parse(stream.sourceModifiedAt),
         };
         imported++;
       }

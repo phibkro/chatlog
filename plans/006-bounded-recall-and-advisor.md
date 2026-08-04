@@ -32,6 +32,17 @@ This plan adds bounded cooperative recall first. It adds advisor output in shado
 
 Preserve cooperative recall as the default. A hidden advisor cannot inject learned claims into a main agent.
 
+## Implementation decision
+
+The operator authorized implementation on 2026-08-03 after a review of current project evidence.
+No persistent paired gate artifact from real work was available.
+
+`test/closed-loop-gate.test.ts` and `test/context-gate-fixture.ts` verify the gate mechanics with synthetic evidence.
+They do not prove product benefit.
+
+This exception authorizes the bounded recall implementation and the shadow advisor.
+A positive measured gate remains required before broader exposure or blocking authority.
+
 ## Recall interface
 
 ```ts
@@ -396,16 +407,16 @@ Each test must assert termination, result provenance, budget consumption, or an 
 
 ## Done criteria
 
-- [ ] Every recall has a parent context session and finite budget.
-- [ ] Every child decreases `maxDepth`, keeps other hard totals at or below the parent, and cannot widen scope.
-- [ ] All branches join or cancel before the parent returns.
-- [ ] Cycle, novelty, stability, timeout, contradiction, and cancellation exits are observable.
-- [ ] The main continuation receives one bounded result.
-- [ ] Procedures retain preconditions, authority, version, evidence, and evaluation.
-- [ ] Cross-provider procedure transfer has controlled evaluation evidence.
-- [ ] Advisor behavior remains shadow-only and cannot block or mutate.
-- [ ] `bun run check` exits 0.
-- [ ] `plans/README.md` marks Plan 006 `DONE`.
+- [x] Every recall has a parent context session and finite budget.
+- [x] Every child decreases `maxDepth`, keeps other hard totals at or below the parent, and cannot widen scope.
+- [x] All branches join or cancel before the parent returns.
+- [x] Cycle, novelty, stability, timeout, contradiction, and cancellation exits are observable.
+- [x] The main continuation receives one bounded result.
+- [x] Procedures retain preconditions, authority, version, evidence, and evaluation.
+- [x] Cross-provider procedure transfer has controlled evaluation evidence.
+- [x] Advisor behavior remains shadow-only and cannot block or mutate.
+- [x] `bun run check` exits 0.
+- [x] `plans/README.md` marks Plan 006 `DONE`.
 
 ## STOP conditions
 

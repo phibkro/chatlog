@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentAskLexical } from "../agent-query";
+import { validateCanonicalConversation } from "../conversation-projection";
 import { loadDerived } from "../derive";
 import { readEventBatch } from "../event-store";
 import { parseEvidenceUri } from "../evidence-uri";
@@ -14,7 +15,6 @@ import {
   ActiveProjectionGuard,
   type ProjectionReceipt,
 } from "../source-authority";
-import type { Conversation } from "../types";
 import {
   DerivedProjectionDriftError,
   assertDerivedProjection,
@@ -1350,21 +1350,34 @@ export class WorkbenchData {
       return result;
     }
     const current = this.requireDb()
-      .query("SELECT 1 FROM current_conversations WHERE content_hash = ?")
-      .get(pointer.contentHash);
+      .query(`SELECT c.content_hash contentHash, a.source_path sourcePath
+        FROM current_conversations c JOIN active_sources a
+        ON a.source_path = c.source_path AND a.content_hash = c.content_hash
+        WHERE a.content_hash = ?`)
+      .get(pointer.contentHash) as { contentHash: string; sourcePath: string } | null;
     if (!current) evidenceNotFound();
-    const conversation = JSON.parse(
-      await readFile(
-        join(
-          this.root,
-          "corpus",
-          "objects",
-          pointer.contentHash.slice(0, 2),
-          `${pointer.contentHash}.json`,
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(
+          join(
+            this.root,
+            "corpus",
+            "objects",
+            pointer.contentHash.slice(0, 2),
+            `${pointer.contentHash}.json`,
+          ),
+          "utf8",
         ),
-        "utf8",
-      ),
-    ) as Conversation;
+      );
+    } catch {
+      evidenceNotFound();
+    }
+    const conversation = validateCanonicalConversation(parsed, {
+      contentHash: pointer.contentHash,
+      sourcePath: current.sourcePath,
+    });
+    if (current.contentHash !== pointer.contentHash || !conversation) evidenceNotFound();
     const turn = conversation.turns[pointer.turnIndex];
     if (!turn) evidenceNotFound("Evidence turn not found");
     const result = {

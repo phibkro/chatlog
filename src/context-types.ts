@@ -1,6 +1,13 @@
 import type { InsightScope, InsightValidTime } from "./insights";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
+/**
+ * A recall result emits two terminal batches plus two lifecycle batches per
+ * branch. Keep the staged input and every stored session outbox finite.
+ */
+export const MAX_STAGED_RECALL_EVENT_BATCHES = 256;
+export const MAX_CONTEXT_RECALL_INVOCATIONS = 256;
+export const MAX_CONTEXT_SESSIONS = 1_024;
 
 export type ContextItemKind = "evidence" | "insight" | "procedure" | "current-state";
 export type ContextRiskClass = "low" | "medium" | "high";
@@ -42,15 +49,31 @@ export interface ContextBudget {
   costUsd: number;
 }
 
+export const MAX_CONTEXT_BUDGET: Readonly<ContextBudget> = {
+  tokens: 100_000,
+  results: 64,
+  latencyMs: 60_000,
+  costUsd: 100,
+};
+
 export interface ContextSessionBudget {
   total: ContextBudget;
   remaining: ContextBudget;
+}
+
+export interface RecallInvocationRecord {
+  invocationId: string;
+  invocationHash: string;
+  contentHash: string;
+  traceHash: string;
+  lifecycleTimestampFloor?: string;
 }
 
 export interface ContextSession {
   schemaVersion: typeof CONTEXT_SCHEMA_VERSION;
   contextSessionId: string;
   nativeSessionId: string | null;
+  sessionNonce: string | null;
   target: ContextTarget;
   projectIdentity: string;
   cwd: string;
@@ -62,12 +85,18 @@ export interface ContextSession {
   deliveryPolicyVersion: string;
   budget: ContextSessionBudget;
   consumedBundleHashes: string[];
+  committedDeliveryBatchHashes: string[];
+  attemptedBundleHashes: string[];
+  consumedRecallHashes: string[];
+  consumedRecallInvocations: RecallInvocationRecord[];
+  pendingEventBatchHashes: string[];
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ContextSessionInput {
   nativeSessionId: string | null;
+  sessionNonce?: string | null;
   provider: string;
   harness: string;
   model: string | null;
@@ -84,13 +113,16 @@ export interface ContextSessionInput {
   createdAt: string;
 }
 
+export interface ContextRequestScope extends InsightScope {
+  readonly itemPermissions?: readonly string[];
+}
 export interface ContextRequest {
   task: string;
   query: string;
   contextSessionId: string;
   target: ContextTarget;
   capabilities: ProviderContextCapabilities;
-  scope: InsightScope;
+  scope: ContextRequestScope;
   allowedItemKinds: ContextItemKind[];
   riskCeiling: ContextRiskClass;
   freshAfter: string | null;
@@ -133,6 +165,7 @@ export interface ContextBundleItem extends ContextCandidate {
 
 export type ContextOmissionReason =
   | "kind-not-allowed"
+  | "task-mismatch"
   | "exposure-denied"
   | "risk-ceiling"
   | "stale"

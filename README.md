@@ -28,13 +28,14 @@ and a source-connection screen.
 ```sh
 bun run ingest
 bun run workbench
-# open http://127.0.0.1:4789
+# open the one-time bootstrap URL that the server prints
 ```
 
-The server binds to loopback, reads the existing corpus without mutating it, and
-does not use hosted analytics. Set `CHATLOG_DATA_ROOT` when the data lives
+The server binds to loopback and creates a random credential for each launch.
+It requires this credential on all API routes. It reads the existing corpus
+and does not use hosted analytics. Set `CHATLOG_DATA_ROOT` when the data lives
 outside this checkout. See [docs/workbench.md](docs/workbench.md) for source
-configuration, the API, and privacy boundaries. The durable local-first product
+configuration, the API, and the privacy boundaries. The durable local-first product
 and deferred hosted-companion direction is recorded in
 [docs/product-direction.md](docs/product-direction.md).
 
@@ -49,11 +50,23 @@ CHATLOG_MCP_DOMAINS=coding \
 bun run mcp
 ```
 
-It implements local lexical search, one-turn evidence resolution, recent
-project work, and bounded project briefs. It opens no network listener and makes
-no hosted calls. The default domain policy is `coding`; `personal` and other
-domains require explicit enumeration. See [docs/mcp-tool-shape.md](docs/mcp-tool-shape.md)
-and [docs/access-policy.md](docs/access-policy.md).
+It implements local lexical search, one-turn evidence resolution, project state,
+accepted-memory recall, governed context delivery, and finite cooperative
+recall. The server opens no network listener and makes no hosted calls.
+The default domain is `coding`. Other domains require explicit enumeration.
+See [docs/mcp-tool-shape.md](docs/mcp-tool-shape.md) and
+[docs/access-policy.md](docs/access-policy.md).
+
+`chatlog_bounded_recall` requires a live context session from
+`chatlog_context`. Each branch inherits the session scope and a reduced budget.
+The runtime records branch lifecycle, returned evidence references, budget use,
+and the termination reason as immutable context events. The same path is
+available with `bun run src/cli.ts context recall <request.json>`.
+
+The synthetic transfer pilot at
+`eval/procedure-transfer-pilot/eval.json` compares no-memory, evidence-only, and
+procedure arms. It covers `keep`, `adapt`, and `reject` decisions without
+hosted calls. The evaluator is `src/procedure-transfer-evaluation.ts`.
 
 ## Deploy
 
@@ -291,6 +304,77 @@ the separate `derived/adjudication/refinery-private/` tree; do not open or copy
 it into the adjudicator's bundle. Validate completed labels with
 `bun run adjudication:verify -- <packet.json> <answers.json>` before treating
 them as gold.
+
+## Provider-agnostic context plane
+
+Chatlog keeps provider history, derived memory, and agent delivery behind
+separate authority boundaries:
+
+```mermaid
+flowchart LR
+  P[Provider records] --> A[Source adapters]
+  A --> E[Canonical redacted events]
+  E --> V[Evidence projections]
+  V --> L[Governed insight ledger]
+  L --> C[Context candidates]
+  C --> R[Release gate]
+  R --> D[Provider delivery adapter]
+  D --> O[Feedback and outcomes]
+  O --> E
+```
+
+Canonical events and immutable insight ledgers remain authoritative. Context
+bundles, startup text, MCP results, and prompt artifacts are replaceable views.
+Delivery adapters only encode a selected bundle. They cannot accept evidence,
+promote an insight, widen scope, or increase a budget.
+
+A context session pins the provider, harness, model, role, project, domains,
+working directory, path, source projections, policy versions, and total budget.
+Reusing a native session ID reuses those pins and the remaining budget. A later
+open with the same native ID must match its provider, harness, model, role,
+project, working directory, domains, and path; a mismatch is rejected rather
+than creating a fresh budget or pin set. Omitting that ID creates a new
+anonymous session, even when all other inputs match.
+The `chatlog_context` MCP tool requires the `contextSessionId` issued by the
+startup hook; it cannot open or rebind a session. Durable storage accepts at
+most 1,024 context sessions.
+At that cap, Chatlog reclaims only sessions with no durable activity, context
+events, or recall-result artifacts. It fails closed when every session has
+durable state.
+
+The delivery lifecycle is:
+
+1. `context start` pins a session to current evidence and insight projections.
+2. `context prepare` selects, budgets, and renders candidates without live delivery.
+3. `context authorize` stores a verified release gate.
+4. `context confirm` records the receipt and charges the rendered token count.
+5. `context feedback` and `context outcome` link observations to intervention events.
+
+`context deliver` combines start, prepare, and confirm for one candidate under
+the current authorized gate. It fails closed when the gate, scope, source
+projection, policy, or budget changed. An emission receipt proves only that
+Chatlog returned an artifact through the named surface. It does not prove that
+a model used it.
+
+Claude Code and Codex support startup hooks, tool recall, and fresh-session
+prompts. OMP and Pi support fresh-session prompt artifacts. The generic
+prompt-bundle adapter supports any named provider and harness. No current
+adapter claims provider acknowledgment.
+
+Bounded recall runs inside one context session. Every branch receives a smaller
+child budget and all branches share the parent totals. The result records
+evidence references, contradictions, omissions, branch failures, query lineage,
+novelty, stability, consumed budget, and one stop reason. Concurrent finalization
+spends a deterministic recall result once and publishes success only after the
+session budget commit succeeds.
+A context session accepts at most 256 distinct recall invocations. An exact
+retry does not spend the budget again. If a result becomes durable before its
+session debit, the retry recovers that result instead of rerunning adapters.
+
+Use `chatlog_context` for a governed MCP delivery. Pass its
+`contextSessionId` to `chatlog_bounded_recall`. See
+[`docs/mcp-tool-shape.md`](docs/mcp-tool-shape.md#context-sessions-and-bounded-recall)
+for input limits, adapter modes, receipt meaning, and CLI examples.
 
 ## Governed insight lifecycle
 

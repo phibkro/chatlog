@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from "node:fs";
 import { basename, relative } from "node:path";
 import { Effect } from "effect";
 import { readJsonLines, type JsonlParseError } from "../jsonl";
@@ -6,6 +7,7 @@ import type { SourceAdapter, SourceFile } from "../types";
 import { redact } from "../redact";
 import {
   AdaptError,
+  assertBoundedRecord,
   assertObject,
   discoverJsonl,
   EventBatchBuilder,
@@ -57,6 +59,26 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function sourceProjectKey(root: string, sourcePath: string): string | undefined {
+  const relativePath = relative(root, sourcePath);
+  if (!relativePath.includes("/") || relativePath.startsWith("../")) return undefined;
+  return relativePath.split("/")[0] || undefined;
+}
+
+function trustedSourceScope(
+  projectKey: string | undefined,
+  claimedCwd: string,
+): { readonly cwd: string; readonly project: string } | undefined {
+  if (!projectKey || claimedCwd.replaceAll(/[^A-Za-z0-9]/g, "-") !== projectKey) return undefined;
+  try {
+    const cwd = realpathSync(claimedCwd);
+    if (!statSync(cwd).isDirectory()) return undefined;
+    return { cwd, project: projectOf(cwd) };
+  } catch {
+    return undefined;
+  }
+}
+
 function blockText(block: Record<string, unknown>): string {
   if (typeof block.text === "string") return redact(block.text);
   if (typeof block.content === "string") return redact(block.content);
@@ -76,7 +98,7 @@ const adaptSource = Effect.fnUntraced(function* (
   let cwd = "";
   let model = "";
   let project = "";
-  const fallbackCwd = relative(root, source.path).split("/")[0] ?? "";
+  const boundProjectKey = sourceProjectKey(root, source.path);
   const builder = new EventBatchBuilder({
     provider: "anthropic",
     harness,
@@ -92,11 +114,29 @@ const adaptSource = Effect.fnUntraced(function* (
       ...(cwd ? { cwd } : {}),
     });
   };
-  const ensureFallbackScope = (): void => {
-    if (!cwd && fallbackCwd) {
-      cwd = fallbackCwd;
-      if (!project) project = projectOf(cwd);
+  const retainTrustedScope = (claimedCwd: string, claimedProject: string, line: number): void => {
+    const trusted = trustedSourceScope(boundProjectKey, claimedCwd);
+    if (!trusted) {
+      if (claimedCwd || claimedProject)
+        builder.loss(
+          "provider-field-unsupported",
+          "provider-reported scope does not match the Claude source project binding",
+          line,
+          undefined,
+          { itemType: "provider-scope", sourceProjectKey: boundProjectKey ?? "(unbound)" },
+        );
+      return;
     }
+    cwd = trusted.cwd;
+    project = trusted.project;
+    if (claimedProject && claimedProject !== project)
+      builder.loss(
+        "provider-field-unsupported",
+        "provider-reported project was replaced by the source-bound project identity",
+        line,
+        undefined,
+        { itemType: "provider-project" },
+      );
     updateScope();
   };
 
@@ -108,6 +148,7 @@ const adaptSource = Effect.fnUntraced(function* (
     rec: unknown,
     line: number,
   ): Effect.fn.Return<void, AdaptError> {
+    yield* assertBoundedRecord(rec, source.path, line);
     yield* assertObject(rec, source.path, line);
     const value = objectRecord(rec);
     const type = stringValue(value.type);
@@ -132,14 +173,8 @@ const adaptSource = Effect.fnUntraced(function* (
     }
     const observedCwd = stringValue(value.cwd);
     const observedProject = stringValue(value.project);
-    if (observedCwd) {
-      cwd = observedCwd;
-      project = observedProject || projectOf(cwd);
-    } else if (observedProject) {
-      project = observedProject;
-    }
+    if (observedCwd || observedProject) retainTrustedScope(observedCwd, observedProject, line);
     if (stringValue(value.model)) model = stringValue(value.model);
-    updateScope();
 
     if (type === "started") {
       const event = builder.add(
@@ -408,7 +443,6 @@ const adaptSource = Effect.fnUntraced(function* (
     }
 
     if (type === "result") {
-      ensureFallbackScope();
       const toolId = stringValue(value.tool_use_id, stringValue(value.toolCallId));
       if (toolId) {
         const causedBy = byNativeId.get(toolId);
@@ -561,7 +595,7 @@ const adaptSource = Effect.fnUntraced(function* (
   });
 
   const parsed = yield* readJsonLines(source.path, processRecord);
-  ensureFallbackScope();
+  updateScope();
   return builder.finish(parsed.partialTail, parsed.records);
 });
 

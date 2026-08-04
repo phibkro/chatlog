@@ -6,6 +6,7 @@ import type { SourceAdapter, SourceFile } from "../types";
 import { redact } from "../redact";
 import {
   AdaptError,
+  assertBoundedRecord,
   assertObject,
   discoverJsonl,
   EventBatchBuilder,
@@ -39,17 +40,18 @@ function blockText(block: Record<string, unknown>): string {
 }
 
 const adaptSource = Effect.fnUntraced(function* (
-  harness: "pi",
+  harness: "pi" | "omp",
   source: SourceFile,
 ): Effect.fn.Return<EventBatch, AdaptError | JsonlParseError> {
   let id = basename(source.path, ".jsonl");
   let cwd = "";
   let model = "";
   let provider = "(unknown)";
+  const sourceKind = `${harness}-session`;
   const builder = new EventBatchBuilder({
     provider,
     harness,
-    sourceKind: "pi-session",
+    sourceKind,
     source,
     sessionId: id,
   });
@@ -65,6 +67,7 @@ const adaptSource = Effect.fnUntraced(function* (
     rec: unknown,
     line: number,
   ): Effect.fn.Return<void, AdaptError> {
+    yield* assertBoundedRecord(rec, source.path, line);
     yield* assertObject(rec, source.path, line);
     const value = objectRecord(rec);
     const type = stringValue(value.type);
@@ -100,7 +103,7 @@ const adaptSource = Effect.fnUntraced(function* (
           cwd,
           project: projectOf(cwd),
           model,
-          sourceKind: "pi-session",
+          sourceKind,
           resumeId: id,
         },
         {
@@ -417,6 +420,17 @@ const adaptSource = Effect.fnUntraced(function* (
 
 export class PiAdapter implements SourceAdapter {
   readonly harness = "pi" as const;
+  constructor(private readonly root: string) {}
+  discover(): Promise<SourceFile[]> {
+    return discoverJsonl(this.root);
+  }
+  adapt(source: SourceFile): Promise<EventBatch> {
+    return Effect.runPromise(adaptSource(this.harness, source));
+  }
+}
+
+export class OmpAdapter implements SourceAdapter {
+  readonly harness = "omp" as const;
   constructor(private readonly root: string) {}
   discover(): Promise<SourceFile[]> {
     return discoverJsonl(this.root);

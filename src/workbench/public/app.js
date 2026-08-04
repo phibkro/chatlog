@@ -16,6 +16,10 @@ const state = {
   candidatePage: 1,
   candidatePageSize: 20,
   recallMode: "search",
+  context: null,
+  contextError: null,
+  contextLoading: true,
+  contextFeedback: {},
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -119,6 +123,28 @@ function evidenceRows(evidence, label) {
 
 const readableCategory = (value = "") => value.replaceAll("-", " ");
 const desktopNavigation = window.matchMedia("(min-width: 70rem)");
+const WORKBENCH_BOOTSTRAP_PREFIX = "#chatlog-workbench=";
+
+function clearBootstrapFragment() {
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+async function bootstrapWorkbench() {
+  const fragment = window.location.hash;
+  if (!fragment.startsWith(WORKBENCH_BOOTSTRAP_PREFIX)) return;
+  const credential = fragment.slice(WORKBENCH_BOOTSTRAP_PREFIX.length);
+  clearBootstrapFragment();
+  if (!/^[A-Za-z0-9_-]+$/u.test(credential)) return;
+  try {
+    await fetch("/auth/bootstrap", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Authorization: `Bearer ${credential}` },
+    });
+  } catch {
+    // The regular API load reports an unavailable workbench without exposing credentials.
+  }
+}
 
 function setNavigationOpen(open, { restoreFocus = false } = {}) {
   const sidebar = $("#primary-sidebar");
@@ -141,7 +167,7 @@ function syncNavigationMode() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await fetch(path, { ...options, credentials: "same-origin" });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Request failed: ${response.status}`);
   return body;
@@ -825,9 +851,760 @@ function renderSources() {
   $("#receipt-list").insertAdjacentHTML("beforeend", `${sourceAudit}${nominationAudit}`);
 }
 
+const CONTEXT_EVENT_LABELS = {
+  "context.bundle.proposed": "Bundle proposed",
+  "context.bundle.rendered": "Bundle rendered",
+  "context.bundle.emitted": "Bundle emitted",
+  "context.bundle.acknowledged": "Provider acknowledgment",
+  "context.recall.returned": "Recall returned",
+  "context.procedure.returned": "Procedure returned",
+  "context.delivery.failed": "Delivery failed",
+  "context.feedback.asserted": "Feedback recorded",
+  "context.outcome.observed": "Outcome observed",
+};
+
+const CONTEXT_FEEDBACK_OPTIONS = [
+  ["helpful", "Helpful"],
+  ["harmful", "Harmful"],
+  ["stale", "Stale"],
+  ["mis-scoped", "Mis-scoped"],
+  ["irrelevant", "Irrelevant"],
+  ["incorrect", "Incorrect"],
+];
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function stringValues(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+function finiteContextNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function formatDateTime(value) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Time unavailable"
+    : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatContextBudgetValue(key, value) {
+  const number = finiteContextNumber(value);
+  if (key === "costUsd") return `$${number.toFixed(4)}`;
+  if (key === "latencyMs") return `${formatNumber(number)} ms`;
+  return formatNumber(number);
+}
+
+function contextScopeLabel(scopeValue) {
+  const scope = objectValue(scopeValue);
+  const parts = [
+    ["domain", scope.domain],
+    ["project", scope.project],
+    ["repository", scope.repository],
+    ["path", scope.path],
+    ["harness", scope.harness],
+    ["model", scope.model],
+    ["tool", scope.tool],
+  ]
+    .filter(([, value]) => typeof value === "string" && value)
+    .map(([label, value]) => `${label}: ${value}`);
+  return parts.length ? parts.join(" · ") : "Explicit global scope";
+}
+
+function contextInsightAuthorityKind(insight) {
+  const records = Array.isArray(insight.authority) ? insight.authority : [];
+  const kinds = records
+    .map((record) => (typeof record === "string" ? record : objectValue(record).kind))
+    .filter((kind) => typeof kind === "string");
+  const ranking = [
+    "authoritative-document",
+    "measured-evaluation",
+    "human-review",
+    "human-assertion",
+    "deterministic-derivation",
+    "source-observation",
+    "model-proposal",
+    "assumption",
+  ];
+  return ranking.find((kind) => kinds.includes(kind)) || kinds[0] || "authority unavailable";
+}
+
+function contextAuthorityTone(value) {
+  if (["human", "human-review", "human-assertion", "gate-observed"].includes(value)) return "human";
+  if (
+    ["provider", "provider-observed", "measured-evaluation", "authoritative-document"].includes(
+      value,
+    )
+  )
+    return "observed";
+  if (["agent", "agent-self-report", "model-proposal", "heuristic"].includes(value))
+    return "asserted";
+  return "system";
+}
+
+function contextEventAuthority(event) {
+  const payload = objectValue(event.payload);
+  const evidenceGrade = event.evidenceGrade || payload.evidenceGrade;
+  if (event.kind === "context.outcome.observed") {
+    const byGrade = {
+      "gate-observed": {
+        label: "Gate-observed outcome",
+        detail: "Backed by gate evidence, not an agent success statement.",
+      },
+      "provider-observed": {
+        label: "Provider-observed outcome",
+        detail: "Reported at the provider boundary; separate from an agent assertion.",
+      },
+      "human-asserted": {
+        label: "Human-asserted outcome",
+        detail: "Recorded with human authority.",
+      },
+      heuristic: {
+        label: "Heuristic observation",
+        detail: "A bounded inference, not direct provider or gate evidence.",
+      },
+      "agent-self-report": {
+        label: "Agent assertion",
+        detail: "The agent reported this outcome; it is not independent observation.",
+      },
+    };
+    const presentation = byGrade[evidenceGrade] || {
+      label: "Evidence grade unavailable",
+      detail: "No outcome authority grade is available.",
+    };
+    return {
+      ...presentation,
+      tone: contextAuthorityTone(evidenceGrade || "unknown"),
+    };
+  }
+  const authority = event.actorAuthority || payload.actorAuthority || "unknown";
+  const byAuthority = {
+    human: ["Human authority", "Recorded by a human operator."],
+    provider: ["Provider observation", "Reported by the provider boundary."],
+    agent: [
+      "Agent assertion",
+      "An agent assertion is weak evidence and cannot change active state.",
+    ],
+    tool: ["Tool observation", "Recorded by a bounded tool boundary."],
+    system: ["Chatlog system record", "Recorded by the governed context plane."],
+    unknown: ["Authority unavailable", "Actor authority was not available in this projection."],
+  };
+  const [label, detail] = byAuthority[authority] || byAuthority.unknown;
+  return { label, detail, tone: contextAuthorityTone(authority) };
+}
+
+function contextReleaseHtml(release, insightByRevision) {
+  if (!release) {
+    return `<div class="panel-heading">
+        <div><p class="eyebrow">Human authority boundary</p><h2 id="context-release-heading">Release authorization</h2></div>
+        <span class="context-authority authority-asserted">Not authorized</span>
+      </div>
+      <div class="context-release-state">
+        <strong>No operator-authorized release gate is installed.</strong>
+        <p>Context delivery remains unavailable until a reviewed closed-loop gate authorizes an exposure stage.</p>
+      </div>`;
+  }
+  const stage = typeof release.stage === "string" ? release.stage : "unknown";
+  const candidate = insightByRevision.get(release.candidateId);
+  return `<div class="panel-heading">
+      <div><p class="eyebrow">Human authority boundary</p><h2 id="context-release-heading">Release authorization</h2></div>
+      <span class="context-authority authority-human">Operator-authorized</span>
+    </div>
+    <div class="context-release-state authorized">
+      <div>
+        <span class="context-release-stage">${escapeHtml(readableCategory(stage))}</span>
+        <strong>${escapeHtml(candidate?.proposition || release.candidateId || "Candidate unavailable")}</strong>
+        ${candidate ? `<code class="context-release-candidate" title="${escapeHtml(release.candidateId)}">${escapeHtml(release.candidateId)}</code>` : ""}
+        <p>This gate authorizes only the named candidate and exposure stage. It does not authorize broader delivery.</p>
+      </div>
+      <dl class="context-release-facts">
+        <div><dt>Evaluation</dt><dd>${escapeHtml(release.evaluationId || "Unavailable")}</dd></div>
+        <div><dt>Authorized</dt><dd><time datetime="${escapeHtml(release.authorizedAt || "")}">${escapeHtml(formatDateTime(release.authorizedAt))}</time></dd></div>
+        <div><dt>Gate hash</dt><dd><code title="${escapeHtml(release.gateHash || "")}">${escapeHtml(shortHash(release.gateHash))}</code></dd></div>
+      </dl>
+    </div>`;
+}
+
+function contextTotalsHtml(totalsValue) {
+  const totals = objectValue(totalsValue);
+  const stats = [
+    ["Sessions", totals.sessions, "Persisted context-session records", "⌁"],
+    [
+      "Delivered",
+      totals.delivered,
+      "Recall and procedure returns + bundle emissions; never inferred use",
+      "⇥",
+    ],
+    ["Feedback", totals.feedback, "Human-authority feedback records", "◇"],
+    ["Outcomes", totals.outcomes, "Associated observations, not causal claims", "◉"],
+  ];
+  return stats
+    .map(
+      ([label, value, foot, icon]) => `<article class="stat-card">
+        <div class="stat-top"><span>${escapeHtml(label)}</span><span class="stat-icon">${icon}</span></div>
+        <div class="stat-value">${formatNumber(value)}</div>
+        <div class="stat-foot">${escapeHtml(foot)}</div>
+      </article>`,
+    )
+    .join("");
+}
+
+function contextEvidenceIdentifiers(values, label) {
+  const identifiers = stringValues(values);
+  if (!identifiers.length) return "";
+  return `<details class="context-identifiers">
+    <summary>${escapeHtml(label)} · ${formatNumber(identifiers.length)}</summary>
+    <div>${identifiers
+      .map(
+        (identifier) => `<code title="${escapeHtml(identifier)}">${escapeHtml(identifier)}</code>`,
+      )
+      .join("")}</div>
+  </details>`;
+}
+
+function contextInsightsHtml(insights) {
+  if (!insights.length)
+    return `<div class="empty spacious">No active governed insights are eligible. Candidate, disputed, expired, and retired revisions are intentionally excluded.</div>`;
+  return insights
+    .map((insight) => {
+      const authority = contextInsightAuthorityKind(insight);
+      const support = stringValues(insight.supportEvidence);
+      const counter = stringValues(insight.counterEvidence);
+      const validTime = objectValue(insight.validTime);
+      return `<section class="context-insight">
+        <header>
+          <div class="context-insight-badges">
+            <span class="badge">${escapeHtml(readableCategory(insight.kind || "unknown"))}</span>
+            <span class="badge risk-${escapeHtml(insight.riskClass || "unknown")}">${escapeHtml(insight.riskClass || "risk unavailable")} risk</span>
+          </div>
+          <span class="context-authority authority-${contextAuthorityTone(authority)}">${escapeHtml(readableCategory(authority))}</span>
+        </header>
+        <p class="context-proposition">${escapeHtml(insight.proposition || "Proposition unavailable")}</p>
+        ${insight.procedure ? `<div class="context-procedure"><span class="context-micro-label">Procedure</span><p>${escapeHtml(insight.procedure)}</p></div>` : ""}
+        <dl class="context-insight-facts">
+          <div><dt>Selection basis</dt><dd>Active governed revision · advisory only</dd></div>
+          <div><dt>Scope</dt><dd>${escapeHtml(contextScopeLabel(insight.scope))}</dd></div>
+          <div><dt>Valid time</dt><dd>${escapeHtml(formatDate(validTime.start))} → ${validTime.end ? escapeHtml(formatDate(validTime.end)) : "open"}</dd></div>
+          <div><dt>Evidence</dt><dd>${formatNumber(support.length)} support · ${formatNumber(counter.length)} counter</dd></div>
+        </dl>
+        <div class="context-insight-identity">
+          <code title="${escapeHtml(insight.insightId || "")}">${escapeHtml(insight.insightId || "Insight ID unavailable")}</code>
+          <code title="${escapeHtml(insight.revisionId || "")}">${escapeHtml(insight.revisionId || "Revision ID unavailable")}</code>
+        </div>
+        ${contextEvidenceIdentifiers(support, "Support evidence")}
+        ${contextEvidenceIdentifiers(counter, "Counterevidence")}
+      </section>`;
+    })
+    .join("");
+}
+
+function selectedItemIds(event, events) {
+  const payload = objectValue(event.payload);
+  const values = new Set(stringValues(payload.itemIds));
+  if (typeof event.itemId === "string" && event.itemId) values.add(event.itemId);
+  if (event.bundleHash) {
+    for (const candidate of events) {
+      if (candidate.bundleHash !== event.bundleHash) continue;
+      for (const itemId of stringValues(objectValue(candidate.payload).itemIds)) values.add(itemId);
+    }
+  }
+  return [...values];
+}
+
+function bundleReference(event, events) {
+  if (!event.bundleHash) return event;
+  return (
+    events.find(
+      (candidate) =>
+        candidate.bundleHash === event.bundleHash &&
+        stringValues(objectValue(candidate.payload).itemIds).length,
+    ) ||
+    events.find(
+      (candidate) =>
+        candidate.bundleHash === event.bundleHash &&
+        Object.keys(objectValue(objectValue(candidate.payload).bounds)).length,
+    ) ||
+    event
+  );
+}
+
+function selectedContextHtml(itemIds, insightByRevision) {
+  if (!itemIds.length)
+    return `<div class="context-selection-empty">No selected item identifiers are available in this bounded event.</div>`;
+  return `<div class="context-selection">
+    <span class="context-micro-label">Why this context was selected</span>
+    ${itemIds
+      .map((itemId) => {
+        const insight = insightByRevision.get(itemId);
+        if (!insight)
+          return `<div class="context-selected-item">
+            <strong>Bounded item ${escapeHtml(shortHash(itemId))}</strong>
+            <span>Selected by the governed planner. Its descriptive record is unavailable in the active insight projection.</span>
+            <code title="${escapeHtml(itemId)}">${escapeHtml(itemId)}</code>
+          </div>`;
+        const authority = contextInsightAuthorityKind(insight);
+        return `<div class="context-selected-item">
+          <strong>${escapeHtml(insight.proposition || insight.kind || "Governed insight")}</strong>
+          <span>Active ${escapeHtml(readableCategory(insight.kind || "insight"))} matched the requested task and scope · ${escapeHtml(readableCategory(authority))} · ${escapeHtml(contextScopeLabel(insight.scope))}</span>
+          <code title="${escapeHtml(itemId)}">${escapeHtml(itemId)}</code>
+        </div>`;
+      })
+      .join("")}
+  </div>`;
+}
+
+function contextBudgetFacts(reference) {
+  const payload = objectValue(reference.payload);
+  const bounds = objectValue(payload.bounds);
+  if (!Object.keys(bounds).length) return "";
+  const parts = [];
+  if ("beforeTokens" in bounds || "afterTokens" in bounds)
+    parts.push(`tokens ${formatNumber(bounds.beforeTokens)} → ${formatNumber(bounds.afterTokens)}`);
+  if ("beforeResults" in bounds || "afterResults" in bounds)
+    parts.push(
+      `results ${formatNumber(bounds.beforeResults)} → ${formatNumber(bounds.afterResults)}`,
+    );
+  if ("beforeLatencyMs" in bounds || "afterLatencyMs" in bounds)
+    parts.push(
+      `latency ${formatNumber(bounds.beforeLatencyMs)} → ${formatNumber(bounds.afterLatencyMs)} ms`,
+    );
+  if ("beforeCostUsd" in bounds || "afterCostUsd" in bounds)
+    parts.push(
+      `cost $${finiteContextNumber(bounds.beforeCostUsd).toFixed(4)} → $${finiteContextNumber(bounds.afterCostUsd).toFixed(4)}`,
+    );
+  return parts.length
+    ? `<div class="context-event-facts"><span class="context-micro-label">Planned budget</span><p>${escapeHtml(parts.join(" · "))}</p></div>`
+    : "";
+}
+
+function contextSessionBudgetHtml(session) {
+  const budget = objectValue(session.budget);
+  const total = objectValue(budget.total);
+  const remaining = objectValue(budget.remaining);
+  if (!Object.keys(total).length || !Object.keys(remaining).length)
+    return `<div class="empty">Remaining budget is unavailable for this session.</div>`;
+  const rows = [
+    ["tokens", "Tokens"],
+    ["results", "Results"],
+    ["latencyMs", "Latency"],
+    ["costUsd", "Cost"],
+  ];
+  return `<div class="context-budget-grid">${rows
+    .map(([key, label]) => {
+      const maximum = finiteContextNumber(total[key]);
+      const current = Math.min(finiteContextNumber(remaining[key]), maximum);
+      return `<div class="context-budget-row">
+        <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatContextBudgetValue(key, current))} <small>of ${escapeHtml(formatContextBudgetValue(key, maximum))}</small></strong></div>
+        <progress aria-label="${escapeHtml(`${label} remaining`)}" max="${maximum || 1}" value="${current}"></progress>
+      </div>`;
+    })
+    .join("")}</div>`;
+}
+
+function contextMetricsHtml(metricsValue) {
+  const entries = Object.entries(objectValue(metricsValue));
+  if (!entries.length) return "";
+  return `<div class="context-metrics">
+    ${entries
+      .map(
+        ([key, value]) => `<div>
+          <span>${escapeHtml(readableCategory(key))}</span>
+          <strong>${escapeHtml(typeof value === "number" ? formatNumber(value) : String(value))}</strong>
+        </div>`,
+      )
+      .join("")}
+  </div>`;
+}
+
+function contextLineageHtml(event) {
+  const interventionIds = stringValues(event.interventionEventIds);
+  const knownLineage = stringValues(event.knownInterventionLineage);
+  if (!interventionIds.length && !knownLineage.length) return "";
+  return `<details class="context-identifiers context-lineage">
+    <summary>Associated intervention lineage · ${formatNumber(interventionIds.length + knownLineage.length)}</summary>
+    <div>
+      ${interventionIds.map((id) => `<code title="${escapeHtml(id)}">intervention · ${escapeHtml(id)}</code>`).join("")}
+      ${knownLineage.map((id) => `<code title="${escapeHtml(id)}">known lineage · ${escapeHtml(id)}</code>`).join("")}
+    </div>
+    <p>Association preserves lineage; it does not establish causation.</p>
+  </details>`;
+}
+
+function contextOutcomeHtml(event) {
+  const payload = objectValue(event.payload);
+  const status = event.outcomeStatus || payload.outcomeStatus || payload.status || "unknown";
+  const grade = event.evidenceGrade || payload.evidenceGrade || "unavailable";
+  const treatment = event.treatmentArm || payload.treatmentArm || "unavailable";
+  const classification =
+    event.evidenceClassification || payload.evidenceClassification || "unavailable";
+  const resolved =
+    event.unresolved === true
+      ? "Unresolved"
+      : event.unresolved === false
+        ? "Resolved"
+        : "Resolution unavailable";
+  return `<div class="context-outcome">
+    <div class="context-outcome-summary">
+      <div><span>Status</span><strong class="outcome-${escapeHtml(status)}">${escapeHtml(readableCategory(status))}</strong></div>
+      <div><span>Evidence grade</span><strong>${escapeHtml(readableCategory(grade))}</strong></div>
+      <div><span>Treatment</span><strong>${escapeHtml(readableCategory(treatment))}</strong></div>
+      <div><span>Independence</span><strong>${escapeHtml(readableCategory(classification))}</strong></div>
+      <div><span>Resolution</span><strong>${escapeHtml(resolved)}</strong></div>
+    </div>
+    ${contextMetricsHtml(payload.metrics)}
+    <p class="context-causality">This observation is associated with intervention lineage. The ledger makes no causal claim.</p>
+  </div>`;
+}
+
+function contextFeedbackRecordHtml(event) {
+  const payload = objectValue(event.payload);
+  const signal = payload.signal || payload.feedbackSignal || "signal unavailable";
+  const strength =
+    payload.feedbackAuthority === "weak"
+      ? "Weak agent assertion"
+      : payload.feedbackAuthority === "strong"
+        ? "Human-authority feedback"
+        : "Feedback authority unavailable";
+  return `<div class="context-feedback-record">
+    <strong>${escapeHtml(readableCategory(String(signal)))}</strong>
+    <span>${escapeHtml(strength)}${event.itemId ? ` · item ${escapeHtml(event.itemId)}` : ""}</span>
+    ${payload.note ? `<p>${escapeHtml(payload.note)}</p>` : ""}
+  </div>`;
+}
+
+function contextFeedbackFormHtml(sessionId, eventId, itemIds) {
+  const feedback = state.contextFeedback[eventId];
+  const statusId = `context-feedback-status-${eventId}`;
+  const itemId = itemIds.length === 1 ? itemIds[0] : "";
+  return `<form class="context-feedback-form" data-context-session-id="${escapeHtml(sessionId)}" data-intervention-event-id="${escapeHtml(eventId)}">
+    <fieldset>
+      <legend>Record human feedback for this delivered event</legend>
+      <div class="context-feedback-grid">
+        <label>
+          <span>Signal</span>
+          <select name="signal" required>
+            <option value="">Choose a signal…</option>
+            ${CONTEXT_FEEDBACK_OPTIONS.map(
+              ([value, label]) =>
+                `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`,
+            ).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Operator ID</span>
+          <input name="operatorId" required maxlength="80" autocomplete="off" placeholder="local-operator" />
+        </label>
+        <label>
+          <span>Item ID <small>optional</small></span>
+          <input name="itemId" maxlength="1500" autocomplete="off" value="${escapeHtml(itemId)}" placeholder="Apply to the whole delivery" />
+        </label>
+        <label class="context-feedback-note">
+          <span>Note <small>optional · maximum 1,500 characters</small></span>
+          <textarea name="note" rows="2" maxlength="1500" placeholder="What helped, harmed, or did not fit?"></textarea>
+        </label>
+      </div>
+      <div class="context-feedback-actions">
+        <button type="submit">Record feedback</button>
+        <p id="${escapeHtml(statusId)}" class="context-feedback-status ${feedback?.tone === "success" ? "success" : ""}" role="${feedback?.tone === "error" ? "alert" : "status"}" aria-live="${feedback?.tone === "error" ? "assertive" : "polite"}">${feedback ? escapeHtml(feedback.message) : "Feedback affects future review only. It does not change this active session."}</p>
+      </div>
+    </fieldset>
+  </form>`;
+}
+
+function contextEventTone(event) {
+  if (event.kind === "context.delivery.failed") return "negative";
+  if (event.kind === "context.feedback.asserted") return "feedback";
+  if (event.kind === "context.outcome.observed")
+    return contextEventAuthority(event).tone === "asserted" ? "asserted" : "observed";
+  if (
+    [
+      "context.bundle.emitted",
+      "context.bundle.acknowledged",
+      "context.recall.returned",
+      "context.procedure.returned",
+    ].includes(event.kind)
+  )
+    return "delivered";
+  return "planned";
+}
+
+function contextEventHtml(event, session, events, insightByRevision) {
+  const payload = objectValue(event.payload);
+  const reference = bundleReference(event, events);
+  const referencePayload = objectValue(reference.payload);
+  const provenance = objectValue(referencePayload.provenance);
+  const target = objectValue(session.target);
+  const itemIds = selectedItemIds(event, events);
+  const authority = contextEventAuthority(event);
+  const delivered = [
+    "context.bundle.emitted",
+    "context.recall.returned",
+    "context.procedure.returned",
+  ].includes(event.kind);
+  const hasProposal = events.some(
+    (candidate) =>
+      candidate.kind === "context.bundle.proposed" &&
+      candidate.bundleHash &&
+      candidate.bundleHash === event.bundleHash,
+  );
+  const showSelection = event.kind === "context.bundle.proposed" || (delivered && !hasProposal);
+  const destination = delivered
+    ? `<div class="context-destination">
+        <span>Delivered to</span>
+        <strong>${escapeHtml(target.provider || "Unknown provider")} · ${escapeHtml(target.harness || "Unknown harness")}</strong>
+        <small>${escapeHtml(provenance.deliveryMode ? readableCategory(provenance.deliveryMode) : "Delivery mode unavailable")}${target.model ? ` · ${escapeHtml(target.model)}` : ""}${payload.adapterId ? ` · ${escapeHtml(payload.adapterId)}` : ""}</small>
+      </div>`
+    : "";
+  const eventFacts = [
+    referencePayload.omissionCount != null
+      ? `${formatNumber(referencePayload.omissionCount)} omissions`
+      : "",
+    provenance.exposure ? `${readableCategory(provenance.exposure)} exposure` : "",
+    payload.receiptEvidence ? `${readableCategory(payload.receiptEvidence)} receipt` : "",
+  ].filter(Boolean);
+  const failure =
+    event.kind === "context.delivery.failed"
+      ? `<p class="context-event-error">${escapeHtml(payload.message || payload.error || payload.reason || "The delivery failure reason is unavailable.")}</p>`
+      : "";
+  const specific =
+    event.kind === "context.outcome.observed"
+      ? contextOutcomeHtml(event)
+      : event.kind === "context.feedback.asserted"
+        ? contextFeedbackRecordHtml(event)
+        : "";
+  return `<article class="context-event context-event-${contextEventTone(event)}">
+    <div class="context-event-marker" aria-hidden="true"></div>
+    <div class="context-event-body">
+      <header>
+        <div>
+          <span class="context-event-state">${escapeHtml(CONTEXT_EVENT_LABELS[event.kind] || readableCategory(event.state || event.kind || "Unknown event"))}</span>
+          <time datetime="${escapeHtml(event.occurredAt || event.observedAt || "")}">${escapeHtml(formatDateTime(event.occurredAt || event.observedAt))}</time>
+        </div>
+        <span class="context-authority authority-${authority.tone}" title="${escapeHtml(authority.detail)}">${escapeHtml(authority.label)}</span>
+      </header>
+      <p class="context-authority-detail">${escapeHtml(authority.detail)}</p>
+      ${eventFacts.length ? `<p class="context-event-summary">${escapeHtml(eventFacts.join(" · "))}</p>` : ""}
+      ${destination}
+      ${showSelection ? selectedContextHtml(itemIds, insightByRevision) : ""}
+      ${showSelection ? contextBudgetFacts(reference) : ""}
+      ${failure}
+      ${specific}
+      ${contextLineageHtml(event)}
+      <div class="context-event-identity">
+        <code title="${escapeHtml(event.eventId || "")}">event · ${escapeHtml(event.eventId || "unavailable")}</code>
+        ${event.bundleHash ? `<code title="${escapeHtml(event.bundleHash)}">bundle · ${escapeHtml(event.bundleHash)}</code>` : ""}
+      </div>
+      ${delivered ? contextFeedbackFormHtml(session.contextSessionId, event.eventId, itemIds) : ""}
+    </div>
+  </article>`;
+}
+
+function contextSessionHtml(entry, index, insightByRevision) {
+  const session = objectValue(entry.session);
+  const events = Array.isArray(entry.events) ? entry.events : [];
+  const target = objectValue(session.target);
+  const domainPolicy = stringValues(session.domainPolicy);
+  const headingId = `context-session-heading-${index}`;
+  return `<section class="context-session" aria-labelledby="${headingId}">
+    <header class="context-session-head">
+      <div class="context-target-mark" aria-hidden="true">${escapeHtml(
+        String(target.provider || "?")
+          .slice(0, 1)
+          .toUpperCase(),
+      )}</div>
+      <div>
+        <span class="context-micro-label">Provider / harness target</span>
+        <h3 id="${headingId}">${escapeHtml(target.provider || "Unknown provider")} <span>via ${escapeHtml(target.harness || "unknown harness")}</span></h3>
+        <p>${target.model ? `${escapeHtml(target.model)} · ` : ""}${escapeHtml(target.role || "role unavailable")} · ${escapeHtml(session.projectIdentity || "project unavailable")}</p>
+      </div>
+      <span class="badge">${formatNumber(events.length)} bounded events</span>
+    </header>
+    <dl class="context-session-facts">
+      <div><dt>Context session</dt><dd><code>${escapeHtml(session.contextSessionId || "Unavailable")}</code></dd></div>
+      <div><dt>Provider session</dt><dd>${escapeHtml(session.nativeSessionId || "Not reported")}</dd></div>
+      <div><dt>Domain policy</dt><dd>${domainPolicy.length ? escapeHtml(domainPolicy.join(", ")) : "Unavailable"}</dd></div>
+      <div><dt>Updated</dt><dd>${escapeHtml(formatDateTime(session.updatedAt || session.createdAt))}</dd></div>
+    </dl>
+    <section class="context-budget" aria-label="Remaining context budget">
+      <div class="context-subheading">
+        <div><span class="context-micro-label">Hard bounds</span><h4>Remaining budget</h4></div>
+        <span>after delivered bundles</span>
+      </div>
+      ${contextSessionBudgetHtml(session)}
+    </section>
+    <details class="context-session-provenance">
+      <summary>Inspect pinned policy and projection identifiers</summary>
+      <dl>
+        <div><dt>Selection policy</dt><dd><code>${escapeHtml(session.selectionPolicyVersion || "Unavailable")}</code></dd></div>
+        <div><dt>Delivery policy</dt><dd><code>${escapeHtml(session.deliveryPolicyVersion || "Unavailable")}</code></dd></div>
+        <div><dt>Insight projection</dt><dd><code>${escapeHtml(session.pinnedInsightProjectionHash || "Unavailable")}</code></dd></div>
+        <div><dt>Evidence projection</dt><dd><code>${escapeHtml(session.pinnedEvidenceProjectionHash || "Unavailable")}</code></dd></div>
+      </dl>
+    </details>
+    <div class="context-event-ledger">
+      <div class="context-subheading">
+        <div><span class="context-micro-label">Chain of custody</span><h4>Interventions and observations</h4></div>
+        <span>ordered ledger</span>
+      </div>
+      ${events.length ? events.map((event) => contextEventHtml(event, session, events, insightByRevision)).join("") : `<div class="empty">No context events are recorded for this session.</div>`}
+    </div>
+  </section>`;
+}
+
+function renderContextLoading() {
+  $("#context-view-status").setAttribute("role", "status");
+  $("#context-view-status").textContent = "Loading governed context…";
+  $("#context-release").innerHTML =
+    `<div class="panel-heading"><div><p class="eyebrow">Human authority boundary</p><h2 id="context-release-heading">Release authorization</h2></div></div><div class="empty">Loading release authorization…</div>`;
+  $("#context-totals").innerHTML =
+    `<div class="empty spacious">Loading context activity totals…</div>`;
+  $("#context-insights").innerHTML = `<div class="empty">Loading active governed insights…</div>`;
+  $("#context-sessions").innerHTML =
+    `<div class="empty">Loading provider and harness sessions…</div>`;
+  $("#context-insights").setAttribute("aria-busy", "true");
+  $("#context-sessions").setAttribute("aria-busy", "true");
+}
+
+function renderContextError(message) {
+  const copy = `Context plane unavailable: ${message}`;
+  $("#context-view-status").setAttribute("role", "alert");
+  $("#context-view-status").textContent = "Context plane unavailable";
+  $("#context-release").innerHTML =
+    `<div class="panel-heading"><div><p class="eyebrow">Human authority boundary</p><h2 id="context-release-heading">Release authorization</h2></div></div><div class="empty context-error">${escapeHtml(copy)}</div>`;
+  $("#context-totals").innerHTML =
+    `<div class="empty spacious context-error">${escapeHtml(copy)} No activity counts are shown as authoritative.</div>`;
+  $("#context-insights").innerHTML =
+    `<div class="empty context-error">${escapeHtml(copy)} Active eligibility is unknown.</div>`;
+  $("#context-sessions").innerHTML =
+    `<div class="empty context-error">${escapeHtml(copy)} Delivery and outcome records could not be inspected.</div>`;
+  $("#context-insights").setAttribute("aria-busy", "false");
+  $("#context-sessions").setAttribute("aria-busy", "false");
+}
+
+function renderContext() {
+  if (state.contextLoading && !state.context) {
+    renderContextLoading();
+    return;
+  }
+  if (state.contextError) {
+    renderContextError(state.contextError);
+    return;
+  }
+  const view = state.context;
+  if (
+    !view ||
+    !Array.isArray(view.insights) ||
+    !Array.isArray(view.sessions) ||
+    !view.totals ||
+    typeof view.totals !== "object"
+  ) {
+    renderContextError("The server response did not match the governed context contract.");
+    return;
+  }
+  const insightByRevision = new Map(
+    view.insights
+      .filter((insight) => typeof insight.revisionId === "string")
+      .map((insight) => [insight.revisionId, insight]),
+  );
+  $("#context-view-status").setAttribute("role", "status");
+  $("#context-view-status").textContent = state.contextLoading
+    ? "Refreshing governed context…"
+    : `${formatNumber(view.sessions.length)} context sessions loaded`;
+  $("#context-release").innerHTML = contextReleaseHtml(view.release, insightByRevision);
+  $("#context-totals").innerHTML = contextTotalsHtml(view.totals);
+  $("#context-insights").innerHTML = contextInsightsHtml(view.insights);
+  $("#context-sessions").innerHTML =
+    view.sessions
+      .map((entry, index) => contextSessionHtml(entry, index, insightByRevision))
+      .join("") ||
+    `<div class="empty spacious">No context sessions have been persisted. Delivery, budget, feedback, and outcome records will appear after a governed session starts.</div>`;
+  $("#context-insights").setAttribute("aria-busy", "false");
+  $("#context-sessions").setAttribute("aria-busy", "false");
+}
+
+async function loadContext() {
+  state.contextLoading = true;
+  state.contextError = null;
+  renderContext();
+  try {
+    state.context = await api("/api/context");
+  } catch (error) {
+    state.context = null;
+    state.contextError = error.message;
+  } finally {
+    state.contextLoading = false;
+    renderContext();
+  }
+}
+
+async function submitContextFeedback(form) {
+  if (!form.reportValidity()) return;
+  const formData = new FormData(form);
+  const contextSessionId = form.dataset.contextSessionId;
+  const interventionEventId = form.dataset.interventionEventId;
+  const signal = String(formData.get("signal") || "");
+  const operatorId = String(formData.get("operatorId") || "").trim();
+  const itemId = String(formData.get("itemId") || "").trim();
+  const note = String(formData.get("note") || "").trim();
+  const body = {
+    contextSessionId,
+    interventionEventId,
+    signal,
+    operatorId,
+    ...(itemId ? { itemId } : {}),
+    ...(note ? { note } : {}),
+  };
+  const controls = $$("input, select, textarea, button", form);
+  const status = $(".context-feedback-status", form);
+  const submit = $('button[type="submit"]', form);
+  form.setAttribute("aria-busy", "true");
+  controls.forEach((control) => {
+    control.disabled = true;
+  });
+  submit.textContent = "Recording…";
+  status.className = "context-feedback-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.textContent = "Recording human-authority feedback…";
+  try {
+    const refreshed = await api("/api/context/feedback", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chatlog-Context": "1",
+      },
+      body: JSON.stringify(body),
+    });
+    const label = CONTEXT_FEEDBACK_OPTIONS.find(([value]) => value === signal)?.[1] || signal;
+    state.context = refreshed;
+    state.contextError = null;
+    state.contextFeedback[interventionEventId] = {
+      tone: "success",
+      message: `${label} feedback recorded with human authority.`,
+    };
+    renderContext();
+  } catch (error) {
+    form.setAttribute("aria-busy", "false");
+    controls.forEach((control) => {
+      control.disabled = false;
+    });
+    submit.textContent = "Record feedback";
+    status.className = "context-feedback-status error";
+    status.setAttribute("role", "alert");
+    status.setAttribute("aria-live", "assertive");
+    status.textContent = `Feedback was not recorded: ${error.message}`;
+  }
+}
+
 async function load() {
   $("#day-part").textContent =
     new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening";
+  const contextRequest = loadContext();
   try {
     [state.overview, state.projects, state.sources] = await Promise.all([
       api("/api/overview"),
@@ -880,6 +1657,7 @@ async function load() {
     $("#sync-copy").textContent = "Workbench error";
     $("#overview-subtitle").textContent = error.message;
   }
+  await contextRequest;
 }
 
 $$(".nav-item[data-view]").forEach((button) =>
@@ -906,6 +1684,12 @@ $$(".query-suggestions button").forEach((button) =>
 $("#recall-mode").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-mode]");
   if (button) setRecallMode(button.dataset.mode);
+});
+$("#context-sessions").addEventListener("submit", (event) => {
+  const form = event.target.closest(".context-feedback-form");
+  if (!form) return;
+  event.preventDefault();
+  submitContextFeedback(form);
 });
 $("#project-filter").addEventListener("input", (event) => renderProjects(event.target.value));
 $("#close-project").addEventListener("click", () => $("#project-drawer").classList.add("hidden"));
@@ -966,4 +1750,4 @@ $("#candidate-list").addEventListener("click", (event) => {
 });
 
 syncNavigationMode();
-load();
+void bootstrapWorkbench().then(load);

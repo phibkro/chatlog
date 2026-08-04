@@ -12,7 +12,7 @@ import { loadRefinery, refineCorpus } from "../src/refinery";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { reconcileActiveSources } from "../src/source-authority";
 import { WorkbenchData } from "../src/workbench/data";
-import { workbenchHandler } from "../src/workbench/server";
+import { workbenchHandler } from "./workbench-handler";
 import { duckTokenUsage } from "../src/duckdb";
 import type { Conversation } from "../src/types";
 

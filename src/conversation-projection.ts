@@ -214,6 +214,101 @@ export function canonicalizeConversation(value: Omit<Conversation, "contentHash"
   return { ...scrubbed, contentHash: hash };
 }
 
+function optionalStringField(value: Record<string, unknown>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "string";
+}
+
+function optionalStringArrayField(value: Record<string, unknown>, key: string): boolean {
+  return (
+    !(key in value) ||
+    (Array.isArray(value[key]) && value[key].every((item) => typeof item === "string"))
+  );
+}
+
+function validCanonicalTurn(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const turn = value as Record<string, unknown>;
+  if (typeof turn.role !== "string" || typeof turn.content !== "string") return false;
+  if (!optionalStringField(turn, "at") || !optionalStringArrayField(turn, "sourceEventIds"))
+    return false;
+  if ("tokens" in turn) {
+    const tokens = turn.tokens;
+    if (
+      !tokens ||
+      typeof tokens !== "object" ||
+      Array.isArray(tokens) ||
+      Object.values(tokens).some((item) => typeof item !== "number" || !Number.isFinite(item))
+    )
+      return false;
+  }
+  if ("toolCalls" in turn) {
+    if (
+      !Array.isArray(turn.toolCalls) ||
+      turn.toolCalls.some((callValue) => {
+        if (!callValue || typeof callValue !== "object" || Array.isArray(callValue)) return true;
+        const call = callValue as Record<string, unknown>;
+        return (
+          typeof call.name !== "string" ||
+          !optionalStringField(call, "id") ||
+          !optionalStringField(call, "arguments") ||
+          !optionalStringField(call, "output") ||
+          !optionalStringField(call, "approval") ||
+          !optionalStringField(call, "execution") ||
+          !optionalStringField(call, "result") ||
+          !optionalStringArrayField(call, "sourceEventIds")
+        );
+      })
+    )
+      return false;
+  }
+  return true;
+}
+
+function validCanonicalConversation(value: unknown): value is Conversation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const conversation = value as Record<string, unknown>;
+  if (
+    typeof conversation.id !== "string" ||
+    typeof conversation.provider !== "string" ||
+    typeof conversation.harness !== "string" ||
+    typeof conversation.project !== "string" ||
+    typeof conversation.cwd !== "string" ||
+    typeof conversation.model !== "string" ||
+    typeof conversation.startedAt !== "string" ||
+    typeof conversation.endedAt !== "string" ||
+    typeof conversation.sourcePath !== "string" ||
+    typeof conversation.contentHash !== "string" ||
+    !Array.isArray(conversation.turns) ||
+    conversation.turns.some((turn) => !validCanonicalTurn(turn))
+  )
+    return false;
+  return (
+    optionalStringField(conversation, "title") &&
+    optionalStringField(conversation, "domain") &&
+    optionalStringField(conversation, "sourceKind") &&
+    optionalStringField(conversation, "resumeId") &&
+    optionalStringField(conversation, "eventBatchHash")
+  );
+}
+
+export function validateCanonicalConversation(
+  value: unknown,
+  expected: Pick<Conversation, "contentHash" | "sourcePath">,
+): Conversation | null {
+  if (
+    !validCanonicalConversation(value) ||
+    value.contentHash !== expected.contentHash ||
+    value.sourcePath !== expected.sourcePath
+  )
+    return null;
+  const { contentHash: _contentHash, ...body } = value;
+  try {
+    return canonicalizeConversation(body).contentHash === expected.contentHash ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function projectConversation(input: EventBatch): Conversation {
   const batch = canonicalEventBatch(input);
   const batchHash = eventBatchHash(batch);

@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  CONTEXT_EVENT_PROCESSOR,
+  CONTEXT_EVENT_RECIPE,
   canonicalEventBatch,
   capture,
   makeEvent,
@@ -7,9 +12,11 @@ import {
   makeObservedSource,
   stableStringify,
   validateEventBatch,
+  type AgentEventEnvelope,
   type EventBatch,
 } from "../src/events";
-import { eventBatchHash, serializeEventBatch } from "../src/event-store";
+import { recordContextEvent } from "../src/context-events";
+import { eventBatchHash, readEventBatch, serializeEventBatch } from "../src/event-store";
 import { projectConversation } from "../src/conversation-projection";
 
 const sourceBase = {
@@ -105,6 +112,90 @@ function batchWithLifecycle(): EventBatch {
     sourceItemCount: 1,
   };
 }
+test("reserved context events require canonical Chatlog provenance", () => {
+  const canonicalOrigin = {
+    kind: "chatlog" as const,
+    processor: CONTEXT_EVENT_PROCESSOR,
+    recipe: CONTEXT_EVENT_RECIPE,
+    inputEventIds: [],
+    inputHashes: [],
+  };
+  const canonicalBatchOrigin = {
+    kind: "chatlog" as const,
+    processor: CONTEXT_EVENT_PROCESSOR,
+    recipe: CONTEXT_EVENT_RECIPE,
+    inputHashes: [],
+  };
+  const input = {
+    kind: "context.bundle.acknowledged" as const,
+    sequence: 0,
+    actor: { kind: "provider" },
+    scope: { sessionId: "context-session" },
+    relations: {},
+    payload: { contextSessionId: "context-session" },
+    capture: capture("normalized"),
+  };
+  const makeBatch = (
+    origin: AgentEventEnvelope["origin"],
+    batchOrigin: EventBatch["origin"] = canonicalBatchOrigin,
+  ): EventBatch => ({
+    schemaVersion: 1,
+    origin: batchOrigin,
+    events: [makeEvent({ ...input, origin })],
+    semanticLoss: [],
+    partialTail: false,
+    sourceItemCount: 1,
+  });
+  const observedSource = makeObservedSource(
+    {
+      ...sourceBase,
+      nativeSessionId: "context-session",
+      nativeItemId: "context-event",
+      recordPosition: { record: 0 },
+    },
+    record,
+  );
+  const observedBatchOrigin = makeObservedBatchOrigin(
+    { ...sourceBase, nativeSessionId: "context-session" },
+    [record],
+  );
+  expect(() =>
+    validateEventBatch(
+      makeBatch({ kind: "observed", source: observedSource }, observedBatchOrigin),
+    ),
+  ).toThrow("chatlog");
+  expect(() =>
+    validateEventBatch(makeBatch({ ...canonicalOrigin, processor: "provider-importer" })),
+  ).toThrow("processor");
+  expect(() =>
+    validateEventBatch(makeBatch({ ...canonicalOrigin, recipe: "provider-recipe-v1" })),
+  ).toThrow("recipe");
+});
+
+test("recordContextEvent batches retain canonical context provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-context-provenance-"));
+  const recorded = await recordContextEvent(root, {
+    kind: "context.bundle.proposed",
+    contextSessionId: "context-session",
+    idempotencyKey: "proposal-1",
+    actor: { kind: "assistant" },
+  });
+  expect(recorded.ok).toBe(true);
+  if (!recorded.ok) return;
+  const batch = await readEventBatch(root, recorded.value.batchHash);
+  const validated = validateEventBatch(batch);
+  expect(validated.origin).toEqual({
+    kind: "chatlog",
+    processor: CONTEXT_EVENT_PROCESSOR,
+    recipe: CONTEXT_EVENT_RECIPE,
+    inputHashes: [],
+  });
+  expect(validated.events[0]?.origin).toMatchObject({
+    kind: "chatlog",
+    processor: CONTEXT_EVENT_PROCESSOR,
+    recipe: CONTEXT_EVENT_RECIPE,
+  });
+});
 
 test("tool proposal, approval, execution, and result remain distinct", () => {
   const batch = validateEventBatch(batchWithLifecycle());

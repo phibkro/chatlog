@@ -7,7 +7,7 @@ import type { AdjudicationPacket, HumanAdjudicationAnswers } from "../src/refine
 import type { MemoryProposalSet, OperatorReview } from "../src/workbench/memory-lab";
 import { MemoryLab } from "../src/workbench/memory-lab";
 import { WorkbenchData } from "../src/workbench/data";
-import { workbenchHandler } from "../src/workbench/server";
+import { workbenchHandler } from "./workbench-handler";
 
 async function fixture(): Promise<{
   root: string;

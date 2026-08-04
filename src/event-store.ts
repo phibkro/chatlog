@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import {
   canonicalEventBatch,
@@ -44,7 +45,7 @@ export function eventBatchPath(root: string, hash: string): string {
 
 async function atomicWrite(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, text, { mode: 0o600 });
   await rename(temporary, path);
   await chmod(path, 0o600);

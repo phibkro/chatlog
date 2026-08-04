@@ -1,11 +1,88 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { canonicalEventBatch, type EventBatch } from "./events";
+import { canonicalEventBatch, CONTEXT_EVENT_KINDS, type EventBatch } from "./events";
 import { eventBatchHash } from "./event-store";
 import type { Conversation } from "./types";
 import { ensureInsightProjection } from "./insight-projection";
 
+export interface IndexedContextEventRow {
+  eventId: string;
+  batchHash: string;
+  sequence: number;
+  kind: string;
+  occurredAt: string | null;
+  observedAt: string | null;
+  contextSessionId: string;
+  state: string;
+  idempotencyKey: string;
+  bundleHash: string | null;
+  itemId: string | null;
+  interventionEventIds: string[];
+  knownInterventionLineage: string[];
+  actorKind: string;
+  actorAuthority: string;
+  actor: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  evidenceGrade: string | null;
+  treatmentArm: string | null;
+  outcomeStatus: string | null;
+  unresolved: boolean | null;
+  evidenceClassification: string | null;
+  inputEventIds: string[];
+  inputHashes: string[];
+}
+
+const CONTEXT_STATE_BY_KIND: Readonly<Record<string, string>> = {
+  "context.bundle.proposed": "proposed",
+  "context.bundle.rendered": "rendered",
+  "context.bundle.emitted": "emitted",
+  "context.bundle.acknowledged": "acknowledged",
+  "context.recall.returned": "recalled",
+  "context.recall.branch.started": "recall-branch-started",
+  "context.recall.branch.completed": "recall-branch-completed",
+  "context.recall.branch.failed": "recall-branch-failed",
+  "context.recall.branch.cancelled": "recall-branch-cancelled",
+  "context.recall.terminated": "recall-terminated",
+  "context.procedure.returned": "procedure-returned",
+  "context.advisor.advice": "advisor-advice",
+  "context.delivery.failed": "failed",
+  "context.feedback.asserted": "feedback",
+  "context.outcome.observed": "outcome",
+};
+const CONTEXT_LIFECYCLE_ORDER: Readonly<Record<string, number>> = {
+  "context.bundle.proposed": 0,
+  "context.bundle.rendered": 1,
+  "context.bundle.emitted": 2,
+  "context.bundle.acknowledged": 3,
+  "context.recall.branch.started": 4,
+  "context.recall.branch.completed": 5,
+  "context.recall.branch.failed": 6,
+  "context.recall.branch.cancelled": 7,
+  "context.recall.terminated": 8,
+  "context.recall.returned": 9,
+  "context.procedure.returned": 10,
+  "context.advisor.advice": 11,
+  "context.delivery.failed": 12,
+  "context.feedback.asserted": 13,
+  "context.outcome.observed": 14,
+};
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function jsonStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function contextPayloadString(payload: Record<string, unknown>, key: string): string | null {
+  return typeof payload[key] === "string" && payload[key] ? payload[key] : null;
+}
 function hasColumn(db: Database, table: string, column: string): boolean {
   return (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
     (row) => row.name === column,
@@ -15,6 +92,7 @@ function hasColumn(db: Database, table: string, column: string): boolean {
 export function openAnalysis(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
+  db.run("PRAGMA busy_timeout=5000");
   db.run("PRAGMA journal_mode=WAL");
   db.run("PRAGMA synchronous=NORMAL");
   db.run(`CREATE TABLE IF NOT EXISTS conversations (
@@ -106,6 +184,43 @@ export function openAnalysis(path: string): Database {
     PRIMARY KEY(event_id, relation_name, target_event_id)
   )`);
   db.run("CREATE INDEX IF NOT EXISTS event_relations_target ON event_relations(target_event_id)");
+  db.run(`CREATE TABLE IF NOT EXISTS context_event_projection (
+    event_id TEXT PRIMARY KEY,
+    batch_hash TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    occurred_at TEXT,
+    observed_at TEXT,
+    context_session_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    bundle_hash TEXT,
+    item_id TEXT,
+    intervention_event_ids_json TEXT NOT NULL,
+    known_intervention_lineage_json TEXT NOT NULL,
+    actor_kind TEXT NOT NULL,
+    actor_authority TEXT NOT NULL,
+    actor_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    evidence_grade TEXT,
+    treatment_arm TEXT,
+    outcome_status TEXT,
+    unresolved INTEGER,
+    evidence_classification TEXT,
+    input_event_ids_json TEXT NOT NULL,
+    input_hashes_json TEXT NOT NULL
+  )`);
+  db.run("DROP INDEX IF EXISTS context_event_projection_idempotency");
+  db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS context_event_projection_idempotency
+   ON context_event_projection(context_session_id,kind,idempotency_key)`,
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS context_event_projection_session ON context_event_projection(context_session_id, occurred_at, sequence)",
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS context_event_projection_kind ON context_event_projection(context_session_id, kind)",
+  );
   db.run(`CREATE TABLE IF NOT EXISTS event_sources (
     event_id TEXT PRIMARY KEY,
     batch_hash TEXT NOT NULL,
@@ -163,7 +278,10 @@ export function indexEventBatch(
   projectionHash?: string,
 ): boolean {
   const batch = canonicalEventBatch(input);
-  if (db.query("SELECT 1 FROM event_batches WHERE batch_hash = ?").get(batchHash)) return false;
+  if (db.query("SELECT 1 FROM event_batches WHERE batch_hash = ?").get(batchHash)) {
+    indexContextEventBatch(db, batch, batchHash);
+    return false;
+  }
   const insertBatch = db.prepare(`INSERT INTO event_batches
     (batch_hash,schema_version,origin_kind,origin_json,partial_tail,event_count,semantic_loss_count,projection_hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -230,7 +348,144 @@ export function indexEventBatch(
       }
     }
   })();
+  indexContextEventBatch(db, batch, batchHash);
   return true;
+}
+
+export function indexContextEventBatch(db: Database, input: EventBatch, batchHash: string): void {
+  const insert = db.prepare(`INSERT OR IGNORE INTO context_event_projection
+   (event_id,batch_hash,sequence,kind,occurred_at,observed_at,context_session_id,state,idempotency_key,
+    bundle_hash,item_id,intervention_event_ids_json,known_intervention_lineage_json,actor_kind,
+    actor_authority,actor_json,payload_json,evidence_grade,treatment_arm,outcome_status,unresolved,
+    evidence_classification,input_event_ids_json,input_hashes_json)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  db.transaction(() => {
+    for (const event of input.events) {
+      if (!(CONTEXT_EVENT_KINDS as readonly string[]).includes(event.kind)) continue;
+      const payload = jsonObject(event.payload);
+      const contextSessionId = contextPayloadString(payload, "contextSessionId");
+      if (!contextSessionId) continue;
+      const state =
+        contextPayloadString(payload, "state") ?? CONTEXT_STATE_BY_KIND[event.kind] ?? event.kind;
+      const idempotencyKey = contextPayloadString(payload, "idempotencyKey") ?? event.eventId;
+      const interventionEventIds = jsonStringArray(payload.interventionEventIds);
+      const interventionEventId = contextPayloadString(payload, "interventionEventId");
+      if (interventionEventId && !interventionEventIds.includes(interventionEventId))
+        interventionEventIds.push(interventionEventId);
+      const knownInterventionLineage = jsonStringArray(payload.knownInterventionLineage);
+      const inputEventIds =
+        jsonStringArray(payload.inputEventIds).length > 0
+          ? jsonStringArray(payload.inputEventIds)
+          : event.origin.kind === "chatlog"
+            ? [...event.origin.inputEventIds]
+            : [];
+      const inputHashes =
+        jsonStringArray(payload.inputHashes).length > 0
+          ? jsonStringArray(payload.inputHashes)
+          : event.origin.kind === "chatlog"
+            ? [...event.origin.inputHashes]
+            : [];
+      const unresolved =
+        typeof payload.unresolved === "boolean" ? (payload.unresolved ? 1 : 0) : null;
+      insert.run(
+        event.eventId,
+        batchHash,
+        event.sequence,
+        event.kind,
+        event.occurredAt ?? null,
+        event.observedAt ?? null,
+        contextSessionId,
+        state,
+        idempotencyKey,
+        contextPayloadString(payload, "bundleHash"),
+        contextPayloadString(payload, "itemId"),
+        JSON.stringify(interventionEventIds),
+        JSON.stringify(knownInterventionLineage),
+        event.actor.kind,
+        contextPayloadString(payload, "actorAuthority") ?? event.actor.kind,
+        JSON.stringify(event.actor),
+        JSON.stringify(payload),
+        contextPayloadString(payload, "evidenceGrade"),
+        contextPayloadString(payload, "treatmentArm"),
+        contextPayloadString(payload, "status") ?? contextPayloadString(payload, "outcome"),
+        unresolved,
+        contextPayloadString(payload, "evidenceClassification"),
+        JSON.stringify(inputEventIds),
+        JSON.stringify(inputHashes),
+      );
+    }
+  })();
+}
+
+export function queryContextEvents(
+  db: Database,
+  contextSessionId: string,
+  kinds?: readonly string[],
+  limit?: number,
+): IndexedContextEventRow[] {
+  const params: Array<string | number> = [contextSessionId];
+  let kindClause = "";
+  if (kinds && kinds.length > 0) {
+    kindClause = ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
+    params.push(...kinds);
+  }
+  if (limit !== undefined) params.push(limit);
+  const lifecycleOrderSql = Object.entries(CONTEXT_LIFECYCLE_ORDER)
+    .map(([kind, order]) => `WHEN '${kind}' THEN ${order}`)
+    .join(" ");
+  const direction = limit === undefined ? "ASC" : "DESC";
+  const rows = db
+    .query(
+      `SELECT event_id eventId,batch_hash batchHash,sequence,kind,occurred_at occurredAt,
+      observed_at observedAt,context_session_id contextSessionId,state,idempotency_key idempotencyKey,
+      bundle_hash bundleHash,item_id itemId,intervention_event_ids_json interventionEventIdsJson,
+      known_intervention_lineage_json knownInterventionLineageJson,actor_kind actorKind,
+      actor_authority actorAuthority,actor_json actorJson,payload_json payloadJson,evidence_grade evidenceGrade,
+      treatment_arm treatmentArm,outcome_status outcomeStatus,unresolved,evidence_classification evidenceClassification,
+      input_event_ids_json inputEventIdsJson,input_hashes_json inputHashesJson
+    FROM context_event_projection
+    WHERE context_session_id = ?${kindClause}
+    ORDER BY COALESCE(occurred_at, observed_at, '') ${direction}, sequence ${direction},
+      CASE kind ${lifecycleOrderSql} ELSE 100 END ${direction}, event_id ${direction}
+    ${limit === undefined ? "" : "LIMIT ?"}`,
+    )
+    .all(...params) as Array<Record<string, unknown>>;
+  const orderedRows = limit === undefined ? rows : rows.toReversed();
+  return orderedRows.map((row) => ({
+    eventId: String(row.eventId),
+    batchHash: String(row.batchHash),
+    sequence: Number(row.sequence),
+    kind: String(row.kind),
+    occurredAt: typeof row.occurredAt === "string" ? row.occurredAt : null,
+    observedAt: typeof row.observedAt === "string" ? row.observedAt : null,
+    contextSessionId: String(row.contextSessionId),
+    state: String(row.state),
+    idempotencyKey: String(row.idempotencyKey),
+    bundleHash: typeof row.bundleHash === "string" ? row.bundleHash : null,
+    itemId: typeof row.itemId === "string" ? row.itemId : null,
+    interventionEventIds: jsonStringArray(JSON.parse(String(row.interventionEventIdsJson))),
+    knownInterventionLineage: jsonStringArray(JSON.parse(String(row.knownInterventionLineageJson))),
+    actorKind: String(row.actorKind),
+    actorAuthority: String(row.actorAuthority),
+    actor: jsonObject(JSON.parse(String(row.actorJson))),
+    payload: jsonObject(JSON.parse(String(row.payloadJson))),
+    evidenceGrade: typeof row.evidenceGrade === "string" ? row.evidenceGrade : null,
+    treatmentArm: typeof row.treatmentArm === "string" ? row.treatmentArm : null,
+    outcomeStatus: typeof row.outcomeStatus === "string" ? row.outcomeStatus : null,
+    unresolved:
+      row.unresolved === null || row.unresolved === undefined ? null : Number(row.unresolved) === 1,
+    evidenceClassification:
+      typeof row.evidenceClassification === "string" ? row.evidenceClassification : null,
+    inputEventIds: jsonStringArray(JSON.parse(String(row.inputEventIdsJson))),
+    inputHashes: jsonStringArray(JSON.parse(String(row.inputHashesJson))),
+  }));
+}
+
+export function queryContextEventKindCounts(db: Database): Record<string, number> {
+  const rows = db
+    .query("SELECT kind, count(*) count FROM context_event_projection GROUP BY kind")
+    .all() as Array<{ kind: string; count: number }>;
+  return Object.fromEntries(rows.map((row) => [row.kind, Number(row.count)]));
 }
 
 export function indexConversation(

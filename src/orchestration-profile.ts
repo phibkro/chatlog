@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import type { Conversation, Turn } from "./types";
 import { redact } from "./redact";
@@ -410,7 +411,8 @@ export async function deriveOrchestrationProfile(
           inputProjectionHash,
         };
     } catch (error) {
-      if (!(error instanceof DerivedProjectionDriftError)) throw error;
+      if (!(error instanceof DerivedProjectionDriftError))
+        return Effect.runPromise(Effect.fail(error));
     }
   }
   const artifact = await buildOrchestrationProfile(root, labels, projection);

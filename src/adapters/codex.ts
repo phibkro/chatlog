@@ -6,6 +6,7 @@ import type { SourceAdapter, SourceFile } from "../types";
 import { redact } from "../redact";
 import {
   AdaptError,
+  assertBoundedRecord,
   assertObject,
   discoverJsonl,
   EventBatchBuilder,
@@ -55,16 +56,18 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function contentText(
+const contentText = Effect.fnUntraced(function* (
   value: unknown,
   path: string,
   line: number,
   onLoss?: (blockType: string, block: Record<string, unknown>, index: number) => void,
-): string {
+): Effect.fn.Return<string, AdaptError> {
   if (typeof value === "string") return redact(value);
   if (!Array.isArray(value)) {
     if (value == null) return "";
-    throw new AdaptError({ path, line, reason: "unknown Codex message content shape" });
+    return yield* Effect.fail(
+      new AdaptError({ path, line, reason: "unknown Codex message content shape" }),
+    );
   }
   const parts: string[] = [];
   for (const [index, rawBlock] of value.entries()) {
@@ -73,7 +76,9 @@ function contentText(
       continue;
     }
     if (!rawBlock || typeof rawBlock !== "object" || Array.isArray(rawBlock))
-      throw new AdaptError({ path, line, reason: "unknown Codex message content block" });
+      return yield* Effect.fail(
+        new AdaptError({ path, line, reason: "unknown Codex message content block" }),
+      );
     const block = rawBlock as Record<string, unknown>;
     const blockType = stringValue(block.type);
     if (!CONTENT_BLOCKS.has(blockType)) {
@@ -89,7 +94,7 @@ function contentText(
     else if (onLoss) onLoss(blockType, block, index);
   }
   return parts.filter(Boolean).join("\n");
-}
+});
 
 function status(value: unknown): "started" | "succeeded" | "failed" | "unknown" | undefined {
   const text = typeof value === "string" ? value.toLowerCase() : "";
@@ -128,6 +133,7 @@ const adaptSource = Effect.fnUntraced(function* (
     rec: unknown,
     line: number,
   ): Effect.fn.Return<void, AdaptError> {
+    yield* assertBoundedRecord(rec, source.path, line);
     yield* assertObject(rec, source.path, line);
     const value = objectRecord(rec);
     const type = stringValue(value.type);
@@ -420,7 +426,7 @@ const adaptSource = Effect.fnUntraced(function* (
         line,
         {
           role,
-          content: contentText(p.content, source.path, line, reportContentLoss),
+          content: yield* contentText(p.content, source.path, line, reportContentLoss),
           messageId: itemId,
         },
         {

@@ -6,7 +6,7 @@ import { resolveDataRoot } from "../data-root";
 import { McpData, isMcpDataFailure, MCP_RECALL_MAXIMUMS, MCP_TEXT_MAXIMUMS } from "./data";
 
 const SERVER_NAME = "chatlog";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.0-rc.1";
 export const MCP_MAX_LINE_BYTES = 256 * 1024;
 const LATEST_STABLE_PROTOCOL = "2025-11-25";
 const SUPPORTED_PROTOCOLS = new Set([

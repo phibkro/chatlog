@@ -392,6 +392,58 @@ test("Workbench context feedback records human provenance and returns the refres
   }
 });
 
+test("Workbench context outcome records a human observation without a causal claim", async () => {
+  const root = await contextPlaneFixture();
+  const started = await session(root, "native-context-outcome", "2026-08-04T12:01:00.000Z");
+  const interventionEventId = await emittedEvent(root, started.contextSessionId, "outcome-emitted");
+  const data = new WorkbenchData(root);
+  try {
+    const response = await workbenchHandler(
+      data,
+      undefined,
+      null,
+      false,
+      undefined,
+      true,
+    )(
+      new Request("http://localhost/api/context/outcome", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Chatlog-Context": "1" },
+        body: JSON.stringify({
+          contextSessionId: started.contextSessionId,
+          interventionEventId,
+          status: "success",
+          treatmentArm: "active-insight",
+          unresolved: false,
+          note: "The delivered context prevented a repeated configuration error.",
+          operatorId: "operator",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const view = (await response.json()) as ContextManagementView;
+    expect(view.totals).toMatchObject({ outcomes: 1 });
+    expect(view.sessions[0].events).toContainEqual(
+      expect.objectContaining({
+        kind: "context.outcome.observed",
+        actorAuthority: "human",
+        payload: expect.objectContaining({
+          status: "success",
+          treatmentArm: "active-insight",
+          evidenceGrade: "human-asserted",
+          evidenceClassification: "human-asserted",
+          causalClaim: false,
+          metrics: {
+            note: "The delivered context prevented a repeated configuration error.",
+          },
+        }),
+      }),
+    );
+  } finally {
+    data.close();
+  }
+});
+
 test("Workbench context feedback rejects an intervention from another session", async () => {
   const root = await contextPlaneFixture();
   const first = await session(root, "native-context-first", "2026-08-04T12:02:00.000Z");

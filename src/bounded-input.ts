@@ -103,7 +103,11 @@ export interface BoundedRecordLimits {
 
 export type BoundedRecordValidation =
   | { readonly ok: true }
-  | { readonly ok: false; readonly error: string };
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly violation?: "string-value-length";
+    };
 
 /**
  * Walk a JSON-shaped record without recursion or unbounded serialization.
@@ -125,9 +129,10 @@ export function validateBoundedRecord(
   const encoder = new TextEncoder();
   let keyCount = 0;
   let serializedBytes = 0;
-  const fail = (reason: string): BoundedRecordValidation => ({
+  const fail = (reason: string, violation?: "string-value-length"): BoundedRecordValidation => ({
     ok: false,
     error: `${label} ${reason}`,
+    ...(violation === undefined ? {} : { violation }),
   });
   const addByteCount = (count: number): BoundedRecordValidation | undefined => {
     serializedBytes += count;
@@ -147,7 +152,10 @@ export function validateBoundedRecord(
       if (frame.depth > limits.maxDepth) return fail(`nested depth exceeds ${limits.maxDepth}`);
       if (typeof current === "string") {
         if (current.length > limits.maxStringLength)
-          return fail(`contains text longer than ${limits.maxStringLength} characters`);
+          return fail(
+            `contains text longer than ${limits.maxStringLength} characters`,
+            "string-value-length",
+          );
         const serialized = JSON.stringify(current);
         if (serialized === undefined) return fail("contains an unserializable string");
         const byteFailure = addByteCount(encoder.encode(serialized).byteLength);

@@ -6133,6 +6133,7 @@ var SEMANTIC_LOSS_CODES = [
   "attachment-body-excluded",
   "reasoning-excluded-from-projection",
   "unknown-well-formed-item",
+  "duplicate-source-item",
   "partial-live-tail",
   "relation-target-missing"
 ];

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import packageMetadata from "../package.json" with { type: "json" };
 import { PLUGIN_DATA_ROOT_MAX_AUTHORITY_DEPTH, resolvePluginDataRoot } from "../src/data-root";
 import { contextPlaneFixture } from "./context-plane-fixture";
 import { readContextSession } from "../src/context-session";
@@ -116,6 +117,82 @@ test("generated plugin startup reopens Claude and Codex native sessions", async 
   expect(claudeContextId).toBeTruthy();
   expect(codexContextId).toBeTruthy();
   expect(claudeContextId).not.toBe(codexContextId);
+});
+
+test("CLI locates the source plugin marketplace", async () => {
+  const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plugin", "path"], {
+    cwd: join(import.meta.dir, ".."),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  const marketplace = stdout.trim();
+  expect(marketplace).toBe(resolve(import.meta.dir, ".."));
+  expect(await Bun.file(join(marketplace, ".claude-plugin", "marketplace.json")).exists()).toBe(
+    true,
+  );
+});
+test("generated plugin MCP bundle initializes and lists the bounded tools", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-generated-mcp-root-"));
+  const transcript =
+    [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "plugin-smoke", version: "1" },
+        },
+      }),
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    ].join("\n") + "\n";
+  const child = Bun.spawn(
+    [process.execPath, "--no-install", "plugins/chatlog-memory/scripts/chatlog-mcp.js"],
+    {
+      cwd: join(import.meta.dir, ".."),
+      env: {
+        ...process.env,
+        CHATLOG_DATA_ROOT: root,
+        CHATLOG_MCP_DOMAINS: "coding",
+      },
+      stdin: new Blob([transcript]),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  const responses = stdout
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+
+  expect(exitCode).toBe(0);
+  expect(stderr).toBe("");
+  expect(responses).toHaveLength(2);
+  expect(responses[0]).toMatchObject({
+    id: 1,
+    result: { serverInfo: { name: "chatlog", version: packageMetadata.version } },
+  });
+  expect(responses[1].result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+    "chatlog_search",
+    "chatlog_get_evidence",
+    "chatlog_recent_work",
+    "chatlog_project_brief",
+    "chatlog_context",
+    "chatlog_bounded_recall",
+  ]);
 });
 
 test("packaged hook resolves either Claude or Codex plugin roots", async () => {

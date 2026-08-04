@@ -6,10 +6,11 @@ import type { SourceAdapter, SourceFile } from "../types";
 import { redact } from "../redact";
 import {
   AdaptError,
-  assertBoundedRecord,
+  admitBoundedRecord,
   assertObject,
   discoverJsonl,
   EventBatchBuilder,
+  EventBatchLimitError,
   objectRecord,
   projectOf,
   redactedJson,
@@ -123,6 +124,27 @@ const adaptSource = Effect.fnUntraced(function* (
   });
   const byNativeId = new Map<string, AgentEventEnvelope>();
   let previous: AgentEventEnvelope | undefined;
+  let sourceRecordsSeen = 0;
+  let capacityOmission: { line: number; record: number } | undefined;
+
+  const stopAtCapacity = (error: unknown, line: number): Effect.Effect<void> => {
+    if (!(error instanceof EventBatchLimitError)) return Effect.die(error);
+    return Effect.sync(() => {
+      capacityOmission ??= { line, record: sourceRecordsSeen };
+    });
+  };
+
+  const omitOversizedLine = (line: number): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      sourceRecordsSeen += 1;
+      if (capacityOmission) return Effect.void;
+      try {
+        builder.omitOversizedLine(line);
+        return Effect.void;
+      } catch (error) {
+        return stopAtCapacity(error, line);
+      }
+    });
 
   const remember = (nativeId: string, event: AgentEventEnvelope): void => {
     if (nativeId) byNativeId.set(nativeId, event);
@@ -133,411 +155,429 @@ const adaptSource = Effect.fnUntraced(function* (
     rec: unknown,
     line: number,
   ): Effect.fn.Return<void, AdaptError> {
-    yield* assertBoundedRecord(rec, source.path, line);
-    yield* assertObject(rec, source.path, line);
-    const value = objectRecord(rec);
-    const type = stringValue(value.type);
-    if (!RECORDS.has(type)) {
-      builder.add(
-        "provider.opaque",
-        value,
-        line,
-        { nativeItemKind: type || "unknown", payload: redactedJson(value) },
-        {
-          nativeItemId: `opaque:${type || "unknown"}:${line}`,
-          capture: capture("opaque"),
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      return;
-    }
-    const timestampValue = timestamp(value.timestamp);
-    if (timestampValue) fallback = timestampValue;
-    const p = objectRecord(value.payload);
-    if (!Object.keys(p).length)
-      return yield* Effect.fail(
-        new AdaptError({ path: source.path, line, reason: "Codex payload missing" }),
-      );
-
-    if (type === "session_meta") {
-      id = stringValue(p.id, stringValue(p.session_id, id));
-      builder.setSessionId(id);
-      cwd = stringValue(p.cwd, cwd);
-      provider = stringValue(p.model_provider, provider);
-      const event = builder.add(
-        "session.started",
-        value,
-        line,
-        {
-          id,
-          sessionId: id,
-          provider,
-          harness,
-          cwd,
-          project: projectOf(cwd),
-          model,
-          sourceKind: "codex-session",
-        },
-        {
-          nativeItemId: `session:${id}`,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      remember(`session:${id}`, event);
-      return;
-    }
-    if (type === "turn_context") {
-      cwd = stringValue(p.cwd, cwd);
-      model = stringValue(p.model, model);
-      const event = builder.add(
-        "provider.opaque",
-        value,
-        line,
-        { itemKind: type, cwd, model, data: redactedJson(p) },
-        {
-          nativeItemId: stringValue(p.id, `${id}:turn-context:${line}`),
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          capture: capture("opaque"),
-        },
-      );
-      remember(stringValue(p.id, `${id}:turn-context:${line}`), event);
-      return;
-    }
-    if (type === "event_msg") {
-      if (p.type === "token_count" && p.info && typeof p.info === "object") {
-        const info = objectRecord(p.info);
-        const u = objectRecord(info.total_token_usage);
-        const tokens = {
-          input: Number(u.input_tokens ?? 0),
-          output: Number(u.output_tokens ?? 0),
-          cachedInput: Number(u.cached_input_tokens ?? 0),
-          reasoning: Number(u.reasoning_output_tokens ?? 0),
-          total: Number(u.total_tokens ?? 0),
-        };
-        const event = builder.add(
-          "evaluation.recorded",
+    sourceRecordsSeen += 1;
+    if (capacityOmission) return;
+    try {
+      if (!(yield* admitBoundedRecord(rec, source.path, line))) {
+        builder.omitOversizedRecord(rec, line);
+        return;
+      }
+      yield* assertObject(rec, source.path, line);
+      const value = objectRecord(rec);
+      const type = stringValue(value.type);
+      if (!RECORDS.has(type)) {
+        builder.add(
+          "provider.opaque",
           value,
           line,
-          { evaluationKind: "token_count", tokens, ...tokens },
+          { nativeItemKind: type || "unknown", payload: redactedJson(value) },
           {
-            nativeItemId: stringValue(p.id, `${id}:tokens:${line}`),
+            nativeItemId: `opaque:${type || "unknown"}:${line}`,
+            capture: capture("opaque"),
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        return;
+      }
+      const timestampValue = timestamp(value.timestamp);
+      if (timestampValue) fallback = timestampValue;
+      const p = objectRecord(value.payload);
+      if (!Object.keys(p).length)
+        return yield* Effect.fail(
+          new AdaptError({ path: source.path, line, reason: "Codex payload missing" }),
+        );
+
+      if (type === "session_meta") {
+        id = stringValue(p.id, stringValue(p.session_id, id));
+        builder.setSessionId(id);
+        cwd = stringValue(p.cwd, cwd);
+        provider = stringValue(p.model_provider, provider);
+        const event = builder.add(
+          "session.started",
+          value,
+          line,
+          {
+            id,
+            sessionId: id,
+            provider,
+            harness,
+            cwd,
+            project: projectOf(cwd),
+            model,
+            sourceKind: "codex-session",
+          },
+          {
+            nativeItemId: `session:${id}`,
             ...(timestampValue ? { occurredAt: timestampValue } : {}),
             actor: { kind: "provider", name: harness },
           },
         );
-        remember(stringValue(p.id, `${id}:tokens:${line}`), event);
-      } else {
+        remember(`session:${id}`, event);
+        return;
+      }
+      if (type === "turn_context") {
+        cwd = stringValue(p.cwd, cwd);
+        model = stringValue(p.model, model);
+        const event = builder.add(
+          "provider.opaque",
+          value,
+          line,
+          { itemKind: type, cwd, model, data: redactedJson(p) },
+          {
+            nativeItemId: stringValue(p.id, `${id}:turn-context:${line}`),
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            capture: capture("opaque"),
+          },
+        );
+        remember(stringValue(p.id, `${id}:turn-context:${line}`), event);
+        return;
+      }
+      if (type === "event_msg") {
+        if (p.type === "token_count" && p.info && typeof p.info === "object") {
+          const info = objectRecord(p.info);
+          const u = objectRecord(info.total_token_usage);
+          const tokens = {
+            input: Number(u.input_tokens ?? 0),
+            output: Number(u.output_tokens ?? 0),
+            cachedInput: Number(u.cached_input_tokens ?? 0),
+            reasoning: Number(u.reasoning_output_tokens ?? 0),
+            total: Number(u.total_tokens ?? 0),
+          };
+          const event = builder.add(
+            "evaluation.recorded",
+            value,
+            line,
+            { evaluationKind: "token_count", tokens, ...tokens },
+            {
+              nativeItemId: stringValue(p.id, `${id}:tokens:${line}`),
+              ...(timestampValue ? { occurredAt: timestampValue } : {}),
+              actor: { kind: "provider", name: harness },
+            },
+          );
+          remember(stringValue(p.id, `${id}:tokens:${line}`), event);
+        } else {
+          const event = builder.add(
+            "provider.opaque",
+            value,
+            line,
+            { itemKind: type, data: redactedJson(p) },
+            {
+              nativeItemId: stringValue(p.id, `${id}:event:${line}`),
+              ...(timestampValue ? { occurredAt: timestampValue } : {}),
+              capture: capture("opaque"),
+            },
+          );
+          remember(stringValue(p.id, `${id}:event:${line}`), event);
+        }
+        return;
+      }
+      if (type === "compacted") {
+        const event = builder.add(
+          "context.compacted",
+          value,
+          line,
+          { summary: redactedJson(p), ...(p.id ? { compactionId: p.id } : {}) },
+          {
+            nativeItemId: stringValue(p.id, `${id}:compacted:${line}`),
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            ...(previous ? { relations: { parent: previous.eventId } } : {}),
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        remember(stringValue(p.id, `${id}:compacted:${line}`), event);
+        return;
+      }
+      if (type === "world_state") {
+        const event = builder.add(
+          "artifact.created",
+          value,
+          line,
+          { artifactType: "world_state", references: redactedJson(p) },
+          {
+            nativeItemId: stringValue(p.id, `${id}:world-state:${line}`),
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        remember(stringValue(p.id, `${id}:world-state:${line}`), event);
+        return;
+      }
+      if (type === "inter_agent_communication_metadata") {
         const event = builder.add(
           "provider.opaque",
           value,
           line,
           { itemKind: type, data: redactedJson(p) },
           {
-            nativeItemId: stringValue(p.id, `${id}:event:${line}`),
+            nativeItemId: stringValue(p.id, `${id}:communication:${line}`),
             ...(timestampValue ? { occurredAt: timestampValue } : {}),
             capture: capture("opaque"),
           },
         );
-        remember(stringValue(p.id, `${id}:event:${line}`), event);
+        remember(stringValue(p.id, `${id}:communication:${line}`), event);
+        return;
       }
-      return;
-    }
-    if (type === "compacted") {
-      const event = builder.add(
-        "context.compacted",
-        value,
-        line,
-        { summary: redactedJson(p), ...(p.id ? { compactionId: p.id } : {}) },
-        {
-          nativeItemId: stringValue(p.id, `${id}:compacted:${line}`),
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          ...(previous ? { relations: { parent: previous.eventId } } : {}),
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      remember(stringValue(p.id, `${id}:compacted:${line}`), event);
-      return;
-    }
-    if (type === "world_state") {
-      const event = builder.add(
-        "artifact.created",
-        value,
-        line,
-        { artifactType: "world_state", references: redactedJson(p) },
-        {
-          nativeItemId: stringValue(p.id, `${id}:world-state:${line}`),
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      remember(stringValue(p.id, `${id}:world-state:${line}`), event);
-      return;
-    }
-    if (type === "inter_agent_communication_metadata") {
-      const event = builder.add(
-        "provider.opaque",
-        value,
-        line,
-        { itemKind: type, data: redactedJson(p) },
-        {
-          nativeItemId: stringValue(p.id, `${id}:communication:${line}`),
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          capture: capture("opaque"),
-        },
-      );
-      remember(stringValue(p.id, `${id}:communication:${line}`), event);
-      return;
-    }
 
-    if (type === "branch") {
-      const branchId = stringValue(p.branch_id, stringValue(p.id, `${id}:branch:${line}`));
-      const created = builder.add(
-        "branch.created",
-        value,
-        line,
-        { branchId, summary: redactedJson(p.summary ?? p) },
-        {
-          nativeItemId: `${branchId}:created`,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          ...(previous ? { relations: { parent: previous.eventId } } : {}),
-          scope: { branchId },
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      builder.add(
-        "branch.selected",
-        value,
-        line,
-        { branchId },
-        {
-          nativeItemId: `${branchId}:selected`,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          relations: { causedBy: [created.eventId], parent: created.eventId },
-          scope: { branchId },
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      remember(branchId, created);
-      return;
-    }
-    if (type === "approval") {
-      const callId = stringValue(p.call_id, stringValue(p.id));
-      const decision = stringValue(p.decision, "unknown").toLowerCase();
-      const causedBy = byNativeId.get(callId);
-      if (!causedBy)
-        builder.loss(
-          "relation-target-missing",
-          "Codex approval did not identify a previously observed tool call",
-          line,
-          callId,
-          { relation: "causedBy", target: callId },
-        );
-      if (decision === "approved" || decision === "denied") {
-        builder.add(
-          decision === "approved" ? "tool.call.approved" : "tool.call.denied",
+      if (type === "branch") {
+        const branchId = stringValue(p.branch_id, stringValue(p.id, `${id}:branch:${line}`));
+        const created = builder.add(
+          "branch.created",
           value,
           line,
-          { callId, decision },
+          { branchId, summary: redactedJson(p.summary ?? p) },
           {
-            nativeItemId: `${callId || id}:approval:${line}`,
+            nativeItemId: `${branchId}:created`,
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            ...(previous ? { relations: { parent: previous.eventId } } : {}),
+            scope: { branchId },
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        builder.add(
+          "branch.selected",
+          value,
+          line,
+          { branchId },
+          {
+            nativeItemId: `${branchId}:selected`,
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            relations: { causedBy: [created.eventId], parent: created.eventId },
+            scope: { branchId },
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        remember(branchId, created);
+        return;
+      }
+      if (type === "approval") {
+        const callId = stringValue(p.call_id, stringValue(p.id));
+        const decision = stringValue(p.decision, "unknown").toLowerCase();
+        const causedBy = byNativeId.get(callId);
+        if (!causedBy)
+          builder.loss(
+            "relation-target-missing",
+            "Codex approval did not identify a previously observed tool call",
+            line,
+            callId,
+            { relation: "causedBy", target: callId },
+          );
+        if (decision === "approved" || decision === "denied") {
+          builder.add(
+            decision === "approved" ? "tool.call.approved" : "tool.call.denied",
+            value,
+            line,
+            { callId, decision },
+            {
+              nativeItemId: `${callId || id}:approval:${line}`,
+              ...(timestampValue ? { occurredAt: timestampValue } : {}),
+              ...(causedBy
+                ? { relations: { causedBy: [causedBy.eventId], parent: causedBy.eventId } }
+                : previous
+                  ? { relations: { parent: previous.eventId } }
+                  : {}),
+              actor: { kind: "human" },
+            },
+          );
+        } else {
+          builder.add(
+            "provider.opaque",
+            value,
+            line,
+            { itemKind: type, data: redactedJson(p) },
+            {
+              nativeItemId: `${id}:approval:${line}`,
+              ...(timestampValue ? { occurredAt: timestampValue } : {}),
+              capture: capture("opaque"),
+              actor: { kind: "provider", name: harness },
+            },
+          );
+        }
+        return;
+      }
+      const itemType = stringValue(p.type);
+      if (!RESPONSE_ITEMS.has(itemType)) {
+        builder.add(
+          "provider.opaque",
+          value,
+          line,
+          { nativeItemKind: itemType || "unknown", payload: redactedJson(p) },
+          {
+            nativeItemId: `opaque:${itemType || "unknown"}:${line}`,
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            capture: capture("opaque"),
+            actor: { kind: "provider", name: harness },
+          },
+        );
+        return;
+      }
+      const itemId = stringValue(p.id, `${id}:response:${line}`);
+      if (itemType === "message" || itemType === "agent_message") {
+        const role = stringValue(p.role, stringValue(p.author, "assistant"));
+        const reportContentLoss = (
+          blockType: string,
+          block: Record<string, unknown>,
+          index: number,
+        ): void => {
+          const nativeBlockId = stringValue(block.id, `${itemId}:block:${index}`);
+          if (!CONTENT_BLOCKS.has(blockType)) {
+            builder.loss(
+              "unknown-well-formed-item",
+              `Codex content block type ${JSON.stringify(blockType)} was omitted by the adapter`,
+              line,
+              nativeBlockId,
+              { blockType },
+            );
+            return;
+          }
+          if (blockType === "encrypted_content") {
+            builder.loss(
+              "encrypted-content-unavailable",
+              "Codex encrypted content is provider-encrypted and was not interpreted",
+              line,
+              nativeBlockId,
+              { blockType },
+            );
+          } else {
+            const code = ["input_image", "image", "computer_screenshot"].includes(blockType)
+              ? "attachment-body-excluded"
+              : "provider-field-unsupported";
+            const reason =
+              code === "attachment-body-excluded"
+                ? `Codex ${JSON.stringify(blockType)} content block body was not captured`
+                : `Codex content block type ${JSON.stringify(blockType)} is not modeled`;
+            builder.loss(code, reason, line, nativeBlockId, { blockType });
+          }
+        };
+        const event = builder.add(
+          "message.created",
+          value,
+          line,
+          {
+            role,
+            content: yield* contentText(p.content, source.path, line, reportContentLoss),
+            messageId: itemId,
+          },
+          {
+            nativeItemId: itemId,
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            ...(previous ? { relations: { parent: previous.eventId } } : {}),
+            actor: { kind: role === "user" ? "human" : "assistant" },
+          },
+        );
+        remember(itemId, event);
+        return;
+      }
+      if (itemType === "reasoning") {
+        const event = builder.add(
+          "model.reasoning.observed",
+          value,
+          line,
+          { itemType, encrypted: true, ...(p.summary ? { summary: redactedJson(p.summary) } : {}) },
+          {
+            nativeItemId: itemId,
+            ...(timestampValue ? { occurredAt: timestampValue } : {}),
+            ...(previous ? { relations: { parent: previous.eventId } } : {}),
+            capture: capture(
+              "opaque",
+              "Codex reasoning is provider-encrypted and was not interpreted",
+            ),
+            actor: { kind: "assistant" },
+          },
+        );
+        remember(itemId, event);
+        return;
+      }
+      if (itemType.endsWith("_output")) {
+        const callId = stringValue(p.call_id, stringValue(p.id));
+        const causedBy = byNativeId.get(callId);
+        if (!causedBy)
+          builder.loss(
+            "relation-target-missing",
+            "Codex tool result did not identify a previously observed tool call",
+            line,
+            callId,
+            { relation: "causedBy", target: callId },
+          );
+        const rawOutput = p.output ?? p.tools ?? p.result ?? "";
+        const event = builder.add(
+          "tool.result.observed",
+          value,
+          line,
+          {
+            callId,
+            output: typeof rawOutput === "string" ? redact(rawOutput) : redactedJson(rawOutput),
+            ...(p.status ? { status: p.status } : {}),
+            ...(p.is_error === true || p.error ? { isError: true } : {}),
+          },
+          {
+            nativeItemId: itemId,
             ...(timestampValue ? { occurredAt: timestampValue } : {}),
             ...(causedBy
               ? { relations: { causedBy: [causedBy.eventId], parent: causedBy.eventId } }
-              : previous
-                ? { relations: { parent: previous.eventId } }
-                : {}),
-            actor: { kind: "human" },
+              : {}),
+            actor: { kind: "tool", name: callId || itemType },
           },
         );
-      } else {
-        builder.add(
-          "provider.opaque",
+        remember(itemId, event);
+        return;
+      }
+      const callId = stringValue(p.call_id, stringValue(p.id, itemId));
+      const proposed = builder.add(
+        "tool.call.proposed",
+        value,
+        line,
+        {
+          id: callId,
+          callId,
+          name: stringValue(p.name, itemType),
+          arguments:
+            typeof p.arguments === "string"
+              ? redact(p.arguments)
+              : redactedJson(p.arguments ?? p.input ?? {}),
+          toolClass: itemType,
+        },
+        {
+          nativeItemId: itemId,
+          ...(timestampValue ? { occurredAt: timestampValue } : {}),
+          ...(previous ? { relations: { parent: previous.eventId } } : {}),
+          actor: { kind: "assistant", name: stringValue(p.name, itemType) },
+        },
+      );
+      remember(callId, proposed);
+      remember(itemId, proposed);
+      const executionStatus = status(p.status);
+      if (executionStatus) {
+        const execution = builder.add(
+          "tool.execution.observed",
           value,
           line,
-          { itemKind: type, data: redactedJson(p) },
+          { callId, status: executionStatus },
           {
-            nativeItemId: `${id}:approval:${line}`,
+            nativeItemId: `${itemId}:execution`,
             ...(timestampValue ? { occurredAt: timestampValue } : {}),
-            capture: capture("opaque"),
-            actor: { kind: "provider", name: harness },
+            relations: { causedBy: [proposed.eventId], parent: proposed.eventId },
+            actor: { kind: "tool", name: stringValue(p.name, itemType) },
           },
         );
+        remember(`${itemId}:execution`, execution);
       }
-      return;
-    }
-    const itemType = stringValue(p.type);
-    if (!RESPONSE_ITEMS.has(itemType)) {
-      builder.add(
-        "provider.opaque",
-        value,
-        line,
-        { nativeItemKind: itemType || "unknown", payload: redactedJson(p) },
-        {
-          nativeItemId: `opaque:${itemType || "unknown"}:${line}`,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          capture: capture("opaque"),
-          actor: { kind: "provider", name: harness },
-        },
-      );
-      return;
-    }
-    const itemId = stringValue(p.id, `${id}:response:${line}`);
-    if (itemType === "message" || itemType === "agent_message") {
-      const role = stringValue(p.role, stringValue(p.author, "assistant"));
-      const reportContentLoss = (
-        blockType: string,
-        block: Record<string, unknown>,
-        index: number,
-      ): void => {
-        const nativeBlockId = stringValue(block.id, `${itemId}:block:${index}`);
-        if (!CONTENT_BLOCKS.has(blockType)) {
-          builder.loss(
-            "unknown-well-formed-item",
-            `Codex content block type ${JSON.stringify(blockType)} was omitted by the adapter`,
-            line,
-            nativeBlockId,
-            { blockType },
-          );
-          return;
-        }
-        if (blockType === "encrypted_content") {
-          builder.loss(
-            "encrypted-content-unavailable",
-            "Codex encrypted content is provider-encrypted and was not interpreted",
-            line,
-            nativeBlockId,
-            { blockType },
-          );
-        } else {
-          const code = ["input_image", "image", "computer_screenshot"].includes(blockType)
-            ? "attachment-body-excluded"
-            : "provider-field-unsupported";
-          const reason =
-            code === "attachment-body-excluded"
-              ? `Codex ${JSON.stringify(blockType)} content block body was not captured`
-              : `Codex content block type ${JSON.stringify(blockType)} is not modeled`;
-          builder.loss(code, reason, line, nativeBlockId, { blockType });
-        }
-      };
-      const event = builder.add(
-        "message.created",
-        value,
-        line,
-        {
-          role,
-          content: yield* contentText(p.content, source.path, line, reportContentLoss),
-          messageId: itemId,
-        },
-        {
-          nativeItemId: itemId,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          ...(previous ? { relations: { parent: previous.eventId } } : {}),
-          actor: { kind: role === "user" ? "human" : "assistant" },
-        },
-      );
-      remember(itemId, event);
-      return;
-    }
-    if (itemType === "reasoning") {
-      const event = builder.add(
-        "model.reasoning.observed",
-        value,
-        line,
-        { itemType, encrypted: true, ...(p.summary ? { summary: redactedJson(p.summary) } : {}) },
-        {
-          nativeItemId: itemId,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          ...(previous ? { relations: { parent: previous.eventId } } : {}),
-          capture: capture(
-            "opaque",
-            "Codex reasoning is provider-encrypted and was not interpreted",
-          ),
-          actor: { kind: "assistant" },
-        },
-      );
-      remember(itemId, event);
-      return;
-    }
-    if (itemType.endsWith("_output")) {
-      const callId = stringValue(p.call_id, stringValue(p.id));
-      const causedBy = byNativeId.get(callId);
-      if (!causedBy)
-        builder.loss(
-          "relation-target-missing",
-          "Codex tool result did not identify a previously observed tool call",
-          line,
-          callId,
-          { relation: "causedBy", target: callId },
-        );
-      const rawOutput = p.output ?? p.tools ?? p.result ?? "";
-      const event = builder.add(
-        "tool.result.observed",
-        value,
-        line,
-        {
-          callId,
-          output: typeof rawOutput === "string" ? redact(rawOutput) : redactedJson(rawOutput),
-          ...(p.status ? { status: p.status } : {}),
-          ...(p.is_error === true || p.error ? { isError: true } : {}),
-        },
-        {
-          nativeItemId: itemId,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          ...(causedBy
-            ? { relations: { causedBy: [causedBy.eventId], parent: causedBy.eventId } }
-            : {}),
-          actor: { kind: "tool", name: callId || itemType },
-        },
-      );
-      remember(itemId, event);
-      return;
-    }
-    const callId = stringValue(p.call_id, stringValue(p.id, itemId));
-    const proposed = builder.add(
-      "tool.call.proposed",
-      value,
-      line,
-      {
-        id: callId,
-        callId,
-        name: stringValue(p.name, itemType),
-        arguments:
-          typeof p.arguments === "string"
-            ? redact(p.arguments)
-            : redactedJson(p.arguments ?? p.input ?? {}),
-        toolClass: itemType,
-      },
-      {
-        nativeItemId: itemId,
-        ...(timestampValue ? { occurredAt: timestampValue } : {}),
-        ...(previous ? { relations: { parent: previous.eventId } } : {}),
-        actor: { kind: "assistant", name: stringValue(p.name, itemType) },
-      },
-    );
-    remember(callId, proposed);
-    remember(itemId, proposed);
-    const executionStatus = status(p.status);
-    if (executionStatus) {
-      const execution = builder.add(
-        "tool.execution.observed",
-        value,
-        line,
-        { callId, status: executionStatus },
-        {
-          nativeItemId: `${itemId}:execution`,
-          ...(timestampValue ? { occurredAt: timestampValue } : {}),
-          relations: { causedBy: [proposed.eventId], parent: proposed.eventId },
-          actor: { kind: "tool", name: stringValue(p.name, itemType) },
-        },
-      );
-      remember(`${itemId}:execution`, execution);
+    } catch (error) {
+      yield* stopAtCapacity(error, line);
     }
   });
 
-  const parsed = yield* readJsonLines(source.path, processRecord);
+  const parsed = yield* readJsonLines(source.path, processRecord, omitOversizedLine);
   void fallback;
-  return builder.finish(parsed.partialTail, parsed.records);
+  return builder.finish(
+    parsed.partialTail,
+    parsed.records,
+    capacityOmission
+      ? {
+          line: capacityOmission.line,
+          count: parsed.records - capacityOmission.record + 1,
+        }
+      : undefined,
+  );
 });
 
 export class CodexAdapter implements SourceAdapter {

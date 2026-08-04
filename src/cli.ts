@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
+import packageMetadata from "../package.json" with { type: "json" };
 import { readClosedLoopArtifactFile } from "./closed-loop-artifact-file";
 import { readBoundedFile } from "./importers/export-limits";
 import { join, resolve } from "node:path";
@@ -72,6 +73,22 @@ import type { ContextReceiptEvidence } from "./context-types";
 import { isMcpDataFailure, McpData } from "./mcp/data";
 
 const [command, subcommand, ...args] = process.argv.slice(2);
+const help = `Chatlog ${packageMetadata.version}
+
+Usage: chatlog <command> [arguments]
+
+Commands:
+  ingest                 Ingest configured local provider histories
+  preview|import         Inspect or import ChatGPT, Anthropic, or generic exports
+  derive|refine          Rebuild evidence and refinery projections
+  query                  Search and inspect the active corpus
+  memory|insight         Manage governed memory and insight ledgers
+  context                Start, deliver, recall, and evaluate context
+  bridge                 Emit an inert cross-harness handoff artifact
+  plugin                 Locate the Claude Code and Codex plugin marketplace
+  receipts|source|vault  Inspect provenance or export a local vault
+
+Run "chatlog <command>" without required arguments for command-specific usage.`;
 const root = resolveDataRoot();
 const localAdapters = () => {
   const home = homedir();
@@ -135,7 +152,11 @@ async function readContextGateJson(
       };
 }
 
-if (command === "ingest") {
+if (!command || command === "--help" || command === "-h" || command === "help") {
+  console.log(help);
+} else if (command === "--version" || command === "-v") {
+  console.log(packageMetadata.version);
+} else if (command === "ingest") {
   console.log(JSON.stringify(await ingest(localAdapters(), root), null, 2));
 } else if (command === "preview") {
   if (!subcommand || !args[0])
@@ -545,6 +566,18 @@ if (command === "ingest") {
   console.log(JSON.stringify(result, null, 2));
   if (typeof result === "object" && result !== null && "ok" in result && result.ok === false)
     process.exitCode = 1;
+} else if (command === "plugin") {
+  if (subcommand !== "path" || args.length) throw new Error("usage: chatlog plugin path");
+  const installedMarketplace = resolve(import.meta.dir, "../marketplace");
+  const sourceMarketplace = resolve(import.meta.dir, "..");
+  const marketplace = (await Bun.file(
+    join(installedMarketplace, ".claude-plugin", "marketplace.json"),
+  ).exists())
+    ? installedMarketplace
+    : sourceMarketplace;
+  if (!(await Bun.file(join(marketplace, ".claude-plugin", "marketplace.json")).exists()))
+    throw new Error("Chatlog plugin marketplace is missing from this installation");
+  console.log(marketplace);
 } else if (command === "vault") {
   const outputDir = resolve(
     subcommand && !subcommand.startsWith("--")

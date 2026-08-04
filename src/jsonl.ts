@@ -1,7 +1,7 @@
 import { Data, Effect } from "effect";
 
 export const JSONL_MAX_LINE_BYTES = 256 * 1024;
-export const JSONL_MAX_FILE_BYTES = 64 * 1024 * 1024;
+export const JSONL_MAX_FILE_BYTES = 512 * 1024 * 1024;
 export const JSONL_MAX_RECORDS = 100_000;
 
 export type JsonlParseErrorCode =
@@ -37,8 +37,19 @@ export class JsonlParseError extends Data.TaggedError("JsonlParseError")<{
 export const readJsonLines = Effect.fnUntraced(function* <E = never>(
   path: string,
   visit: (record: unknown, line: number) => Effect.Effect<void, E>,
+  onLineTooLarge?: (line: number) => Effect.Effect<void, E>,
 ): Effect.fn.Return<{ partialTail: boolean; lines: number; records: number }, JsonlParseError | E> {
-  const reader = Bun.file(path).stream().getReader();
+  const file = Bun.file(path);
+  if (file.size > JSONL_MAX_FILE_BYTES)
+    return yield* Effect.fail(
+      new JsonlParseError({
+        path,
+        line: 1,
+        code: "file-too-large",
+        cause: undefined,
+      }),
+    );
+  const reader = file.stream().getReader();
   let normalEof = false;
   try {
     const decoder = new TextDecoder();
@@ -47,6 +58,7 @@ export const readJsonLines = Effect.fnUntraced(function* <E = never>(
     let lineNo = 0;
     let fileBytes = 0;
     let records = 0;
+    let skippingOversizedLine = false;
 
     const decodePending = (): string => {
       if (pendingChunks.length === 0) return "";
@@ -79,16 +91,51 @@ export const readJsonLines = Effect.fnUntraced(function* <E = never>(
       let segmentStart = 0;
       for (let index = 0; index < value.byteLength; index++) {
         if (value[index] !== 0x0a) continue;
+        if (skippingOversizedLine) {
+          lineNo++;
+          segmentStart = index + 1;
+          if (records >= JSONL_MAX_RECORDS)
+            return yield* Effect.fail(
+              new JsonlParseError({
+                path,
+                line: lineNo,
+                code: "record-limit",
+                cause: undefined,
+              }),
+            );
+          records++;
+          yield* onLineTooLarge!(lineNo);
+          skippingOversizedLine = false;
+          continue;
+        }
         const segment = value.subarray(segmentStart, index);
-        if (pendingBytes > JSONL_MAX_LINE_BYTES - segment.byteLength)
-          return yield* Effect.fail(
-            new JsonlParseError({
-              path,
-              line: lineNo + 1,
-              code: "line-too-large",
-              cause: undefined,
-            }),
-          );
+        if (pendingBytes > JSONL_MAX_LINE_BYTES - segment.byteLength) {
+          if (!onLineTooLarge)
+            return yield* Effect.fail(
+              new JsonlParseError({
+                path,
+                line: lineNo + 1,
+                code: "line-too-large",
+                cause: undefined,
+              }),
+            );
+          pendingChunks = [];
+          pendingBytes = 0;
+          lineNo++;
+          segmentStart = index + 1;
+          if (records >= JSONL_MAX_RECORDS)
+            return yield* Effect.fail(
+              new JsonlParseError({
+                path,
+                line: lineNo,
+                code: "record-limit",
+                cause: undefined,
+              }),
+            );
+          records++;
+          yield* onLineTooLarge(lineNo);
+          continue;
+        }
         if (segment.byteLength > 0) pendingChunks.push(segment);
         pendingBytes += segment.byteLength;
         const line = decodePending();
@@ -118,17 +165,38 @@ export const readJsonLines = Effect.fnUntraced(function* <E = never>(
         yield* visit(record, lineNo);
       }
       const tail = value.subarray(segmentStart);
-      if (pendingBytes > JSONL_MAX_LINE_BYTES - tail.byteLength)
+      if (!skippingOversizedLine) {
+        if (pendingBytes > JSONL_MAX_LINE_BYTES - tail.byteLength) {
+          if (!onLineTooLarge)
+            return yield* Effect.fail(
+              new JsonlParseError({
+                path,
+                line: lineNo + 1,
+                code: "line-too-large",
+                cause: undefined,
+              }),
+            );
+          pendingChunks = [];
+          pendingBytes = 0;
+          skippingOversizedLine = true;
+        } else {
+          if (tail.byteLength > 0) pendingChunks.push(tail);
+          pendingBytes += tail.byteLength;
+        }
+      }
+    }
+
+    if (skippingOversizedLine) {
+      if (records >= JSONL_MAX_RECORDS)
         return yield* Effect.fail(
           new JsonlParseError({
             path,
             line: lineNo + 1,
-            code: "line-too-large",
+            code: "record-limit",
             cause: undefined,
           }),
         );
-      if (tail.byteLength > 0) pendingChunks.push(tail);
-      pendingBytes += tail.byteLength;
+      return { partialTail: true, lines: lineNo + 1, records: records + 1 };
     }
 
     const pending = decodePending();

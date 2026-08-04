@@ -1,0 +1,19 @@
+{
+  "name": "chatlog",
+  "interface": {
+    "displayName": "Chatlog"
+  },
+  "plugins": [
+    {
+      "name": "chatlog-memory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/chatlog-memory"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

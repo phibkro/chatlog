@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    bun2nix = {
+      url = "github:nix-community/bun2nix?ref=2.1.2";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,6 +17,7 @@
     {
       self,
       nixpkgs,
+      bun2nix,
       home-manager,
     }:
     let
@@ -27,7 +32,9 @@
     {
       packages = forAllSystems (
         system: pkgs: {
-          chatlog = pkgs.callPackage ./nix/package.nix { };
+          chatlog = pkgs.callPackage ./nix/package.nix {
+            bun2nix = bun2nix.packages.${system}.default;
+          };
           default = self.packages.${system}.chatlog;
         }
       );

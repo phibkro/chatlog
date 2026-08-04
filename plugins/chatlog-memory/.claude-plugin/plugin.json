@@ -1,7 +1,7 @@
 {
   "name": "chatlog-memory",
-  "version": "0.1.0",
-  "description": "Inject a bounded experience-memory index at session startup and recall accepted cards on demand.",
+  "version": "0.1.0-rc.1",
+  "description": "Bind a governed Chatlog context session at startup and expose bounded local recall tools.",
   "author": {
     "name": "Chatlog"
   }

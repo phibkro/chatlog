@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "chatlog",
+  "description": "Provider-agnostic local context and governed memory for coding agents.",
+  "owner": {
+    "name": "Chatlog"
+  },
+  "plugins": [
+    {
+      "name": "chatlog-memory",
+      "description": "Bind fresh agent sessions to Chatlog and expose bounded governed recall.",
+      "author": {
+        "name": "Chatlog"
+      },
+      "source": "./plugins/chatlog-memory",
+      "category": "productivity"
+    }
+  ]
+}

@@ -425,6 +425,17 @@ export function workbenchHandler(
             )
           : contextManagementResponse(body);
       }
+      if (url.pathname === "/api/context/outcome" && request.method === "POST") {
+        if (!context) return json({ error: "context management unavailable" }, 404);
+        const body = await contextBody<unknown>(request, contextWrites);
+        return body.ok
+          ? contextManagementResponse(
+              await context.outcome(
+                bindOperatorIdentity(body.value, "operatorId", auth.operatorId),
+              ),
+            )
+          : contextManagementResponse(body);
+      }
       if (request.method !== "GET" && request.method !== "HEAD")
         return json({ error: "read-only workbench" }, 405);
       if (url.pathname === "/api/health") {

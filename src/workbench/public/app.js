@@ -20,6 +20,7 @@ const state = {
   contextError: null,
   contextLoading: true,
   contextFeedback: {},
+  contextOutcome: {},
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -188,9 +189,17 @@ function showView(name) {
 function renderOverview() {
   const overview = state.overview;
   if (!overview?.ready) {
+    $("#data-root").textContent = overview?.root || "Local data root unavailable";
+    $("#corpus-range").textContent = "No local corpus";
+    $("#overview-subtitle").textContent =
+      "Run chatlog ingest to build the first local evidence corpus.";
+    $("#recent-sessions").innerHTML =
+      `<div class="empty">No sessions yet. Ingest configured provider histories to begin.</div>`;
+    $("#project-focus").innerHTML =
+      `<div class="empty">Project activity appears after the first ingest.</div>`;
     $("#sync-copy").textContent = "Corpus not initialized";
     $("#stat-grid").innerHTML =
-      `<article class="stat-card"><div class="stat-value">No corpus yet</div><div class="stat-foot">Run an ingest or import command to begin.</div></article>`;
+      `<article class="stat-card"><div class="stat-value">No corpus yet</div><div class="stat-foot">Run <code>chatlog ingest</code>, then reload this page.</div></article>`;
     return;
   }
   const { corpus, harnesses, projects, recent, tools } = overview;
@@ -872,6 +881,14 @@ const CONTEXT_FEEDBACK_OPTIONS = [
   ["incorrect", "Incorrect"],
 ];
 
+const CONTEXT_TREATMENT_OPTIONS = [
+  ["no-memory", "No memory"],
+  ["raw-evidence", "Raw evidence"],
+  ["active-insight", "Active insight"],
+  ["insight-plus-procedure", "Insight plus procedure"],
+  ["reflective-model", "Reflective model"],
+];
+
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -1316,6 +1333,60 @@ function contextFeedbackFormHtml(sessionId, eventId, itemIds) {
   </form>`;
 }
 
+function contextOutcomeFormHtml(sessionId, eventId) {
+  const outcome = state.contextOutcome[eventId];
+  const statusId = `context-outcome-status-${eventId}`;
+  return `<details class="context-outcome-entry"${outcome ? " open" : ""}>
+    <summary>Record an observed outcome</summary>
+    <form class="context-feedback-form context-outcome-form" data-context-session-id="${escapeHtml(sessionId)}" data-intervention-event-id="${escapeHtml(eventId)}">
+      <fieldset>
+        <legend>Associate a human-observed result with this delivered event</legend>
+        <div class="context-feedback-grid">
+          <label>
+            <span>Result</span>
+            <select name="status" required>
+              <option value="">Choose a result…</option>
+              <option value="success">Success</option>
+              <option value="failure">Failure</option>
+              <option value="mixed">Mixed</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <label>
+            <span>Context treatment</span>
+            <select name="treatmentArm" required>
+              <option value="">Choose the context used…</option>
+              ${CONTEXT_TREATMENT_OPTIONS.map(
+                ([value, label]) =>
+                  `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`,
+              ).join("")}
+            </select>
+          </label>
+          <label>
+            <span>Operator ID</span>
+            <input name="operatorId" required maxlength="80" autocomplete="off" placeholder="local-operator" />
+          </label>
+          <label>
+            <span>Resolution</span>
+            <select name="unresolved" required>
+              <option value="false">Resolved</option>
+              <option value="true">Still unresolved</option>
+            </select>
+          </label>
+          <label class="context-feedback-note">
+            <span>Observation <small>optional · maximum 1,500 characters</small></span>
+            <textarea name="note" rows="2" maxlength="1500" placeholder="What happened after this context was delivered?"></textarea>
+          </label>
+        </div>
+        <div class="context-feedback-actions">
+          <button type="submit">Record outcome</button>
+          <p id="${escapeHtml(statusId)}" class="context-feedback-status ${outcome?.tone === "success" ? "success" : ""}" role="${outcome?.tone === "error" ? "alert" : "status"}" aria-live="${outcome?.tone === "error" ? "assertive" : "polite"}">${outcome ? escapeHtml(outcome.message) : "This records association, not causation. Human assertions remain visibly graded."}</p>
+        </div>
+      </fieldset>
+    </form>
+  </details>`;
+}
+
 function contextEventTone(event) {
   if (event.kind === "context.delivery.failed") return "negative";
   if (event.kind === "context.feedback.asserted") return "feedback";
@@ -1400,6 +1471,7 @@ function contextEventHtml(event, session, events, insightByRevision) {
         ${event.bundleHash ? `<code title="${escapeHtml(event.bundleHash)}">bundle · ${escapeHtml(event.bundleHash)}</code>` : ""}
       </div>
       ${delivered ? contextFeedbackFormHtml(session.contextSessionId, event.eventId, itemIds) : ""}
+      ${delivered ? contextOutcomeFormHtml(session.contextSessionId, event.eventId) : ""}
     </div>
   </article>`;
 }
@@ -1601,16 +1673,79 @@ async function submitContextFeedback(form) {
   }
 }
 
+async function submitContextOutcome(form) {
+  if (!form.reportValidity()) return;
+  const formData = new FormData(form);
+  const contextSessionId = form.dataset.contextSessionId;
+  const interventionEventId = form.dataset.interventionEventId;
+  const statusValue = String(formData.get("status") || "");
+  const treatmentArm = String(formData.get("treatmentArm") || "");
+  const operatorId = String(formData.get("operatorId") || "").trim();
+  const unresolved = String(formData.get("unresolved")) === "true";
+  const note = String(formData.get("note") || "").trim();
+  const controls = $$("input, select, textarea, button", form);
+  const status = $(".context-feedback-status", form);
+  const submit = $('button[type="submit"]', form);
+  form.setAttribute("aria-busy", "true");
+  controls.forEach((control) => {
+    control.disabled = true;
+  });
+  submit.textContent = "Recording…";
+  status.className = "context-feedback-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.textContent = "Recording a human-observed outcome…";
+  try {
+    const refreshed = await api("/api/context/outcome", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chatlog-Context": "1",
+      },
+      body: JSON.stringify({
+        contextSessionId,
+        interventionEventId,
+        status: statusValue,
+        treatmentArm,
+        unresolved,
+        operatorId,
+        ...(note ? { note } : {}),
+      }),
+    });
+    state.context = refreshed;
+    state.contextError = null;
+    state.contextOutcome[interventionEventId] = {
+      tone: "success",
+      message: `${readableCategory(statusValue)} outcome recorded as a human assertion.`,
+    };
+    renderContext();
+  } catch (error) {
+    form.setAttribute("aria-busy", "false");
+    controls.forEach((control) => {
+      control.disabled = false;
+    });
+    submit.textContent = "Record outcome";
+    status.className = "context-feedback-status error";
+    status.setAttribute("role", "alert");
+    status.setAttribute("aria-live", "assertive");
+    status.textContent = `Outcome was not recorded: ${error.message}`;
+  }
+}
+
 async function load() {
   $("#day-part").textContent =
     new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening";
   const contextRequest = loadContext();
   try {
-    [state.overview, state.projects, state.sources] = await Promise.all([
+    const [overview, projects, sources] = await Promise.allSettled([
       api("/api/overview"),
       api("/api/projects?limit=200"),
       api("/api/sources"),
     ]);
+    if (overview.status === "rejected") throw overview.reason;
+    state.overview = overview.value;
+    state.projects = projects.status === "fulfilled" ? projects.value : [];
+    state.sources = sources.status === "fulfilled" ? sources.value : [];
     try {
       state.insights = await api("/api/insights?candidateLimit=0");
       state.insightsError = null;
@@ -1686,10 +1821,16 @@ $("#recall-mode").addEventListener("click", (event) => {
   if (button) setRecallMode(button.dataset.mode);
 });
 $("#context-sessions").addEventListener("submit", (event) => {
-  const form = event.target.closest(".context-feedback-form");
-  if (!form) return;
+  const outcomeForm = event.target.closest(".context-outcome-form");
+  if (outcomeForm) {
+    event.preventDefault();
+    submitContextOutcome(outcomeForm);
+    return;
+  }
+  const feedbackForm = event.target.closest(".context-feedback-form");
+  if (!feedbackForm) return;
   event.preventDefault();
-  submitContextFeedback(form);
+  submitContextFeedback(feedbackForm);
 });
 $("#project-filter").addEventListener("input", (event) => renderProjects(event.target.value));
 $("#close-project").addEventListener("click", () => $("#project-drawer").classList.add("hidden"));

@@ -6,7 +6,7 @@ import {
   validateBoundedRecord as validateRecordWithin,
   type BoundedRecordLimits,
 } from "../bounded-input";
-import { JSONL_MAX_FILE_BYTES, JSONL_MAX_RECORDS } from "../jsonl";
+import { JSONL_MAX_FILE_BYTES, JSONL_MAX_LINE_BYTES, JSONL_MAX_RECORDS } from "../jsonl";
 import {
   capture,
   EVENT_ADAPTER_RECIPE,
@@ -170,6 +170,8 @@ export const NATIVE_EVENT_MAX_EVENTS = JSONL_MAX_RECORDS;
 export const NATIVE_EVENT_MAX_SEMANTIC_LOSSES = JSONL_MAX_RECORDS;
 export const NATIVE_EVENT_MAX_RECORD_HASHES = JSONL_MAX_RECORDS;
 export const NATIVE_EVENT_MAX_BATCH_BYTES = 64 * 1024 * 1024;
+const NATIVE_EVENT_RESERVED_LOSS_BYTES = 32 * 1024;
+const NATIVE_EVENT_RESERVED_LOSS_SLOTS = 2;
 
 export class EventBatchLimitError extends Error {
   readonly code = "event-batch-limit" as const;
@@ -186,26 +188,26 @@ export class EventBatchLimitError extends Error {
   }
 }
 
-export function assertBoundedRecord(
+export function admitBoundedRecord(
   record: unknown,
   path: string,
   line: number,
-): Effect.Effect<void, AdaptError> {
+): Effect.Effect<boolean, AdaptError> {
   const validation = validateRecordWithin(
     record,
     "native JSONL record",
     NATIVE_JSONL_RECORD_LIMITS,
   );
-  return validation.ok
-    ? Effect.void
-    : Effect.fail(
-        new AdaptError({
-          path,
-          line,
-          reason: validation.error,
-          code: "record-limit",
-        }),
-      );
+  if (validation.ok) return Effect.succeed(true);
+  if (validation.violation === "string-value-length") return Effect.succeed(false);
+  return Effect.fail(
+    new AdaptError({
+      path,
+      line,
+      reason: validation.error,
+      code: "record-limit",
+    }),
+  );
 }
 
 export function assertObject(
@@ -397,7 +399,10 @@ export class EventBatchBuilder {
         NATIVE_EVENT_MAX_EVENTS,
         this.events.length + 1,
       );
-    if (eventBytes > NATIVE_EVENT_MAX_BATCH_BYTES - this.estimatedBytes)
+    if (
+      eventBytes >
+      NATIVE_EVENT_MAX_BATCH_BYTES - NATIVE_EVENT_RESERVED_LOSS_BYTES - this.estimatedBytes
+    )
       throw new EventBatchLimitError(
         this.options.source.path,
         line,
@@ -411,21 +416,72 @@ export class EventBatchBuilder {
     return event;
   }
 
-  loss(
-    code: SemanticLossCode,
-    reason: string,
-    line?: number,
-    nativeItemId?: string,
-    details?: Record<string, unknown>,
-  ): void {
-    if (this.semanticLoss.length >= NATIVE_EVENT_MAX_SEMANTIC_LOSSES)
+  omitOversizedRecord(record: unknown, line: number): void {
+    const value = objectRecord(record);
+    const itemType = typeof value.type === "string" && value.type ? value.type : "unknown";
+    this.loss(
+      "capture-policy-omission",
+      "native JSONL record omitted because a text field exceeds the capture limit",
+      line,
+      `oversized:${itemType}:${line}`,
+      {
+        itemType,
+        violation: "string-value-length",
+        limit: NATIVE_JSONL_RECORD_LIMITS.maxStringLength,
+      },
+    );
+  }
+
+  omitOversizedLine(line: number): void {
+    this.loss(
+      "capture-policy-omission",
+      "native JSONL record omitted because its encoded line exceeds the capture limit",
+      line,
+      `oversized-line:${line}`,
+      {
+        itemType: "unknown",
+        violation: "line-byte-length",
+        limit: JSONL_MAX_LINE_BYTES,
+      },
+    );
+  }
+
+  private appendLoss(loss: SemanticLossEntry, reserved = false): void {
+    const slotLimit = reserved
+      ? NATIVE_EVENT_MAX_SEMANTIC_LOSSES
+      : NATIVE_EVENT_MAX_SEMANTIC_LOSSES - NATIVE_EVENT_RESERVED_LOSS_SLOTS;
+    if (this.semanticLoss.length >= slotLimit)
       throw new EventBatchLimitError(
         this.options.source.path,
-        line ?? 0,
+        loss.recordPosition?.line ?? 0,
         "semantic-loss count",
-        NATIVE_EVENT_MAX_SEMANTIC_LOSSES,
+        slotLimit,
         this.semanticLoss.length + 1,
       );
+    const byteLimit = reserved
+      ? NATIVE_EVENT_MAX_BATCH_BYTES
+      : NATIVE_EVENT_MAX_BATCH_BYTES - NATIVE_EVENT_RESERVED_LOSS_BYTES;
+    const lossBytes = Buffer.byteLength(stableStringify(loss) ?? "");
+    if (lossBytes > byteLimit - this.estimatedBytes)
+      throw new EventBatchLimitError(
+        this.options.source.path,
+        loss.recordPosition?.line ?? 0,
+        "estimated batch bytes",
+        byteLimit,
+        this.estimatedBytes + lossBytes,
+      );
+    this.estimatedBytes += lossBytes;
+    this.semanticLoss.push(loss);
+  }
+
+  private makeLoss(
+    code: SemanticLossCode,
+    reason: string,
+    line: number | undefined,
+    nativeItemId: string | undefined,
+    details: Record<string, unknown> | undefined,
+    count: number,
+  ): SemanticLossEntry {
     const sourceItemKind =
       typeof details?.itemType === "string"
         ? details.itemType
@@ -434,14 +490,14 @@ export class EventBatchBuilder {
           : "provider-item";
     const sourceLocator =
       nativeItemId || `${this.options.source.path}:${line === undefined ? "batch" : line}`;
-    const loss = makeSemanticLoss({
+    return makeSemanticLoss({
       code,
       reason,
       provider: this.options.provider,
       harness: this.options.harness,
       sourceItemKind,
       sourceLocator,
-      count: 1,
+      count,
       adapterRecipe: EVENT_ADAPTER_RECIPE,
       capturePolicyVersion: EVENT_CAPTURE_POLICY_VERSION,
       recoverable: code !== "capture-policy-omission",
@@ -450,19 +506,42 @@ export class EventBatchBuilder {
       ...(nativeItemId ? { nativeItemId } : {}),
       ...(details ? { details } : {}),
     });
-    const lossBytes = Buffer.byteLength(stableStringify(loss) ?? "");
-    if (lossBytes > NATIVE_EVENT_MAX_BATCH_BYTES - this.estimatedBytes)
-      throw new EventBatchLimitError(
-        this.options.source.path,
-        line ?? 0,
-        "estimated batch bytes",
-        NATIVE_EVENT_MAX_BATCH_BYTES,
-        this.estimatedBytes + lossBytes,
-      );
-    this.estimatedBytes += lossBytes;
-    this.semanticLoss.push(loss);
   }
-  finish(partialTail: boolean, sourceItemCount: number): EventBatch {
+
+  loss(
+    code: SemanticLossCode,
+    reason: string,
+    line?: number,
+    nativeItemId?: string,
+    details?: Record<string, unknown>,
+  ): void {
+    this.appendLoss(this.makeLoss(code, reason, line, nativeItemId, details, 1));
+  }
+
+  private omitCapacityTail(line: number, count: number): void {
+    this.appendLoss(
+      this.makeLoss(
+        "capture-policy-omission",
+        "remaining native records omitted because the bounded event batch reached capacity",
+        line,
+        `batch-capacity-tail:${line}`,
+        {
+          itemType: "provider-item",
+          violation: "event-batch-capacity",
+          limit: NATIVE_EVENT_MAX_BATCH_BYTES,
+          omittedSourceItems: count,
+        },
+        count,
+      ),
+      true,
+    );
+  }
+
+  finish(
+    partialTail: boolean,
+    sourceItemCount: number,
+    capacityOmission?: { line: number; count: number },
+  ): EventBatch {
     if (partialTail && !this.semanticLoss.some((loss) => loss.code === "partial-live-tail"))
       this.loss(
         "partial-live-tail",
@@ -471,6 +550,8 @@ export class EventBatchBuilder {
         "partial-tail",
         { itemType: "partial-tail" },
       );
+    if (capacityOmission && capacityOmission.count > 0)
+      this.omitCapacityTail(capacityOmission.line, capacityOmission.count);
     return {
       schemaVersion: 1,
       origin: makeObservedBatchOrigin(

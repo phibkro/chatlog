@@ -6386,6 +6386,7 @@ var SEMANTIC_LOSS_CODES = [
   "attachment-body-excluded",
   "reasoning-excluded-from-projection",
   "unknown-well-formed-item",
+  "duplicate-source-item",
   "partial-live-tail",
   "relation-target-missing"
 ];
@@ -9959,9 +9960,10 @@ function validateBoundedRecord(value, label, limits) {
   const encoder = new TextEncoder;
   let keyCount = 0;
   let serializedBytes = 0;
-  const fail7 = (reason) => ({
+  const fail7 = (reason, violation) => ({
     ok: false,
-    error: `${label} ${reason}`
+    error: `${label} ${reason}`,
+    ...violation === undefined ? {} : { violation }
   });
   const addByteCount = (count2) => {
     serializedBytes += count2;
@@ -9979,7 +9981,7 @@ function validateBoundedRecord(value, label, limits) {
         return fail7(`nested depth exceeds ${limits.maxDepth}`);
       if (typeof current === "string") {
         if (current.length > limits.maxStringLength)
-          return fail7(`contains text longer than ${limits.maxStringLength} characters`);
+          return fail7(`contains text longer than ${limits.maxStringLength} characters`, "string-value-length");
         const serialized = JSON.stringify(current);
         if (serialized === undefined)
           return fail7("contains an unserializable string");
@@ -16595,7 +16597,7 @@ class McpData {
 
 // src/mcp/server.ts
 var SERVER_NAME = "chatlog";
-var SERVER_VERSION = "0.1.0";
+var SERVER_VERSION = "0.1.0-rc.1";
 var MCP_MAX_LINE_BYTES = 256 * 1024;
 var LATEST_STABLE_PROTOCOL = "2025-11-25";
 var SUPPORTED_PROTOCOLS = new Set([

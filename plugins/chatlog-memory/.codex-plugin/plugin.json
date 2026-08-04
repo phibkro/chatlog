@@ -1,20 +1,20 @@
 {
   "name": "chatlog-memory",
-  "version": "0.1.0",
-  "description": "Inject a bounded experience-memory index at session startup and recall accepted cards on demand.",
+  "version": "0.1.0-rc.1",
+  "description": "Bind a governed Chatlog context session at startup and expose bounded local recall tools.",
   "author": {
     "name": "Chatlog"
   },
   "interface": {
     "displayName": "Chatlog Memory",
-    "shortDescription": "Recall accepted experience only when it applies.",
-    "longDescription": "Chatlog Memory adds a deterministic startup routing index and bounded, snapshot-pinned recall without loading historical evidence into every prompt.",
+    "shortDescription": "Search prior work and recall governed context.",
+    "longDescription": "Chatlog Memory binds fresh sessions to local context authority and exposes bounded search, evidence, project, context, and recall tools.",
     "developerName": "Chatlog",
     "category": "Productivity",
     "capabilities": ["Read"],
     "defaultPrompt": [
-      "Show the active memory routing index.",
-      "Recall a memory that applies to this task."
+      "Search Chatlog for prior work that applies to this task.",
+      "Recall governed context for this fresh session."
     ]
   },
   "mcpServers": {

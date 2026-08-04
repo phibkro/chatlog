@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { ClaudeAdapter } from "../src/adapters/claude";
 import { CodexAdapter } from "../src/adapters/codex";
@@ -8,9 +8,11 @@ import { PiAdapter } from "../src/adapters/pi";
 import {
   AdaptError,
   discoverJsonl,
+  EventBatchBuilder,
   NATIVE_JSONL_MAX_ACCEPTED_FILES,
   NATIVE_JSONL_MAX_DIRECTORY_DEPTH,
   NATIVE_JSONL_MAX_DIRECTORY_ENTRIES,
+  NATIVE_JSONL_RECORD_LIMITS,
 } from "../src/adapters/common";
 import { adaptAnthropicEventBatch } from "../src/importers/anthropic-export";
 import { canonicalEventBatch } from "../src/events";
@@ -122,6 +124,28 @@ const providerItemExpectations: Record<string, ItemExpectation[]> = {
   ],
 };
 
+test("capacity-tail omission accounts for every skipped source record", () => {
+  const builder = new EventBatchBuilder({
+    provider: "openai",
+    harness: "codex",
+    sourceKind: "codex-session",
+    source: { path: "/tmp/capacity.jsonl", size: 1, mtimeMs: 1 },
+    sessionId: "capacity-session",
+  });
+  builder.add("session.started", { type: "session_meta" }, 1, {
+    sessionId: "capacity-session",
+  });
+  const batch = builder.finish(false, 4, { line: 2, count: 3 });
+  expect(sourceItemAccounting(batch)).toMatchObject({
+    sourceItems: 4,
+    eventBackedItems: 1,
+    lossOnlyItems: 3,
+    unaccountedItems: 0,
+    policyOmissions: 3,
+  });
+  expect(semanticLossCounts(batch.semanticLoss)).toEqual({ "capture-policy-omission": 3 });
+});
+
 async function adaptJsonl(
   adapter: SourceAdapter,
   fixtureName: string,
@@ -144,6 +168,105 @@ test("rejects a deeply nested native JSONL record before adaptation", async () =
   await expect(
     new ClaudeAdapter(root).adapt({ path, size: info.size, mtimeMs: info.mtimeMs }),
   ).rejects.toThrow(/record limit|depth/u);
+});
+
+test("accounts for an oversized native text field without aborting the source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-native-oversized-text-"));
+  const path = join(root, "oversized.jsonl");
+  const records = [
+    { type: "started", sessionId: "oversized-session" },
+    {
+      type: "custom-title",
+      sessionId: "oversized-session",
+      title: "x".repeat(NATIVE_JSONL_RECORD_LIMITS.maxStringLength + 1),
+    },
+    { type: "result", sessionId: "oversized-session", result: "complete" },
+  ];
+  await writeFile(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+  const info = await stat(path);
+
+  const batch = await new ClaudeAdapter(root).adapt({
+    path,
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+  });
+
+  expect(batch.semanticLoss).toEqual([
+    expect.objectContaining({
+      code: "capture-policy-omission",
+      recordPosition: { line: 2 },
+      details: expect.objectContaining({ limit: NATIVE_JSONL_RECORD_LIMITS.maxStringLength }),
+    }),
+  ]);
+  expect(sourceItemAccounting(batch).unaccountedItems).toBe(0);
+  expect(batch.events.map((event) => event.kind)).toEqual([
+    "session.started",
+    "message.created",
+    "session.ended",
+  ]);
+});
+
+test("keeps Claude workflow journals opaque instead of inventing sessions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-claude-workflow-journal-"));
+  const path = join(root, "project", "subagents", "workflows", "wf-1", "journal.jsonl");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(
+    path,
+    [
+      JSON.stringify({ type: "started", key: "run-a", agentId: "agent-a" }),
+      JSON.stringify({ type: "started", key: "run-b", agentId: "agent-b" }),
+      JSON.stringify({ type: "result", key: "run-a", agentId: "agent-a", result: {} }),
+      "",
+    ].join("\n"),
+  );
+  const adapter = new ClaudeAdapter(root);
+  const [source] = await adapter.discover();
+  if (!source) throw new Error("workflow journal was not discovered");
+
+  const batch = await adapter.adapt(source);
+
+  expect(batch.events.map((event) => event.kind)).toEqual([
+    "provider.opaque",
+    "provider.opaque",
+    "provider.opaque",
+  ]);
+  expect(sourceItemAccounting(batch).unaccountedItems).toBe(0);
+});
+
+test("accounts for repeated Claude native records without duplicating evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-claude-duplicate-record-"));
+  const path = join(root, "session.jsonl");
+  const duplicate = {
+    type: "user",
+    uuid: "duplicate-message",
+    message: { role: "user", content: [{ type: "text", text: "same provider item" }] },
+  };
+  await writeFile(
+    path,
+    [
+      JSON.stringify({ type: "started", sessionId: "duplicate-session" }),
+      JSON.stringify(duplicate),
+      JSON.stringify(duplicate),
+      "",
+    ].join("\n"),
+  );
+  const info = await stat(path);
+
+  const batch = await new ClaudeAdapter(root).adapt({
+    path,
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+  });
+
+  expect(batch.events.map((event) => event.kind)).toEqual(["session.started", "message.created"]);
+  expect(batch.semanticLoss).toEqual([
+    expect.objectContaining({
+      code: "duplicate-source-item",
+      recordPosition: { line: 3 },
+      details: expect.objectContaining({ duplicateNativeItemId: "duplicate-message" }),
+    }),
+  ]);
+  expect(sourceItemAccounting(batch).unaccountedItems).toBe(0);
 });
 
 test("rejects native JSONL traversal beyond the explicit directory depth ceiling", async () => {

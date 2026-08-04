@@ -6,3 +6,4 @@ bridge/
 data-*.zip
 *.tmp
 node_modules/
+/result

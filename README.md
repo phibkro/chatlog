@@ -1,11 +1,134 @@
-# Local chatlog corpus
+# Chatlog
+
+Chatlog is a local, provider-agnostic context layer for coding agents. It turns
+Claude Code, Codex, Pi, OMP, ChatGPT, and Anthropic activity into portable
+evidence, governed insights, and bounded context for later sessions.
+
+> **Pre-release:** `v0.1.0-rc.1` is ready for local evaluation. Storage formats
+> and operator workflows can still change before `v0.1.0`.
+
+## The feedback loop
+
+```text
+work -> events -> evidence -> insights -> context -> better work
+```
+
+Chatlog:
+
+- reads provider histories without modifying them;
+- normalizes supported records into immutable, redacted agent events;
+- keeps exact provenance and reports semantic loss at adapter boundaries;
+- provides local search, project state, evidence lookup, and bounded recall;
+- requires explicit human authority before a derived claim becomes active;
+- records context delivery, feedback, and observed outcomes separately.
+
+It does not merge private provider session stores or silently rewrite an
+agent's native memory. Context is delivered through supported startup hooks,
+MCP tools, or inert prompt artifacts.
+
+## Install and first launch
+
+The pre-release Nix package supports `x86_64-linux` and `aarch64-linux`.
+[Install Nix with flakes enabled](https://nixos.org/download/) first.
+
+```sh
+nix profile install --refresh \
+  github:phibkro/chatlog/v0.1.0-rc.1#chatlog
+
+chatlog --version
+chatlog ingest
+chatlog-workbench
+```
+
+`chatlog ingest` discovers local histories under `~/.claude/projects`,
+`~/.codex/sessions`, `~/.pi/agent/sessions`, and `~/.omp/agent/sessions`.
+It writes the redacted corpus and derived views to
+`${XDG_DATA_HOME:-~/.local/share}/chatlog`. The command does not run as a
+watcher. Run it again after new agent work.
+
+`chatlog-workbench` prints a one-time loopback URL. Open that URL to browse
+projects and sessions, search prior attempts, inspect evidence, review
+patterns, and manage released context. The server sends no hosted analytics.
+
+Set one persistent custom data root before ingestion and agent startup if
+required:
+
+```sh
+export CHATLOG_DATA_ROOT=/path/to/operator-owned/chatlog
+```
+
+The data root must exist for agent plugins and must be outside the active
+repository.
+
+### Connect Claude Code and Codex
+
+The installed package contains one local marketplace for both plugin systems:
+
+```sh
+CHATLOG_MARKETPLACE="$(chatlog plugin path)"
+
+claude plugin marketplace add "$CHATLOG_MARKETPLACE"
+claude plugin install chatlog-memory@chatlog --scope user
+
+codex plugin marketplace add "$CHATLOG_MARKETPLACE"
+codex plugin add chatlog-memory@chatlog
+```
+
+Open a new Claude Code or Codex session after installation. The plugin exposes
+bounded local MCP tools for search, evidence, recent work, project state,
+governed context, and recursive recall. A startup hook binds governed delivery
+only when the data root contains a current insight projection for that
+project. It never injects complete transcripts or promotes a candidate.
+
+OMP and Pi histories are ingested. Their current context-delivery adapters
+produce operator-authorized fresh-session prompt artifacts; no automatic
+plugin installation is provided for those harnesses in this pre-release.
+
+### Import provider exports
+
+Preview an export before it changes local state:
+
+```sh
+chatlog preview chatgpt /path/to/chatgpt-export.zip personal
+chatlog import chatgpt /path/to/chatgpt-export.zip personal
+
+chatlog preview anthropic /path/to/anthropic-export.zip personal
+chatlog import anthropic /path/to/anthropic-export.zip personal
+```
+
+The generic `chatlog/generic-events-v1` importer supports versioned external
+adapters. See
+[docs/workbench.md](docs/workbench.md#generic-chatlog-event-jsonl).
+
+## What works in this pre-release
+
+| Capability                                                                    | Status                              |
+| ----------------------------------------------------------------------------- | ----------------------------------- |
+| Native Claude Code, Codex, Pi, and OMP ingestion                              | Available                           |
+| ChatGPT, Anthropic, and versioned generic export import                       | Available with preview and receipts |
+| Immutable redacted events, provenance, and semantic-loss accounting           | Available                           |
+| Local Workbench search, evidence, project, pattern, memory, and context views | Available                           |
+| Local stdio MCP search and bounded evidence tools                             | Available                           |
+| Claude Code and Codex marketplace plugins                                     | Available for fresh sessions        |
+| Governed insight ledger and intervention/outcome records                      | Available; human-authorized         |
+| Pi and OMP automatic startup integration                                      | Not yet; prompt artifacts only      |
+| Automatic insight promotion                                                   | Intentionally unavailable           |
+| Hosted sync, team accounts, and remote raw-transcript storage                 | Not implemented                     |
+
+Memory Lab reviews only complete, prepared adjudication bundles. It does not
+run a model or infer approval. The advanced refinery and insight lifecycle is
+documented below and in
+[docs/knowledge-refinery.md](docs/knowledge-refinery.md).
+
+## Data model and safety
 
 Each source file is adapted into an immutable redacted `EventBatch` at the
 `SourceAdapter` seam. The event batch is canonical evidence: it preserves
 ordered provider observations, typed tool lifecycle events, branches,
 compaction, artifacts, reasoning, opaque items, semantic loss, and source
-provenance. It is content-addressed beneath `corpus/events/<prefix>/<sha256>.json`.
-Changed live sessions create a new immutable batch.
+provenance. It is content-addressed beneath
+`corpus/events/<prefix>/<sha256>.json`. Changed live sessions create a new
+immutable batch.
 
 `Conversation` remains a deterministic compatibility projection generated by
 `src/conversation-projection.ts`. Existing
@@ -14,9 +137,10 @@ projection turns. New evidence can point to
 `chatlog://event/<batch-hash>/<event-id>`; both grammars are parsed by
 `src/evidence-uri.ts`.
 
-The source directories are only opened for discovery, stat, and streaming reads.
-The tool never writes beneath `~/.claude`, `~/.codex`, or `~/.pi`. Corpus and
-analysis files are mode 0600 inside mode 0700 directories and are gitignored.
+The source directories are only opened for discovery, stat, and streaming
+reads. Chatlog never writes beneath `~/.claude`, `~/.codex`, `~/.pi`, or
+`~/.omp`. Corpus and analysis files are mode 0600 inside mode 0700
+directories.
 
 ## Workbench
 
@@ -26,9 +150,9 @@ with resolvable evidence, measured orchestration patterns, refinery candidates,
 and a source-connection screen.
 
 ```sh
-bun run ingest
-bun run workbench
-# open the one-time bootstrap URL that the server prints
+chatlog ingest
+chatlog-workbench
+# Open the one-time bootstrap URL that the server prints.
 ```
 
 The server binds to loopback and creates a random credential for each launch.
@@ -47,7 +171,7 @@ the entire archive:
 ```sh
 CHATLOG_DATA_ROOT=/path/to/chatlog \
 CHATLOG_MCP_DOMAINS=coding \
-bun run mcp
+chatlog-mcp
 ```
 
 It implements local lexical search, one-turn evidence resolution, project state,
@@ -68,7 +192,7 @@ The synthetic transfer pilot at
 procedure arms. It covers `keep`, `adapt`, and `reject` decisions without
 hosted calls. The evaluator is `src/procedure-transfer-evaluation.ts`.
 
-## Deploy
+## Build from source and deploy
 
 ```sh
 nix build .#chatlog

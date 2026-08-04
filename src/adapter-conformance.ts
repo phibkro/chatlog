@@ -84,10 +84,11 @@ export function sourceItemAccounting(batch: EventBatch): SourceItemAccounting {
     if (current) current.push(event);
     else byPosition.set(position, [event]);
   }
-  const lossOnly = new Set<string>();
+  const lossOnly = new Map<string, number>();
   for (const loss of batch.semanticLoss) {
     const position = lossSourcePosition(loss);
-    if (!byPosition.has(position)) lossOnly.add(position);
+    if (!byPosition.has(position))
+      lossOnly.set(position, Math.max(lossOnly.get(position) ?? 0, loss.count));
   }
   const dispositions: EventDispositionCounts = {
     normalized: 0,
@@ -97,7 +98,7 @@ export function sourceItemAccounting(batch: EventBatch): SourceItemAccounting {
   };
   for (const events of byPosition.values()) dispositions[eventDisposition(events)]++;
   const eventBackedItems = byPosition.size;
-  const lossOnlyItems = lossOnly.size;
+  const lossOnlyItems = [...lossOnly.values()].reduce((total, count) => total + count, 0);
   const sourceItems = batch.sourceItemCount ?? eventBackedItems + lossOnlyItems;
   const unaccountedItems = sourceItems - eventBackedItems - lossOnlyItems;
   return {

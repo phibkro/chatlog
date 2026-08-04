@@ -2,9 +2,13 @@ import {
   readContextEventKindCounts,
   readContextEvents,
   recordContextFeedback,
+  recordContextOutcome,
   CONTEXT_FEEDBACK_SIGNALS,
+  CONTEXT_TREATMENT_ARMS,
   type ContextFeedbackSignal,
   type ContextEventProjectionRow,
+  type ContextOutcomeStatus,
+  type ContextTreatmentArm,
 } from "../context-events";
 import { readAuthorizedContextRelease } from "../context-release";
 import { listContextSessionsBounded, readContextSession } from "../context-session";
@@ -129,6 +133,16 @@ export interface ContextManagementFeedbackInput {
   operatorId: string;
 }
 
+export interface ContextManagementOutcomeInput {
+  contextSessionId: string;
+  interventionEventId: string;
+  status: ContextOutcomeStatus;
+  treatmentArm: ContextTreatmentArm;
+  unresolved: boolean;
+  note?: string;
+  operatorId: string;
+}
+
 export type ContextManagementResult<T> =
   | { ok: true; value: T }
   | { ok: false; status: number; error: string };
@@ -192,6 +206,62 @@ function parseFeedbackInput(
       interventionEventId,
       ...(itemId === undefined ? {} : { itemId }),
       signal: input.signal as ContextFeedbackSignal,
+      ...(note === undefined ? {} : { note }),
+      operatorId,
+    },
+  };
+}
+
+function parseOutcomeInput(
+  value: unknown,
+): { ok: true; value: ContextManagementOutcomeInput } | { ok: false; error: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return { ok: false, error: "context outcome must be an object" };
+  const input = value as Record<string, unknown>;
+  if (
+    !hasOnlyKeys(input, [
+      "contextSessionId",
+      "interventionEventId",
+      "status",
+      "treatmentArm",
+      "unresolved",
+      "note",
+      "operatorId",
+    ])
+  )
+    return { ok: false, error: "context outcome contains unsupported fields" };
+  const contextSessionId = text(input.contextSessionId, 200);
+  if (!contextSessionId || !HASH.test(contextSessionId))
+    return { ok: false, error: "contextSessionId must be a lowercase SHA-256" };
+  const interventionEventId = text(input.interventionEventId, 64);
+  if (!interventionEventId || !HASH.test(interventionEventId))
+    return { ok: false, error: "interventionEventId must be a lowercase SHA-256 event ID" };
+  const operatorId = text(input.operatorId, CONTEXT_MANAGEMENT_LIMITS.operatorId);
+  if (!operatorId) return { ok: false, error: "operatorId must be non-empty bounded text" };
+  if (
+    typeof input.status !== "string" ||
+    !["success", "failure", "mixed", "unknown"].includes(input.status)
+  )
+    return { ok: false, error: "status must be success, failure, mixed, or unknown" };
+  if (
+    typeof input.treatmentArm !== "string" ||
+    !CONTEXT_TREATMENT_ARMS.includes(input.treatmentArm as ContextTreatmentArm)
+  )
+    return { ok: false, error: "treatmentArm is not supported" };
+  if (typeof input.unresolved !== "boolean")
+    return { ok: false, error: "unresolved must be boolean" };
+  const note =
+    input.note === undefined ? undefined : text(input.note, CONTEXT_MANAGEMENT_LIMITS.text);
+  if (input.note !== undefined && note === undefined)
+    return { ok: false, error: "note must be bounded non-empty text" };
+  return {
+    ok: true,
+    value: {
+      contextSessionId,
+      interventionEventId,
+      status: input.status as ContextOutcomeStatus,
+      treatmentArm: input.treatmentArm as ContextTreatmentArm,
+      unresolved: input.unresolved,
       ...(note === undefined ? {} : { note }),
       operatorId,
     },
@@ -381,6 +451,28 @@ const DELIVERED_EVENT_KINDS = new Set([
   "context.procedure.returned",
 ]);
 
+async function deliveredIntervention(
+  root: string,
+  contextSessionId: string,
+  interventionEventId: string,
+): Promise<ContextManagementResult<ContextEventProjectionRow>> {
+  const loaded = await readContextSession(root, contextSessionId);
+  if (!loaded.ok) {
+    if (/\bENOENT\b/u.test(loaded.error.message))
+      return failure(400, "context session does not exist");
+    return eventFailure(loaded.error.message);
+  }
+  const events = await readContextEvents(root, {
+    contextSessionId,
+    recoverPending: false,
+  });
+  if (!events.ok) return eventFailure(events.error.message);
+  const intervention = events.value.find((event) => event.eventId === interventionEventId);
+  return intervention && DELIVERED_EVENT_KINDS.has(intervention.kind)
+    ? { ok: true, value: intervention }
+    : failure(400, "intervention event does not belong to the context session");
+}
+
 export class ContextManagement {
   constructor(readonly root: string) {}
 
@@ -461,22 +553,13 @@ export class ContextManagement {
     if (!parsed.ok) return failure(400, parsed.error);
     const value = parsed.value;
 
-    const loaded = await readContextSession(this.root, value.contextSessionId);
-    if (!loaded.ok) {
-      if (/\bENOENT\b/u.test(loaded.error.message))
-        return failure(400, "context session does not exist");
-      return eventFailure(loaded.error.message);
-    }
-
-    const events = await readContextEvents(this.root, {
-      contextSessionId: value.contextSessionId,
-      recoverPending: false,
-    });
-    if (!events.ok) return eventFailure(events.error.message);
-    const intervention = events.value.find((event) => event.eventId === value.interventionEventId);
-    if (!intervention || !DELIVERED_EVENT_KINDS.has(intervention.kind))
-      return failure(400, "intervention event does not belong to the context session");
-    if (value.itemId !== undefined && intervention.itemId !== value.itemId)
+    const intervention = await deliveredIntervention(
+      this.root,
+      value.contextSessionId,
+      value.interventionEventId,
+    );
+    if (!intervention.ok) return intervention;
+    if (value.itemId !== undefined && intervention.value.itemId !== value.itemId)
       return failure(400, "feedback item does not belong to the intervention");
 
     const idempotencyKey = sha256(
@@ -499,6 +582,46 @@ export class ContextManagement {
       ...(value.itemId === undefined ? {} : { itemId: value.itemId }),
       signal: value.signal,
       ...(value.note === undefined ? {} : { note: value.note }),
+    });
+    if (!recorded.ok) return feedbackFailure(recorded.error);
+    return this.get();
+  }
+
+  async outcome(input: unknown): Promise<ContextManagementResult<ContextManagementView>> {
+    const parsed = parseOutcomeInput(input);
+    if (!parsed.ok) return failure(400, parsed.error);
+    const value = parsed.value;
+    const intervention = await deliveredIntervention(
+      this.root,
+      value.contextSessionId,
+      value.interventionEventId,
+    );
+    if (!intervention.ok) return intervention;
+
+    const idempotencyKey = sha256(
+      stableStringify({
+        recipe: "chatlog-workbench-context-outcome-v1",
+        contextSessionId: value.contextSessionId,
+        interventionEventId: value.interventionEventId,
+        status: value.status,
+        treatmentArm: value.treatmentArm,
+        unresolved: value.unresolved,
+        note: value.note ?? null,
+        operatorId: value.operatorId,
+      }),
+    );
+    const recorded = await recordContextOutcome(this.root, {
+      contextSessionId: value.contextSessionId,
+      idempotencyKey,
+      actor: { kind: "human", id: value.operatorId },
+      actorAuthority: "human",
+      interventionEventIds: [value.interventionEventId],
+      evidenceGrade: "human-asserted",
+      treatmentArm: value.treatmentArm,
+      metrics: value.note === undefined ? {} : { note: value.note },
+      unresolved: value.unresolved,
+      status: value.status,
+      evidenceSource: "workbench-operator",
     });
     if (!recorded.ok) return feedbackFailure(recorded.error);
     return this.get();

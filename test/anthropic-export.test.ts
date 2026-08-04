@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, symlink, truncate, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import {
+  ANTHROPIC_MAX_MANIFEST_BYTES,
   adaptAnthropicConversation,
   importAnthropicExport,
   previewAnthropicExport,
@@ -21,7 +22,13 @@ const fixture = {
       sender: "human",
       created_at: "2025-01-01T10:00:00Z",
       content: [{ type: "text", text: "Explore this idea with sk-ant-abcdefghijklmnop" }],
-      attachments: [{ file_name: "notes.pdf", file_type: "application/pdf", extracted_content: "not indexed by default" }],
+      attachments: [
+        {
+          file_name: "notes.pdf",
+          file_type: "application/pdf",
+          extracted_content: "not indexed by default",
+        },
+      ],
     },
     {
       uuid: "message-2",
@@ -57,8 +64,59 @@ test("adapts Claude Web exports without indexing thinking or attachment bodies",
   expect(JSON.stringify(conversation)).not.toContain("not indexed by default");
   expect(JSON.stringify(conversation)).not.toContain("private model scratchpad");
   expect(conversation.turns[1].toolCalls?.[0]).toMatchObject({ name: "search", output: "result" });
-  expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*"))
-    .toThrow("invalid conversation domain");
+  expect(() => adaptAnthropicConversation("/export.zip", fixture as any, "*")).toThrow(
+    "invalid conversation domain",
+  );
+});
+
+test("rejects deeply nested Anthropic records before adaptation", () => {
+  let nested: Record<string, unknown> = { value: "leaf" };
+  for (let depth = 0; depth < 40; depth += 1) nested = { nested };
+  const conversation = {
+    ...fixture,
+    chat_messages: [
+      {
+        ...fixture.chat_messages[0],
+        content: [{ type: "tool_use", id: "deep-tool", input: nested }],
+      },
+    ],
+  };
+  expect(() => adaptAnthropicConversation("/export.zip", conversation)).toThrow(/nested depth/u);
+});
+
+test("rejects symlinked Anthropic export members before reading them", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-symlink-"));
+  const source = join(base, "source");
+  const outside = join(base, "outside.json");
+  await mkdir(source);
+  await writeFile(outside, JSON.stringify([fixture]));
+  await symlink(outside, join(source, "conversations.json"));
+  await expect(previewAnthropicExport(source, join(base, "chatlog"))).rejects.toThrow(
+    "is not a regular file",
+  );
+  const validSource = join(base, "valid-source");
+  const sourceAlias = join(base, "source-alias");
+  await mkdir(validSource);
+  await writeFile(join(validSource, "conversations.json"), JSON.stringify([fixture]));
+  await symlink(validSource, sourceAlias);
+  await expect(previewAnthropicExport(sourceAlias, join(base, "chatlog"))).rejects.toThrow(
+    "must be a directory or .zip archive",
+  );
+});
+
+test("rejects an oversized Anthropic corpus manifest before parsing", async () => {
+  const base = await mkdtemp(join(tmpdir(), "chatlog-anthropic-manifest-limit-"));
+  const source = join(base, "source");
+  const root = join(base, "chatlog");
+  await mkdir(source);
+  await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
+  const manifestPath = join(root, "corpus", "manifest.json");
+  await mkdir(dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, "");
+  await truncate(manifestPath, ANTHROPIC_MAX_MANIFEST_BYTES + 1);
+  await expect(previewAnthropicExport(source, root)).rejects.toThrow(
+    /Anthropic corpus manifest.*file limit/u,
+  );
 });
 
 test("imports an extracted Anthropic export idempotently", async () => {
@@ -97,8 +155,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
   expect(preview.sourceContentHash).toHaveLength(64);
   expect(await Bun.file(join(root, "corpus", "manifest.json")).exists()).toBe(false);
   expect(await Bun.file(join(root, "analysis", "chatlog.sqlite")).exists()).toBe(false);
-  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
-    .toBe(preview.receiptId);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId).toBe(
+    preview.receiptId,
+  );
 
   const first = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(first).toMatchObject({ discovered: 1, imported: 1, skipped: 0, turns: 2, attachments: 1 });
@@ -134,7 +193,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
     unchanged: 1,
     wouldImport: 0,
   });
-  const reclassificationPreview = await previewAnthropicExport(source, root, { domain: "personal" });
+  const reclassificationPreview = await previewAnthropicExport(source, root, {
+    domain: "personal",
+  });
   expect(reclassificationPreview).toMatchObject({
     new: 0,
     changed: 0,
@@ -143,8 +204,9 @@ test("imports an extracted Anthropic export idempotently", async () => {
     wouldImport: 1,
   });
   expect(reclassificationPreview.proposalId).not.toBe(preview.proposalId);
-  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId)
-    .not.toBe(preview.receiptId);
+  expect((await previewAnthropicExport(source, root, { domain: "ideas" })).receiptId).not.toBe(
+    preview.receiptId,
+  );
   const second = await importAnthropicExport(source, root, { domain: "ideas", derive: false });
   expect(second).toMatchObject({ discovered: 1, imported: 0, skipped: 1 });
   expect(second.receipt).toMatchObject({
@@ -156,8 +218,17 @@ test("imports an extracted Anthropic export idempotently", async () => {
 
   const manifest = JSON.parse(await readFile(join(root, "corpus", "manifest.json"), "utf8"));
   const hash = Object.values(manifest.sources)[0] as { contentHash: string };
-  const canonical = JSON.parse(await readFile(join(root, "corpus", "objects", hash.contentHash.slice(0, 2), `${hash.contentHash}.json`), "utf8"));
-  expect(canonical).toMatchObject({ title: "A broader idea", domain: "ideas", harness: "claude-web" });
+  const canonical = JSON.parse(
+    await readFile(
+      join(root, "corpus", "objects", hash.contentHash.slice(0, 2), `${hash.contentHash}.json`),
+      "utf8",
+    ),
+  );
+  expect(canonical).toMatchObject({
+    title: "A broader idea",
+    domain: "ideas",
+    harness: "claude-web",
+  });
 
   const db = new Database(join(root, "analysis", "chatlog.sqlite"), { readonly: true });
   expect(db.query("SELECT title, domain, source_kind FROM current_conversations").get()).toEqual({
@@ -195,13 +266,11 @@ test("records the committed manifest transition when derivation fails", async ()
   await writeFile(join(source, "conversations.json"), JSON.stringify([fixture]));
   const invalidHash = "0".repeat(64);
   await mkdir(join(root, "corpus", "objects", "00"), { recursive: true });
-  await writeFile(
-    join(root, "corpus", "objects", "00", `${invalidHash}.json`),
-    "{not valid JSON",
-  );
+  await writeFile(join(root, "corpus", "objects", "00", `${invalidHash}.json`), "{not valid JSON");
 
-  await expect(importAnthropicExport(source, root, { domain: "ideas" }))
-    .rejects.toThrow("import committed as receipt");
+  await expect(importAnthropicExport(source, root, { domain: "ideas" })).rejects.toThrow(
+    "import committed as receipt",
+  );
   const [receipt] = await listImportReceipts(root);
   expect(receipt).toMatchObject({
     status: "completed",
@@ -225,9 +294,9 @@ test("does not advance projection or write a receipt when manifest commit fails"
   const receiptsBefore = await listImportReceipts(root);
   const dbPath = join(root, "analysis", "chatlog.sqlite");
   const beforeDb = new Database(dbPath, { readonly: true });
-  const activeBefore = beforeDb.query(
-    "SELECT content_hash contentHash FROM current_conversations",
-  ).get();
+  const activeBefore = beforeDb
+    .query("SELECT content_hash contentHash FROM current_conversations")
+    .get();
   beforeDb.close();
 
   await writeFile(
@@ -235,16 +304,16 @@ test("does not advance projection or write a receipt when manifest commit fails"
     JSON.stringify([{ ...fixture, name: "A changed idea" }]),
   );
   await mkdir(`${manifestPath}.${process.pid}.tmp`);
-  await expect(importAnthropicExport(source, root, { domain: "ideas", derive: false }))
-    .rejects.toThrow();
+  await expect(
+    importAnthropicExport(source, root, { domain: "ideas", derive: false }),
+  ).rejects.toThrow();
 
   expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
   expect(await listImportReceipts(root)).toEqual(receiptsBefore);
   const afterDb = new Database(dbPath, { readonly: true });
-  expect(afterDb.query(
-    "SELECT content_hash contentHash FROM current_conversations",
-  ).get()).toEqual(activeBefore);
-  expect(afterDb.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 2 });
+  expect(afterDb.query("SELECT content_hash contentHash FROM current_conversations").get()).toEqual(
+    activeBefore,
+  );
+  expect(afterDb.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 2 });
   afterDb.close();
 });

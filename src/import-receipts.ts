@@ -4,6 +4,13 @@ import { dirname, join } from "node:path";
 import type { DeriveSummary } from "./derive";
 import type { RefinerySummary } from "./refinery";
 export { manifestSourcesHash } from "./source-authority";
+export class ImportReceiptError extends Error {
+  readonly code = "import-receipt-invalid";
+}
+
+function failClosed(message: string, cause?: unknown): never {
+  throw new ImportReceiptError(message, cause === undefined ? undefined : { cause });
+}
 
 export const IMPORT_RECEIPT_SCHEMA = "chatlog/import-receipt-v1" as const;
 
@@ -74,24 +81,24 @@ function sha256(value: string): string {
 }
 
 function boundedText(value: string, label: string, maximum: number): string {
-  if (!value || value.length > maximum) throw new Error(`${label} exceeds receipt bounds`);
+  if (!value || value.length > maximum) failClosed(`${label} exceeds receipt bounds`);
   return value;
 }
 
 function boundedCount(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is not a bounded count`);
+  if (!Number.isSafeInteger(value) || value < 0) failClosed(`${label} is not a bounded count`);
   return value;
 }
 
 function validateHash(value: string, label: string): string {
-  if (!/^[a-f0-9]{64}$/.test(value)) throw new Error(`${label} is not a SHA-256 hash`);
+  if (!/^[a-f0-9]{64}$/.test(value)) failClosed(`${label} is not a SHA-256 hash`);
   return value;
 }
 
 function validateTimestamp(value: string, label: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString() !== value)
-    throw new Error(`${label} is not a canonical ISO-8601 timestamp`);
+    failClosed(`${label} is not a canonical ISO-8601 timestamp`);
   return value;
 }
 
@@ -111,11 +118,13 @@ export async function writeImportReceipt(
 ): Promise<ImportReceipt> {
   const completedAt = input.completedAt ?? new Date().toISOString();
   const operationId = input.operationId ?? randomUUID();
-  const derivationStatus = input.derivationStatus
-    ?? (input.deriveEnabled ? "completed" : "not-requested");
-  if ((!input.deriveEnabled && derivationStatus !== "not-requested")
-    || (input.deriveEnabled && derivationStatus === "not-requested"))
-    throw new Error("derivation status is inconsistent with receipt policy");
+  const derivationStatus =
+    input.derivationStatus ?? (input.deriveEnabled ? "completed" : "not-requested");
+  if (
+    (!input.deriveEnabled && derivationStatus !== "not-requested") ||
+    (input.deriveEnabled && derivationStatus === "not-requested")
+  )
+    failClosed("derivation status is inconsistent with receipt policy");
   const body = {
     schema: IMPORT_RECEIPT_SCHEMA,
     operationId: boundedText(operationId, "operation ID", 128),
@@ -146,7 +155,10 @@ export async function writeImportReceipt(
       },
     },
     counts: Object.fromEntries(
-      Object.entries(input.counts).map(([key, value]) => [key, boundedCount(value, `count ${key}`)]),
+      Object.entries(input.counts).map(([key, value]) => [
+        key,
+        boundedCount(value, `count ${key}`),
+      ]),
     ) as ImportReceipt["counts"],
     manifest: {
       beforeHash: validateHash(input.manifest.beforeHash, "manifest before hash"),
@@ -160,21 +172,28 @@ export async function writeImportReceipt(
     derivation: {
       enabled: input.deriveEnabled,
       status: derivationStatus,
-      ...(input.derived ? {
-        derived: {
-          discovered: boundedCount(input.derived.discovered, "derived discovered"),
-          processed: boundedCount(input.derived.processed, "derived processed"),
-          skipped: boundedCount(input.derived.skipped, "derived skipped"),
-          recipeChanged: input.derived.recipeChanged,
-        },
-      } : {}),
-      ...(input.refinery ? {
-        refinery: {
-          inputConversations: boundedCount(input.refinery.inputConversations, "refinery input conversations"),
-          candidates: boundedCount(input.refinery.candidates, "refinery candidates"),
-          processed: input.refinery.processed,
-        },
-      } : {}),
+      ...(input.derived
+        ? {
+            derived: {
+              discovered: boundedCount(input.derived.discovered, "derived discovered"),
+              processed: boundedCount(input.derived.processed, "derived processed"),
+              skipped: boundedCount(input.derived.skipped, "derived skipped"),
+              recipeChanged: input.derived.recipeChanged,
+            },
+          }
+        : {}),
+      ...(input.refinery
+        ? {
+            refinery: {
+              inputConversations: boundedCount(
+                input.refinery.inputConversations,
+                "refinery input conversations",
+              ),
+              candidates: boundedCount(input.refinery.candidates, "refinery candidates"),
+              processed: input.refinery.processed,
+            },
+          }
+        : {}),
     },
   };
   const receiptId = sha256(JSON.stringify(body));
@@ -189,7 +208,7 @@ export async function writeImportReceipt(
 
 export async function listImportReceipts(root: string, limit = 20): Promise<ImportReceipt[]> {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
-    throw new Error("receipt limit must be an integer between 1 and 200");
+    failClosed("receipt limit must be an integer between 1 and 200");
   const directory = join(root, "receipts", "imports");
   let names: string[];
   try {
@@ -199,20 +218,20 @@ export async function listImportReceipts(root: string, limit = 20): Promise<Impo
       .slice(0, limit);
   } catch (error: any) {
     if (error?.code === "ENOENT") return [];
-    throw error;
+    failClosed(error instanceof Error ? error.message : String(error), error);
   }
   const receipts: ImportReceipt[] = [];
   for (const name of names) {
     const path = join(directory, name);
     const text = await readFile(path, "utf8");
-    if (text.length > 65_536) throw new Error(`${path}: import receipt exceeds size bound`);
+    if (text.length > 65_536) failClosed(`${path}: import receipt exceeds size bound`);
     const receipt = JSON.parse(text) as ImportReceipt;
     if (receipt.schema !== IMPORT_RECEIPT_SCHEMA || !/^[a-f0-9]{64}$/.test(receipt.receiptId)) {
-      throw new Error(`${path}: unsupported import receipt`);
+      failClosed(`${path}: unsupported import receipt`);
     }
     const { receiptId, ...body } = receipt;
     if (sha256(JSON.stringify(body)) !== receiptId || !name.endsWith(`-${receiptId}.json`))
-      throw new Error(`${path}: import receipt integrity check failed`);
+      failClosed(`${path}: import receipt integrity check failed`);
     receipts.push(receipt);
   }
   return receipts;

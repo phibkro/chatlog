@@ -26,6 +26,79 @@ There is intentionally no refinery-side disposition database or promotion
 command. The accepted artifact lives in its existing authoritative system;
 the candidate remains provenance for why it was considered.
 
+## Semantic disposition
+
+`bun run judge:refinery` is an optional, resource-gated local Ollama pass over
+the refinery artifact. It is not a promotion command. Run it only after the
+required RAM, swap, PSI, GPU, Ollama, and competing-process preflight, and never
+concurrently with another GPU job.
+
+The judge protocol requires exactly one valid verdict per requested candidate,
+unique in-range integer evidence indices, and no genuine evidence on a
+`boilerplate` verdict. A malformed batch aborts instead of silently emitting a
+partial result. Valid output is separated into:
+
+- `promotionReview`: `genuine`, with selected evidence spanning at least the
+  refinery's distinct-session threshold;
+- `manualReview`: every `mixed` verdict, insufficiently supported `genuine`
+  verdict, and deferred reference-wiki item;
+- `rejected`: `boilerplate`;
+- `unjudged`: no valid verdict.
+
+Every support count and pointer is recomputed from explicitly selected evidence.
+The result never copies the lexical nomination frequency and never falls back
+to all sampled pointers when selection is empty. `promotionReview` still means
+human curation, not promotion or eligibility for `agent-eval`.
+
+## Blinded human labels
+
+`bun run adjudication:packet` deterministically selects 30 candidates from the
+current refinery artifact. It includes the fixed semantic challenge set, then
+balances empirical low/middle/high distinct-wording-ratio strata and available
+promotion types using metadata only. It does not read model-bakeoff output.
+
+The content-addressed `public/` directory beneath
+`derived/adjudication/refinery/<packet-hash>/` contains:
+
+- `packet.json` and `packet.md`: the public review surface, with shuffled
+  `Cxxx`/`Exx` aliases, neutral signature themes, aliased provenance, and
+  re-redacted snippets;
+- `answers.template.json` and `answers.schema.json`: a packet-hash-bound answer
+  form using evidence aliases and an explicit `insufficient-context` state;
+  The mode-0600 source mapping, output checksums, and reproducibility metadata
+  live separately at
+  `derived/adjudication/refinery-private/<packet-hash>/manifest.json`.
+
+This is a trusted-local-only workflow; do not export the packet. Give only the
+public bundle to the adjudicator and do not open the private manifest during
+review. Copy the template to `answers.json`, fill the adjudicator ID and every
+row, then run
+`bun run adjudication:verify -- <packet.json> <answers.json>`. The verifier
+rejects unanswered or inconsistent rows before labels can be treated as gold.
+The answer does not ask for promotion eligibility: that value is derived later
+from a genuine verdict and the distinct sessions behind selected evidence, so a
+human-entered boolean cannot disagree with the evidence.
+
+The Workbench Memory Lab at `/memory/` is the preferred operator surface. It
+does not expose these expert-facing fields directly. Each candidate becomes a
+scenario plus a model-authored memory proposal with three correctness choices (`correct`,
+`incorrect`, `unsure`) and three reinforcement choices (`positive`, `negative`,
+`neutral`). A written correction or missing-context note is optional. The
+proposal is stored in an exact, packet-bound `proposals.json` sidecar with
+provider, model, effort, and recipe provenance. The application stores the
+operator's choices in a separate review ledger; it does not compile them into
+the expert packet-answer schema. The review ledger also binds the SHA-256 hash
+of the exact proposal sidecar bytes, so a regenerated proposal set invalidates
+stale reviews instead of changing their meaning.
+
+The same public-only workflow is available at Workbench `/memory/`. Memory Lab
+discovers only the newest valid separated `public/` bundle with complete,
+strictly validated proposals. It saves `operator-reviews.draft.json` atomically
+during review and creates `operator-reviews.json` only after an explicit
+complete-packet finalization. Legacy `answers.draft.json` and `answers.json`
+remain untouched for the expert adjudication workflow. The UI never reads the
+private manifest, invokes a model, or exposes promotion controls.
+
 ## `agent-eval/promotion-v1`
 
 The control and treatment use the same repository, clean start commit, task,
@@ -55,3 +128,21 @@ second documentation hierarchy.
 Measured selection and disposition records live under `docs/promotion-runs/`.
 They are audit provenance, not promoted knowledge; rejected treatment artifacts
 remain evaluation fixtures only when needed to reproduce the measurement.
+
+## Governed insight publication
+
+Refinery, judge, blinded review, and the insight ledger are separate authority
+stages. `insight-assembler` verifies their exact hashes, packet mapping,
+finalized review, selected canonical evidence, semantic kind, and scope before
+returning a proposed command. It never writes the ledger.
+
+The v2 ledger records immutable revisions and explicit human transitions:
+accept, accept-with-correction, reject, dispute, resolve-dispute, supersede,
+expire, and retire. Model confidence is retained as one assessor record and
+cannot activate a claim. `chatlog insight preview` emits deterministic
+duplicate, contradiction, supersession, expiry, and scope-correction proposals;
+`chatlog insight apply` is the operator command boundary.
+
+`chatlog insight recompile` is a separate maintenance boundary.
+It rebuilds derived state after a verified evidence or source-authority change.
+It does not accept, reject, or revise an insight.

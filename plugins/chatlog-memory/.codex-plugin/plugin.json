@@ -1,0 +1,26 @@
+{
+  "name": "chatlog-memory",
+  "version": "0.1.0",
+  "description": "Inject a bounded experience-memory index at session startup and recall accepted cards on demand.",
+  "author": {
+    "name": "Chatlog"
+  },
+  "interface": {
+    "displayName": "Chatlog Memory",
+    "shortDescription": "Recall accepted experience only when it applies.",
+    "longDescription": "Chatlog Memory adds a deterministic startup routing index and bounded, snapshot-pinned recall without loading historical evidence into every prompt.",
+    "developerName": "Chatlog",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "Show the active memory routing index.",
+      "Recall a memory that applies to this task."
+    ]
+  },
+  "mcpServers": {
+    "chatlog": {
+      "command": "bun",
+      "args": ["${PLUGIN_ROOT}/scripts/chatlog-mcp.js"]
+    }
+  }
+}

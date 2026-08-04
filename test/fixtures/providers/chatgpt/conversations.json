@@ -1,0 +1,194 @@
+[
+  {
+    "id": "synthetic-linear-001",
+    "title": "Synthetic linear fixture",
+    "create_time": 1700000000.0,
+    "update_time": 1700000002.0,
+    "current_node": "linear-a1",
+    "mapping": {
+      "linear-root": {
+        "id": "linear-root",
+        "parent": null,
+        "children": ["linear-u1"],
+        "message": null
+      },
+      "linear-u1": {
+        "id": "linear-u1",
+        "parent": "linear-root",
+        "children": ["linear-a1"],
+        "message": {
+          "id": "synthetic-message-u1",
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1700000000.0,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": ["synthetic question"]
+          },
+          "metadata": {}
+        }
+      },
+      "linear-a1": {
+        "id": "linear-a1",
+        "parent": "linear-u1",
+        "children": [],
+        "message": {
+          "id": "synthetic-message-a1",
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1700000002.0,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": ["synthetic answer"]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "synthetic-branched-001",
+    "title": "Synthetic branched fixture",
+    "create_time": 1700000100.0,
+    "update_time": 1700000105.0,
+    "current_node": "branch-current",
+    "fixture_extension": {
+      "synthetic": true
+    },
+    "mapping": {
+      "branch-root": {
+        "id": "branch-root",
+        "parent": null,
+        "children": ["branch-u1"],
+        "message": null
+      },
+      "branch-u1": {
+        "id": "branch-u1",
+        "parent": "branch-root",
+        "children": ["branch-current", "branch-alternate"],
+        "message": {
+          "id": "synthetic-message-branch-u1",
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1700000100.0,
+          "update_time": null,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "synthetic prompt",
+              {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": "file-service://synthetic-asset-001",
+                "size_bytes": 12,
+                "width": 2,
+                "height": 2,
+                "metadata": {
+                  "synthetic": true
+                }
+              }
+            ]
+          },
+          "metadata": {
+            "attachments": [
+              {
+                "id": "synthetic-asset-001",
+                "name": "fixture.png",
+                "size": 12,
+                "mime_type": "image/png",
+                "width": 2,
+                "height": 2
+              }
+            ]
+          },
+          "future_message_field": {
+            "keep": true
+          }
+        }
+      },
+      "branch-current": {
+        "id": "branch-current",
+        "parent": "branch-u1",
+        "children": [],
+        "message": {
+          "id": "synthetic-message-current",
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1700000105.0,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": ["selected synthetic answer"]
+          },
+          "status": "finished_successfully",
+          "end_turn": true,
+          "recipient": "all",
+          "metadata": {
+            "model_slug": "synthetic-model"
+          }
+        }
+      },
+      "branch-alternate": {
+        "id": "branch-alternate",
+        "parent": "branch-u1",
+        "children": [],
+        "message": {
+          "id": "synthetic-message-alternate",
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1700000104.0,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": ["alternate synthetic answer"]
+          },
+          "metadata": {}
+        }
+      },
+      "branch-system": {
+        "id": "branch-system",
+        "parent": "branch-current",
+        "children": ["branch-tool"],
+        "message": {
+          "id": "synthetic-message-system",
+          "author": {
+            "role": "system"
+          },
+          "create_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": ["synthetic system record"]
+          },
+          "metadata": {}
+        }
+      },
+      "branch-tool": {
+        "id": "branch-tool",
+        "parent": "branch-system",
+        "children": [],
+        "message": {
+          "id": "synthetic-message-tool",
+          "author": {
+            "role": "tool",
+            "name": "synthetic-tool"
+          },
+          "create_time": 1700000105.5,
+          "content": {
+            "content_type": "execution_output",
+            "text": "synthetic tool result"
+          },
+          "recipient": "synthetic-tool",
+          "metadata": {
+            "synthetic": true
+          }
+        }
+      }
+    }
+  }
+]

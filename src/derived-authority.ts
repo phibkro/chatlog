@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { Effect } from "effect";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import { loadCorpusManifest } from "./source-authority";
 
@@ -29,6 +30,12 @@ function sha256(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
 }
 
+function artifactInputProjectionHash(value: unknown): unknown {
+  return value !== null && typeof value === "object" && "inputProjectionHash" in value
+    ? value.inputProjectionHash
+    : undefined;
+}
+
 export function serializeCurrentProjection(
   sources: Record<string, { contentHash: string }>,
 ): string {
@@ -36,18 +43,24 @@ export function serializeCurrentProjection(
   return hashes.map((conversationHash) => JSON.stringify({ conversationHash })).join("\n") + "\n";
 }
 
-function currentConversationHashes(
-  sources: Record<string, { contentHash: string }>,
-): string[] {
+function currentConversationHashes(sources: Record<string, { contentHash: string }>): string[] {
   return [...new Set(Object.values(sources).map((entry) => entry.contentHash))].sort();
 }
 
 function derivedPath(root: string, relativePath: unknown): string {
   if (typeof relativePath !== "string" || !relativePath || isAbsolute(relativePath))
-    throw new DerivedProjectionDriftError("derived manifest contains an invalid artifact path");
+    return Effect.runSync(
+      Effect.fail(
+        new DerivedProjectionDriftError("derived manifest contains an invalid artifact path"),
+      ),
+    );
   const normalized = normalize(relativePath);
   if (normalized === ".." || normalized.startsWith(`..${sep}`))
-    throw new DerivedProjectionDriftError("derived manifest contains an invalid artifact path");
+    return Effect.runSync(
+      Effect.fail(
+        new DerivedProjectionDriftError("derived manifest contains an invalid artifact path"),
+      ),
+    );
   return join(root, "derived", normalized);
 }
 
@@ -56,46 +69,74 @@ export async function assertDerivedProjection(root: string): Promise<DerivedProj
     const corpus = await loadCorpusManifest(root);
     const expectedText = serializeCurrentProjection(corpus.sources);
     const expectedHash = sha256(expectedText);
-    const manifest = JSON.parse(
-      await readFile(join(root, "derived", "manifest.json"), "utf8"),
-    );
+    const manifest = JSON.parse(await readFile(join(root, "derived", "manifest.json"), "utf8"));
     const projection = manifest.currentProjection;
     const actualText = await readFile(derivedPath(root, projection?.path), "utf8");
     if (
-      manifest?.version !== 1
-      || typeof manifest.recipeHash !== "string"
-      || projection.path !== "current-hashes.jsonl"
-      || projection.contentHash !== expectedHash
-      || sha256(actualText) !== expectedHash
-      || actualText !== expectedText
+      manifest?.version !== 1 ||
+      typeof manifest.recipeHash !== "string" ||
+      projection.path !== "current-hashes.jsonl" ||
+      projection.contentHash !== expectedHash ||
+      sha256(actualText) !== expectedHash ||
+      actualText !== expectedText
     ) {
-      throw new DerivedProjectionDriftError();
+      return Effect.runSync(Effect.fail(new DerivedProjectionDriftError()));
     }
     const conversationHashes = currentConversationHashes(corpus.sources);
-    const structures = conversationHashes.map((conversationHash) => {
-      const structure = manifest.conversations?.[conversationHash]?.derivedArtifacts?.structure;
-      if (
-        structure?.path !== `objects/${conversationHash.slice(0, 2)}/${conversationHash}.json`
-        || !/^[a-f0-9]{64}$/.test(structure?.contentHash ?? "")
-      ) {
-        throw new DerivedProjectionDriftError(
-          `derived manifest has no valid structure artifact for ${conversationHash}`,
-        );
-      }
-      return [conversationHash, structure.contentHash];
-    });
+    const structures = await Promise.all(
+      conversationHashes.map(async (conversationHash) => {
+        const structure = manifest.conversations?.[conversationHash]?.derivedArtifacts?.structure;
+        if (
+          structure?.path !== `objects/${conversationHash.slice(0, 2)}/${conversationHash}.json` ||
+          !/^[a-f0-9]{64}$/.test(structure?.contentHash ?? "")
+        ) {
+          return Effect.runSync(
+            Effect.fail(
+              new DerivedProjectionDriftError(
+                `derived manifest has no valid structure artifact for ${conversationHash}`,
+              ),
+            ),
+          );
+        }
+        let structureText: string;
+        try {
+          structureText = await readFile(derivedPath(root, structure.path), "utf8");
+        } catch {
+          return Effect.runSync(
+            Effect.fail(
+              new DerivedProjectionDriftError(
+                "derived object coverage does not match the active projection",
+              ),
+            ),
+          );
+        }
+        if (sha256(structureText) !== structure.contentHash)
+          return Effect.runSync(
+            Effect.fail(
+              new DerivedProjectionDriftError(
+                "derived object coverage does not match the active projection",
+              ),
+            ),
+          );
+        return [conversationHash, structure.contentHash];
+      }),
+    );
     return {
       contentHash: expectedHash,
-      structureProjectionHash: sha256(JSON.stringify({
-        recipeHash: manifest.recipeHash,
-        structures,
-      })),
+      structureProjectionHash: sha256(
+        JSON.stringify({
+          recipeHash: manifest.recipeHash,
+          structures,
+        }),
+      ),
       conversations: conversationHashes.length,
       conversationHashes,
     };
   } catch (error) {
-    if (error instanceof DerivedProjectionDriftError) throw error;
-    throw new DerivedProjectionDriftError(undefined, { cause: error });
+    if (error instanceof DerivedProjectionDriftError) return Effect.runPromise(Effect.fail(error));
+    return Effect.runPromise(
+      Effect.fail(new DerivedProjectionDriftError(undefined, { cause: error })),
+    );
   }
 }
 
@@ -106,32 +147,48 @@ export async function loadCurrentDerivedArtifact<T = any>(
 ): Promise<CurrentDerivedArtifact<T> | null> {
   let manifest: any;
   try {
-    manifest = JSON.parse(
-      await readFile(join(root, "derived", manifestName), "utf8"),
-    );
+    manifest = JSON.parse(await readFile(join(root, "derived", manifestName), "utf8"));
   } catch (error: any) {
     if (options.optional && error?.code === "ENOENT") return null;
-    throw new DerivedProjectionDriftError(`${manifestName}: current artifact is unavailable`, {
-      cause: error,
-    });
+    return Effect.runPromise(
+      Effect.fail(
+        new DerivedProjectionDriftError(`${manifestName}: current artifact is unavailable`, {
+          cause: error,
+        }),
+      ),
+    );
   }
   try {
     if (manifest?.version !== 1 || !manifest.current)
-      throw new DerivedProjectionDriftError(`${manifestName}: no current derived artifact`);
+      return Effect.runPromise(
+        Effect.fail(
+          new DerivedProjectionDriftError(`${manifestName}: no current derived artifact`),
+        ),
+      );
     const current = manifest.current;
     const artifactText = await readFile(derivedPath(root, current.artifactPath), "utf8");
     if (!/^[a-f0-9]{64}$/.test(current.contentHash) || sha256(artifactText) !== current.contentHash)
-      throw new DerivedProjectionDriftError(`${manifestName}: current artifact failed integrity validation`);
+      return Effect.runPromise(
+        Effect.fail(
+          new DerivedProjectionDriftError(
+            `${manifestName}: current artifact failed integrity validation`,
+          ),
+        ),
+      );
     return {
       artifact: JSON.parse(artifactText) as T,
       contentHash: current.contentHash,
       inputProjectionHash: String(current.inputProjectionHash ?? ""),
     };
   } catch (error: any) {
-    if (error instanceof DerivedProjectionDriftError) throw error;
-    throw new DerivedProjectionDriftError(`${manifestName}: current artifact is unavailable`, {
-      cause: error,
-    });
+    if (error instanceof DerivedProjectionDriftError) return Effect.runPromise(Effect.fail(error));
+    return Effect.runPromise(
+      Effect.fail(
+        new DerivedProjectionDriftError(`${manifestName}: current artifact is unavailable`, {
+          cause: error,
+        }),
+      ),
+    );
   }
 }
 
@@ -144,15 +201,20 @@ export async function loadProjectionBoundArtifact<T = any>(
     inputProjectionHash?: string;
   } = {},
 ): Promise<CurrentDerivedArtifact<T> | null> {
-  const projection = options.projection ?? await assertDerivedProjection(root);
+  const projection = options.projection ?? (await assertDerivedProjection(root));
   const inputProjectionHash = options.inputProjectionHash ?? projection.contentHash;
   const current = await loadCurrentDerivedArtifact<T>(root, manifestName, options);
-  if (current && (
-    current.inputProjectionHash !== inputProjectionHash
-    || current.artifact?.inputProjectionHash !== inputProjectionHash
-  )) {
-    throw new DerivedProjectionDriftError(
-      `${manifestName}: current artifact does not match the active derived projection`,
+  if (
+    current &&
+    (current.inputProjectionHash !== inputProjectionHash ||
+      artifactInputProjectionHash(current.artifact) !== inputProjectionHash)
+  ) {
+    return Effect.runPromise(
+      Effect.fail(
+        new DerivedProjectionDriftError(
+          `${manifestName}: current artifact does not match the active derived projection`,
+        ),
+      ),
     );
   }
   return current;

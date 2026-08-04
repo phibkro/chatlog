@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { stat } from "node:fs/promises";
+import { listSourceReceipts, type SourceReceipt } from "./source-receipts";
 
 export type SourceStatus = "connected" | "available" | "not-found" | "planned";
 
@@ -11,6 +12,15 @@ export interface SourceConfiguration {
   path: string;
   domain?: string;
   enabled?: boolean;
+}
+
+export interface SourceReceiptSummary {
+  receiptHash: string;
+  eventBatchHash: string;
+  conversationProjectionHash: string;
+  partialTail: boolean;
+  itemCounts: SourceReceipt["itemCounts"];
+  lossCounts: SourceReceipt["lossCounts"];
 }
 
 export interface SourceCatalogItem {
@@ -24,6 +34,7 @@ export interface SourceCatalogItem {
   previewCommand?: string;
   importCommand?: string;
   privacy: string;
+  lastReceiptSummary?: SourceReceiptSummary;
 }
 
 interface SourceConfigFile {
@@ -31,8 +42,12 @@ interface SourceConfigFile {
 }
 
 async function exists(path: string): Promise<boolean> {
-  try { await stat(path); return true; }
-  catch { return false; }
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuote(value: string): string {
@@ -44,14 +59,32 @@ async function loadConfiguredSources(): Promise<SourceConfiguration[]> {
     ? resolve(process.env.CHATLOG_SOURCE_CONFIG)
     : `${homedir()}/.config/chatlog/sources.json`;
   if (!(await exists(path))) return [];
-  const parsed = await Bun.file(path).json() as SourceConfigFile;
+  const parsed = (await Bun.file(path).json()) as SourceConfigFile;
   if (!Array.isArray(parsed.sources)) throw new Error(`${path}: sources must be an array`);
   return parsed.sources.filter((source) => source.enabled !== false);
 }
 
 export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogItem[]> {
   const home = homedir();
-  const builtins: Array<Omit<SourceCatalogItem, "status"> & { probe?: string }> = [
+  const receipts = dataRoot ? await listSourceReceipts(dataRoot, 200) : [];
+  const receiptFor = (path?: string): SourceReceiptSummary | undefined => {
+    if (!path) return undefined;
+    const receipt = receipts.find(
+      (candidate) => candidate.source.path === path || candidate.source.path.startsWith(`${path}#`),
+    );
+    if (!receipt) return undefined;
+    return {
+      receiptHash: receipt.receiptHash,
+      eventBatchHash: receipt.eventBatchHash,
+      conversationProjectionHash: receipt.conversationProjectionHash,
+      partialTail: receipt.partialTail,
+      itemCounts: receipt.itemCounts,
+      lossCounts: receipt.lossCounts,
+    };
+  };
+  const builtins: Array<
+    Omit<SourceCatalogItem, "status" | "lastReceiptSummary"> & { probe?: string }
+  > = [
     {
       id: "claude-code",
       kind: "session-log",
@@ -82,12 +115,26 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
       domain: "coding",
       privacy: "Read-only local discovery; canonical output is secret-redacted.",
     },
+    {
+      id: "omp",
+      kind: "session-log",
+      label: "Oh My Pi",
+      description: "Local OMP lead and delegated-agent sessions across configured providers.",
+      path: `${home}/.omp/agent/sessions`,
+      probe: `${home}/.omp/agent/sessions`,
+      domain: "coding",
+      privacy: "Read-only local discovery; canonical output is secret-redacted.",
+    },
   ];
 
   const resolved: SourceCatalogItem[] = [];
   for (const item of builtins) {
     const { probe, ...source } = item;
-    resolved.push({ ...source, status: probe && await exists(probe) ? "connected" : "not-found" });
+    resolved.push({
+      ...source,
+      status: probe && (await exists(probe)) ? "connected" : "not-found",
+      lastReceiptSummary: receiptFor(source.path),
+    });
   }
 
   const configuredSources = await loadConfiguredSources();
@@ -95,22 +142,39 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
   for (const configured of configuredSources) {
     const path = resolve(configured.path);
     const available = await exists(path);
+    const isChatGPT = configured.kind === "chatgpt-export" || configured.kind === "openai-export";
+    const isGeneric = configured.kind === "generic-events" || configured.kind === "generic-jsonl";
     resolved.push({
       id: configured.id,
       kind: configured.kind,
       label: configured.label,
-      description: configured.kind === "anthropic-export"
-        ? "Claude Web conversations, brainstorming and broader personal context."
-        : "Configured external conversation source.",
+      description: isChatGPT
+        ? "ChatGPT export graph with declared current-branch projection."
+        : isGeneric
+          ? "Versioned Chatlog AgentEventEnvelope JSONL; arbitrary provider JSONL is not accepted."
+          : configured.kind === "anthropic-export"
+            ? "Claude Web conversations, brainstorming and broader personal context."
+            : "Configured external conversation source.",
       path,
-      domain: configured.domain ?? "general",
+      domain: configured.domain ?? (isGeneric ? "coding" : isChatGPT ? "personal" : "general"),
       status: available ? "available" : "not-found",
-      ...(configured.kind === "anthropic-export" && available
+      ...(available && isChatGPT
         ? {
-            previewCommand: `bun run preview:anthropic -- ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
-            importCommand: `bun run import:anthropic -- ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
+            previewCommand: `chatlog preview chatgpt ${shellQuote(path)} ${shellQuote(configured.domain ?? "personal")}`,
+            importCommand: `chatlog import chatgpt ${shellQuote(path)} ${shellQuote(configured.domain ?? "personal")}`,
           }
-        : {}),
+        : available && isGeneric
+          ? {
+              previewCommand: `chatlog preview generic ${shellQuote(path)} ${shellQuote(configured.domain ?? "coding")}`,
+              importCommand: `chatlog import generic ${shellQuote(path)} ${shellQuote(configured.domain ?? "coding")}`,
+            }
+          : configured.kind === "anthropic-export" && available
+            ? {
+                previewCommand: `chatlog preview anthropic ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
+                importCommand: `chatlog import anthropic ${shellQuote(path)} ${shellQuote(configured.domain ?? "general")}`,
+              }
+            : {}),
+      lastReceiptSummary: receiptFor(path),
       privacy: "Imported on demand into the local redacted corpus; source remains read-only.",
     });
   }
@@ -129,8 +193,9 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
         path,
         domain: "general",
         status: "available",
-        previewCommand: `bun run preview:anthropic -- ${shellQuote(path)} general`,
-        importCommand: `bun run import:anthropic -- ${shellQuote(path)} general`,
+        previewCommand: `chatlog preview anthropic ${shellQuote(path)} general`,
+        importCommand: `chatlog import anthropic ${shellQuote(path)} general`,
+        lastReceiptSummary: receiptFor(path),
         privacy: "Discovery does not read conversation content. Import remains explicit and local.",
       });
     }
@@ -141,19 +206,25 @@ export async function sourceCatalog(dataRoot?: string): Promise<SourceCatalogIte
       id: "chatgpt-export",
       kind: "openai-export",
       label: "ChatGPT export",
-      description: "ChatGPT data-export conversations and branches.",
-      domain: "general",
-      status: "planned",
-      privacy: "Will require explicit local import; no automatic upload or hosted analysis.",
+      description: "ChatGPT export graph with declared current-branch projection.",
+      domain: "personal",
+      status: "available",
+      previewCommand: "chatlog preview chatgpt <export-path> [domain]",
+      importCommand: "chatlog import chatgpt <export-path> [domain]",
+      privacy:
+        "Read-only local export; preview writes no state and import preserves alternate branches as redacted evidence.",
     },
     {
       id: "generic-jsonl",
       kind: "generic-jsonl",
-      label: "Other agent harness",
-      description: "Adapter seam for OpenCode, Gemini, Goose and custom JSONL event streams.",
+      label: "Chatlog event JSONL",
+      description: "Versioned Chatlog AgentEventEnvelope JSONL with a required producer header.",
       domain: "coding",
-      status: "planned",
-      privacy: "Provider schemas must be explicitly allow-listed before ingestion.",
+      status: "available",
+      previewCommand: "chatlog preview generic <events.jsonl> [domain]",
+      importCommand: "chatlog import generic <events.jsonl> [domain]",
+      privacy:
+        "Only the versioned Chatlog event contract is accepted; input stays read-only and canonical output is redacted.",
     },
   );
   return resolved;

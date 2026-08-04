@@ -5,93 +5,207 @@ import type { Conversation } from "./types";
 import type { DerivedConversation, Evidence, Pointer } from "./derive";
 import { loadDerived } from "./derive";
 import { duckProjectAnalytics } from "./duckdb";
-import { rerankHosted } from "./hosted-rerank";
+import { rerank as rerankDefault } from "./hosted-rerank";
 
 export interface SearchHit {
-  sessionId: string; conversationHash: string; project: string; harness: string; model: string;
-  score: number; snippet: string; pointer: Pointer;
+  sessionId: string;
+  conversationHash: string;
+  project: string;
+  harness: string;
+  model: string;
+  score: number;
+  snippet: string;
+  pointer: Pointer;
 }
 
-export function agentSearch(db: Database, query: string, limit = 20, snippetTokens = 28, contentRolesOnly = false): { query: string; hits: SearchHit[] } {
-  const rows = db.query(`SELECT c.id sessionId, c.content_hash conversationHash, c.project, c.harness, c.model,
+export function agentSearch(
+  db: Database,
+  query: string,
+  limit = 20,
+  snippetTokens = 28,
+  contentRolesOnly = false,
+): { query: string; hits: SearchHit[] } {
+  const rows = db
+    .query(`SELECT c.id sessionId, c.content_hash conversationHash, c.project, c.harness, c.model,
     -bm25(turns_fts) score, snippet(turns_fts, 0, '[', ']', ' … ', ?) snippet, f.turn_index turnIndex
     FROM turns_fts f JOIN current_conversations c ON c.content_hash=f.content_hash
     JOIN turns t ON t.content_hash=f.content_hash AND t.turn_index=f.turn_index
     WHERE turns_fts MATCH ? AND (?=0 OR t.role IN ('user','assistant'))
-    ORDER BY bm25(turns_fts) LIMIT ?`).all(snippetTokens, query, contentRolesOnly ? 1 : 0, limit) as any[];
-  return { query, hits: rows.map((row) => ({ ...row, pointer: { turnIndex: row.turnIndex, uri: `chatlog://conversation/${row.conversationHash}/turn/${row.turnIndex}` }, turnIndex: undefined }))
-    .map(({ turnIndex: _, ...row }) => row) as SearchHit[] };
+    ORDER BY bm25(turns_fts) LIMIT ?`)
+    .all(snippetTokens, query, contentRolesOnly ? 1 : 0, limit) as any[];
+  return {
+    query,
+    hits: rows
+      .map((row) => ({
+        ...row,
+        pointer: {
+          turnIndex: row.turnIndex,
+          uri: `chatlog://conversation/${row.conversationHash}/turn/${row.turnIndex}`,
+        },
+        turnIndex: undefined,
+      }))
+      .map(({ turnIndex: _, ...row }) => row) as SearchHit[],
+  };
 }
 
-export interface SemanticHit extends SearchHit { semanticScore: number; reason: string; lexicalScore: number }
-type RerankFn = typeof rerankHosted;
-export async function agentSemanticSearch(db: Database, root: string, query: string, limit = 10, candidateLimit = 40, rerank: RerankFn = rerankHosted): Promise<unknown> {
+export interface SemanticHit extends SearchHit {
+  semanticScore: number;
+  reason: string;
+  lexicalScore: number;
+}
+type RerankFn = typeof rerankDefault;
+export async function agentSemanticSearch(
+  db: Database,
+  root: string,
+  query: string,
+  limit = 10,
+  candidateLimit = 40,
+  rerank: RerankFn = rerankDefault,
+): Promise<unknown> {
   const words = askTerms(query);
   if (!words.length) throw new Error("semantic search needs a concrete topic");
   const expression = words.map((word) => `"${word.replaceAll('"', '""')}"`).join(" OR ");
   const wanted = Math.max(limit, Math.min(50, candidateLimit));
   const retrieved = agentSearch(db, expression, Math.min(200, wanted * 4), 80, true);
-  const selected: SearchHit[] = []; const perSession = new Map<string, number>(); const seenText = new Set<string>();
+  const selected: SearchHit[] = [];
+  const perSession = new Map<string, number>();
+  const seenText = new Set<string>();
   for (const hit of retrieved.hits) {
-    const normalized = hit.snippet.replace(/[\[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 240);
+    const normalized = hit.snippet.replace(/[[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 240);
     if (seenText.has(normalized) || (perSession.get(hit.sessionId) ?? 0) >= 2) continue;
-    seenText.add(normalized); perSession.set(hit.sessionId, (perSession.get(hit.sessionId) ?? 0) + 1); selected.push(hit);
+    seenText.add(normalized);
+    perSession.set(hit.sessionId, (perSession.get(hit.sessionId) ?? 0) + 1);
+    selected.push(hit);
     if (selected.length === wanted) break;
   }
   const byId = new Map(selected.map((hit, index) => [`c${index}`, hit]));
-  const reranked = await rerank(root, query, [...byId].map(([id, hit]) => ({ id, text: hit.snippet })));
+  const reranked = await rerank(
+    root,
+    query,
+    [...byId].map(([id, hit]) => ({ id, text: hit.snippet })),
+  );
   const hits: SemanticHit[] = reranked.rankings.slice(0, limit).map((ranking) => {
     const hit = byId.get(ranking.id)!;
-    return { ...hit, lexicalScore: hit.score, score: ranking.score, semanticScore: ranking.score, reason: ranking.reason };
+    return {
+      ...hit,
+      lexicalScore: hit.score,
+      score: ranking.score,
+      semanticScore: ranking.score,
+      reason: ranking.reason,
+    };
   });
-  return { mode: "hosted-llm-rerank", query, candidateExpression: expression, retrievedCandidateCount: retrieved.hits.length, localCandidateCount: selected.length, hits, rerank: {
-    provider: reranked.provider, requestedModel: reranked.requestedModel, responseModel: reranked.responseModel,
-    cached: reranked.cached, requestHash: reranked.requestHash, egress: reranked.egress,
-  } };
+  return {
+    mode: "llm-rerank",
+    query,
+    candidateExpression: expression,
+    retrievedCandidateCount: retrieved.hits.length,
+    localCandidateCount: selected.length,
+    hits,
+    rerank: {
+      provider: reranked.provider,
+      requestedModel: reranked.requestedModel,
+      responseModel: reranked.responseModel,
+      cached: reranked.cached,
+      requestHash: reranked.requestHash,
+      egress: reranked.egress,
+    },
+  };
 }
 
 async function canonical(root: string, hash: string): Promise<Conversation> {
-  return JSON.parse(await readFile(join(root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`), "utf8")) as Conversation;
+  return JSON.parse(
+    await readFile(join(root, "corpus", "objects", hash.slice(0, 2), `${hash}.json`), "utf8"),
+  ) as Conversation;
 }
 
 function resolveHash(db: Database, identifier: string): string {
   const isHash = /^[a-f0-9]{8,64}$/i.test(identifier);
-  const rows = (isHash
-    ? db.query("SELECT content_hash FROM current_conversations WHERE content_hash LIKE ? ORDER BY ingested_at DESC LIMIT 2").all(`${identifier}%`)
-    : db.query("SELECT content_hash FROM current_conversations WHERE id=? OR resume_id=? ORDER BY ended_at DESC LIMIT 2").all(identifier, identifier)) as Array<{ content_hash: string }>;
+  const rows = (
+    isHash
+      ? db
+          .query(
+            "SELECT content_hash FROM current_conversations WHERE content_hash LIKE ? ORDER BY ingested_at DESC LIMIT 2",
+          )
+          .all(`${identifier}%`)
+      : db
+          .query(
+            "SELECT content_hash FROM current_conversations WHERE id=? OR resume_id=? ORDER BY ended_at DESC LIMIT 2",
+          )
+          .all(identifier, identifier)
+  ) as Array<{ content_hash: string }>;
   if (!rows.length) throw new Error(`conversation not found: ${identifier}`);
-  if (isHash && rows.length > 1) throw new Error(`ambiguous conversation hash prefix: ${identifier}`);
+  if (isHash && rows.length > 1)
+    throw new Error(`ambiguous conversation hash prefix: ${identifier}`);
   return rows[0].content_hash;
 }
 
-export async function agentGet(db: Database, root: string, identifier: string, turnIndex?: number): Promise<unknown> {
+export async function agentGet(
+  db: Database,
+  root: string,
+  identifier: string,
+  turnIndex?: number,
+): Promise<unknown> {
   const hash = resolveHash(db, identifier);
   const conversation = await canonical(root, hash);
   if (turnIndex == null) return { pointer: `chatlog://conversation/${hash}`, conversation };
   const turn = conversation.turns[turnIndex];
   if (!turn) throw new Error(`turn not found: ${turnIndex}`);
-  return { sessionId: conversation.id, conversationHash: hash, project: conversation.project, pointer: `chatlog://conversation/${hash}/turn/${turnIndex}`, turnIndex, turn };
-}
-
-function relevant<T extends Evidence>(items: T[], words: string[], limit: number): T[] {
-  const filtered = items.filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)));
-  return (filtered.length ? filtered : items).slice(-limit);
-}
-
-function structuralView(artifact: DerivedConversation, matches: SearchHit[] = [], words: string[] = []): unknown {
-  const problems = relevant(artifact.problems, words, 3).map(({ pointer, snippet }) => ({ pointer, snippet }));
   return {
-    sessionId: artifact.sessionId, conversationHash: artifact.conversationHash, project: artifact.project,
-    harness: artifact.harness, model: artifact.model, startedAt: artifact.startedAt, endedAt: artifact.endedAt,
-    matches: matches.map(({ score, snippet, pointer }) => ({ score, snippet, pointer })),
-    shape: { turns: artifact.metrics.turns, characters: artifact.metrics.characters, roles: artifact.metrics.roles, tokens: artifact.metrics.tokens },
-    problems, decisions: relevant(artifact.decisions, words, 3),
-    toolCallProfile: artifact.metrics.toolCalls.slice(0, 8), gates: relevant(artifact.gates, words, 3),
-    attempts: relevant(artifact.attempts, words, 5), outcome: { status: artifact.outcome.status, evidence: artifact.outcome.evidence.slice(0, 2) },
+    sessionId: conversation.id,
+    conversationHash: hash,
+    project: conversation.project,
+    pointer: `chatlog://conversation/${hash}/turn/${turnIndex}`,
+    turnIndex,
+    turn,
   };
 }
 
-export async function agentGrok(db: Database, root: string, topic: string, limit = 10): Promise<unknown> {
+function relevant<T extends Evidence>(items: T[], words: string[], limit: number): T[] {
+  const filtered = items.filter((item) =>
+    words.some((word) => item.snippet.toLowerCase().includes(word)),
+  );
+  return (filtered.length ? filtered : items).slice(-limit);
+}
+
+function structuralView(
+  artifact: DerivedConversation,
+  matches: SearchHit[] = [],
+  words: string[] = [],
+): unknown {
+  const problems = relevant(artifact.problems, words, 3).map(({ pointer, snippet }) => ({
+    pointer,
+    snippet,
+  }));
+  return {
+    sessionId: artifact.sessionId,
+    conversationHash: artifact.conversationHash,
+    project: artifact.project,
+    harness: artifact.harness,
+    model: artifact.model,
+    startedAt: artifact.startedAt,
+    endedAt: artifact.endedAt,
+    matches: matches.map(({ score, snippet, pointer }) => ({ score, snippet, pointer })),
+    shape: {
+      turns: artifact.metrics.turns,
+      characters: artifact.metrics.characters,
+      roles: artifact.metrics.roles,
+      tokens: artifact.metrics.tokens,
+    },
+    problems,
+    decisions: relevant(artifact.decisions, words, 3),
+    toolCallProfile: artifact.metrics.toolCalls.slice(0, 8),
+    gates: relevant(artifact.gates, words, 3),
+    attempts: relevant(artifact.attempts, words, 5),
+    outcome: { status: artifact.outcome.status, evidence: artifact.outcome.evidence.slice(0, 2) },
+  };
+}
+
+export async function agentGrok(
+  db: Database,
+  root: string,
+  topic: string,
+  limit = 10,
+): Promise<unknown> {
   const searched = agentSearch(db, topic, Math.max(limit * 5, 30));
   const grouped = new Map<string, SearchHit[]>();
   for (const hit of searched.hits) {
@@ -101,25 +215,49 @@ export async function agentGrok(db: Database, root: string, topic: string, limit
   }
   const words = askTerms(topic);
   const sessions = [];
-  for (const [hash, matches] of [...grouped].slice(0, limit)) sessions.push(structuralView(await loadDerived(root, hash), matches, words));
+  for (const [hash, matches] of [...grouped].slice(0, limit))
+    sessions.push(structuralView(await loadDerived(root, hash), matches, words));
   return { topic, matchedSessions: grouped.size, sessions };
 }
 
-const ASK_STOP = new Set("what did i me we you they try tried last time for the a an to of on in with how do does was were is are my our and or".split(" "));
+const ASK_STOP = new Set(
+  "what did i me we you they try tried last time for the a an to of on in with how do does was were is are my our and or".split(
+    " ",
+  ),
+);
 function askTerms(question: string): string[] {
   const stripped = question.replace(/what did (?:i|we) try last time for/i, "");
-  return [...new Set((stripped.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? []).filter((x) => !ASK_STOP.has(x)))].slice(0, 8);
+  return [
+    ...new Set(
+      (stripped.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? []).filter((x) => !ASK_STOP.has(x)),
+    ),
+  ].slice(0, 8);
 }
-export async function agentAskLexical(db: Database, root: string, question: string, limit = 10): Promise<unknown> {
+
+export interface AgentAskLexicalOptions {
+  contentRolesOnly?: boolean;
+  groupedSessionLoadLimit?: number;
+  loadDerived?: (root: string, hash: string) => Promise<DerivedConversation>;
+}
+
+export async function agentAskLexical(
+  db: Database,
+  root: string,
+  question: string,
+  limit = 10,
+  options: AgentAskLexicalOptions = {},
+): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
   const quoted = words.map((word) => `"${word.replaceAll('"', '""')}"`);
   const primaryExpression = quoted.join(" AND ");
-  let searched = agentSearch(db, primaryExpression, Math.max(limit * 8, 50));
+  const searchLimit = Math.max(limit * 8, 50);
+  const contentRolesOnly = options.contentRolesOnly === true;
+  let searched = agentSearch(db, primaryExpression, searchLimit, 28, contentRolesOnly);
   let expression = primaryExpression;
   if (searched.hits.length < limit) {
     expression = quoted.join(" OR ");
-    searched = agentSearch(db, expression, Math.max(limit * 8, 50));
+    searched = agentSearch(db, expression, searchLimit, 28, contentRolesOnly);
   }
   const grouped = new Map<string, SearchHit[]>();
   for (const hit of searched.hits) {
@@ -127,32 +265,91 @@ export async function agentAskLexical(db: Database, root: string, question: stri
     if (hits.length < 3) hits.push(hit);
     grouped.set(hit.conversationHash, hits);
   }
-  const candidates: any[] = [];
-  for (const [hash, matches] of grouped) {
-    const artifact = await loadDerived(root, hash);
-    candidates.push({
-      sessionId: artifact.sessionId, conversationHash: hash, project: artifact.project, harness: artifact.harness,
-      model: artifact.model, endedAt: artifact.endedAt, matchedPointers: matches.map((x) => x.pointer),
-      priorProblems: artifact.problems.filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word))).slice(-2).map(({ pointer, snippet }) => ({ pointer, snippet })),
-      attempts: artifact.attempts.filter((attempt) => words.some((word) => attempt.snippet.toLowerCase().includes(word))).slice(-5),
-      decisions: artifact.decisions.filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word))).slice(-3),
-      outcome: { status: artifact.outcome.status }, resolutionPointers: artifact.outcome.evidence.slice(0, 2),
-    });
-  }
+  const groupedSessionLoadLimit =
+    typeof options.groupedSessionLoadLimit === "number" &&
+    Number.isFinite(options.groupedSessionLoadLimit)
+      ? Math.max(1, Math.trunc(options.groupedSessionLoadLimit))
+      : searchLimit;
+  const derivedLoader = options.loadDerived ?? loadDerived;
+  const groupedToLoad = [...grouped].slice(0, groupedSessionLoadLimit);
+  const candidates: any[] = await Promise.all(
+    groupedToLoad.map(async ([hash, matches]) => {
+      const artifact = await derivedLoader(root, hash);
+      return {
+        sessionId: artifact.sessionId,
+        conversationHash: hash,
+        project: artifact.project,
+        harness: artifact.harness,
+        model: artifact.model,
+        endedAt: artifact.endedAt,
+        matchedPointers: matches.map((x) => x.pointer),
+        matchedEvidence: matches.map(({ score, snippet, pointer }) => ({
+          score,
+          snippet,
+          pointer,
+        })),
+        priorProblems: artifact.problems
+          .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
+          .slice(-2)
+          .map(({ pointer, snippet }) => ({ pointer, snippet })),
+        attempts: artifact.attempts
+          .filter((attempt) => words.some((word) => attempt.snippet.toLowerCase().includes(word)))
+          .slice(-5),
+        decisions: artifact.decisions
+          .filter((item) => words.some((word) => item.snippet.toLowerCase().includes(word)))
+          .slice(-3),
+        outcome: { status: artifact.outcome.status },
+        resolutionPointers: artifact.outcome.evidence.slice(0, 2),
+      };
+    }),
+  );
   candidates.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
   const sessions = candidates.slice(0, limit);
-  const outcomes = Object.fromEntries(["success", "failure", "mixed", "unknown"].map((status) => [status, sessions.filter((x) => x.outcome.status === status).length]));
-  return { question, interpretedTopic: words, searchExpression: expression, matchedSessions: grouped.size, outcomes, sessions };
+  const outcomes = Object.fromEntries(
+    ["success", "failure", "mixed", "unknown"].map((status) => [
+      status,
+      sessions.filter((x) => x.outcome.status === status).length,
+    ]),
+  );
+  return {
+    question,
+    interpretedTopic: words,
+    searchExpression: expression,
+    matchedSessions: grouped.size,
+    outcomes,
+    sessions,
+    bounds: {
+      contentRolesOnly,
+      groupedSessions: grouped.size,
+      groupedSessionLoadLimit,
+      loadedSessions: candidates.length,
+    },
+  };
 }
 
-export async function agentAsk(db: Database, root: string, question: string, limit = 10, rerank: RerankFn = rerankHosted): Promise<unknown> {
+export async function agentAsk(
+  db: Database,
+  root: string,
+  question: string,
+  limit = 10,
+  rerank: RerankFn = rerankDefault,
+): Promise<unknown> {
   const words = askTerms(question);
   if (!words.length) throw new Error("ask needs a concrete task/topic");
   const candidateLimit = Math.min(50, Math.max(limit * 8, 24));
-  const semantic = await agentSemanticSearch(db, root, question, candidateLimit, candidateLimit, rerank) as any;
+  const semantic = (await agentSemanticSearch(
+    db,
+    root,
+    question,
+    candidateLimit,
+    candidateLimit,
+    rerank,
+  )) as any;
   const bestScore = Math.max(0, ...semantic.hits.map((hit: SemanticHit) => hit.semanticScore));
   const relevanceThreshold = Math.max(60, bestScore - 20);
-  const qualified = semantic.hits.filter((hit: SemanticHit) => hit.semanticScore >= relevanceThreshold);
+  const qualified = semantic.hits.filter(
+    (hit: SemanticHit) => hit.semanticScore >= relevanceThreshold,
+  );
   const pool: SemanticHit[] = qualified.length ? qualified : semantic.hits;
   const grouped = new Map<string, SemanticHit[]>();
   for (const hit of pool) {
@@ -164,49 +361,119 @@ export async function agentAsk(db: Database, root: string, question: string, lim
   for (const [hash, matches] of grouped) {
     const artifact = await loadDerived(root, hash);
     candidates.push({
-      sessionId: artifact.sessionId, conversationHash: hash, project: artifact.project, harness: artifact.harness,
-      model: artifact.model, endedAt: artifact.endedAt,
-      semanticMatches: matches.map(({ semanticScore, reason, snippet, pointer }) => ({ semanticScore, reason, snippet, pointer })),
-      priorProblems: relevant(artifact.problems, words, 2).map(({ pointer, snippet }) => ({ pointer, snippet })),
-      attempts: relevant(artifact.attempts, words, 5), decisions: relevant(artifact.decisions, words, 3),
-      outcome: { status: artifact.outcome.status }, resolutionPointers: artifact.outcome.evidence.slice(0, 2),
+      sessionId: artifact.sessionId,
+      conversationHash: hash,
+      project: artifact.project,
+      harness: artifact.harness,
+      model: artifact.model,
+      endedAt: artifact.endedAt,
+      semanticMatches: matches.map(({ semanticScore, reason, snippet, pointer }) => ({
+        semanticScore,
+        reason,
+        snippet,
+        pointer,
+      })),
+      priorProblems: relevant(artifact.problems, words, 2).map(({ pointer, snippet }) => ({
+        pointer,
+        snippet,
+      })),
+      attempts: relevant(artifact.attempts, words, 5),
+      decisions: relevant(artifact.decisions, words, 3),
+      outcome: { status: artifact.outcome.status },
+      resolutionPointers: artifact.outcome.evidence.slice(0, 2),
     });
   }
   // "Last time" is chronological after the semantic relevance gate.
   candidates.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
   const sessions = candidates.slice(0, limit);
-  const outcomes = Object.fromEntries(["success", "failure", "mixed", "unknown"].map((status) => [status, sessions.filter((x) => x.outcome.status === status).length]));
-  return { mode: "hosted-llm-rerank", question, interpretedTopic: words, relevanceThreshold: qualified.length ? relevanceThreshold : null,
-    localCandidateCount: semantic.localCandidateCount, matchedSessions: grouped.size, outcomes, sessions, rerank: semantic.rerank };
+  const outcomes = Object.fromEntries(
+    ["success", "failure", "mixed", "unknown"].map((status) => [
+      status,
+      sessions.filter((x) => x.outcome.status === status).length,
+    ]),
+  );
+  return {
+    mode: "llm-rerank",
+    question,
+    interpretedTopic: words,
+    relevanceThreshold: qualified.length ? relevanceThreshold : null,
+    localCandidateCount: semantic.localCandidateCount,
+    matchedSessions: grouped.size,
+    outcomes,
+    sessions,
+    rerank: semantic.rerank,
+  };
 }
 
 function addExample(target: any, artifact: DerivedConversation, evidence: Evidence): void {
   if (target.examples.length >= 2) return;
-  target.examples.push({ sessionId: artifact.sessionId, conversationHash: artifact.conversationHash, harness: artifact.harness, model: artifact.model, problem: { pointer: evidence.pointer, snippet: evidence.snippet }, outcome: artifact.outcome.status, resolution: artifact.outcome.evidence[0] ?? null });
+  target.examples.push({
+    sessionId: artifact.sessionId,
+    conversationHash: artifact.conversationHash,
+    harness: artifact.harness,
+    model: artifact.model,
+    problem: { pointer: evidence.pointer, snippet: evidence.snippet },
+    outcome: artifact.outcome.status,
+    resolution: artifact.outcome.evidence[0] ?? null,
+  });
 }
 
 export async function agentProject(db: Database, root: string, project: string): Promise<unknown> {
   const analytics = await duckProjectAnalytics(root, project);
-  const overview = analytics.overview; const models = analytics.models.slice(0, 20); const tools = analytics.tools.slice(0, 15);
-  const hashes = db.query("SELECT content_hash FROM current_conversations WHERE project=?").all(project) as Array<{ content_hash: string }>;
+  const overview = analytics.overview;
+  const models = analytics.models.slice(0, 20);
+  const tools = analytics.tools.slice(0, 15);
+  const hashes = db
+    .query("SELECT content_hash FROM current_conversations WHERE project=?")
+    .all(project) as Array<{ content_hash: string }>;
   const outcomes: Record<string, number> = { success: 0, failure: 0, mixed: 0, unknown: 0 };
-  const recurring = new Map<string, { occurrences: number; sessions: Set<string>; examples: any[] }>();
+  const recurring = new Map<
+    string,
+    { occurrences: number; sessions: Set<string>; examples: any[] }
+  >();
   const decisions: Array<Evidence & { sessionId: string; model: string; endedAt: string }> = [];
   for (const { content_hash } of hashes) {
     const artifact = await loadDerived(root, content_hash);
     outcomes[artifact.outcome.status]++;
     const seen = new Set<string>();
-    for (const problem of artifact.problems) for (const term of problem.categories) {
-      const item = recurring.get(term) ?? { occurrences: 0, sessions: new Set<string>(), examples: [] };
-      item.occurrences++;
-      item.sessions.add(artifact.conversationHash);
-      if (!seen.has(term)) addExample(item, artifact, problem);
-      seen.add(term); recurring.set(term, item);
-    }
-    for (const decision of artifact.decisions.slice(-2)) decisions.push({ ...decision, sessionId: artifact.sessionId, model: artifact.model, endedAt: artifact.endedAt });
+    for (const problem of artifact.problems)
+      for (const term of problem.categories) {
+        const item = recurring.get(term) ?? {
+          occurrences: 0,
+          sessions: new Set<string>(),
+          examples: [],
+        };
+        item.occurrences++;
+        item.sessions.add(artifact.conversationHash);
+        if (!seen.has(term)) addExample(item, artifact, problem);
+        seen.add(term);
+        recurring.set(term, item);
+      }
+    for (const decision of artifact.decisions.slice(-2))
+      decisions.push({
+        ...decision,
+        sessionId: artifact.sessionId,
+        model: artifact.model,
+        endedAt: artifact.endedAt,
+      });
   }
-  const recurringProblems = [...recurring].map(([category, item]) => ({ category, occurrences: item.occurrences, sessions: item.sessions.size, examples: item.examples }))
-    .sort((a, b) => b.sessions - a.sessions || b.occurrences - a.occurrences).slice(0, 12);
+  const recurringProblems = [...recurring]
+    .map(([category, item]) => ({
+      category,
+      occurrences: item.occurrences,
+      sessions: item.sessions.size,
+      examples: item.examples,
+    }))
+    .toSorted((a, b) => b.sessions - a.sessions || b.occurrences - a.occurrences)
+    .slice(0, 12);
   decisions.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
-  return { project, overview, models, tools, outcomes, recurringProblems, recentDecisionPoints: decisions.slice(0, 10) };
+  return {
+    project,
+    overview,
+    models,
+    tools,
+    outcomes,
+    recurringProblems,
+    recentDecisionPoints: decisions.slice(0, 10),
+  };
 }

@@ -1,0 +1,25 @@
+{
+  "name": "@chatlog/workbench-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4790 --strictPort",
+    "build": "vite build",
+    "test": "bun test src",
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-browser": "4.0.0-beta.101",
+    "@foldkit/ui": "0.132.0",
+    "effect": "4.0.0-beta.101",
+    "foldkit": "0.132.0"
+  },
+  "devDependencies": {
+    "@foldkit/vite-plugin": "0.11.1",
+    "@tailwindcss/vite": "4.3.3",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.1.5"
+  }
+}

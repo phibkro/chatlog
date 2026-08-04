@@ -1,0 +1,203 @@
+{
+  "schema": "chatlog/procedure-transfer-pilot-v1",
+  "synthetic": true,
+  "hostedCalls": 0,
+  "scoringRule": "chatlog/procedure-transfer-v1",
+  "journeys": [
+    {
+      "name": "keep-portable-transfer",
+      "input": {
+        "schemaVersion": 1,
+        "evaluationId": "procedure-transfer-keep",
+        "scoringRule": "chatlog/procedure-transfer-v1",
+        "sourceHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "taskIds": ["claude-router-lock", "codex-router-lock"],
+        "source": {
+          "provider": "anthropic",
+          "harness": "claude-code"
+        },
+        "target": {
+          "provider": "openai",
+          "harness": "codex"
+        },
+        "arms": {
+          "noMemory": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 3,
+            "toolCalls": 7,
+            "tokens": 2200,
+            "latencyMs": 1200,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "evidenceOnly": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 2,
+            "toolCalls": 5,
+            "tokens": 1800,
+            "latencyMs": 1000,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "procedure": {
+            "gatePassed": true,
+            "recognizedPreconditions": 2,
+            "totalPreconditions": 2,
+            "repeatedExploration": 0,
+            "toolCalls": 3,
+            "tokens": 1300,
+            "latencyMs": 700,
+            "corrections": 0,
+            "environmentMistakes": 0
+          }
+        }
+      },
+      "expected": {
+        "recommendation": "keep",
+        "improved": [
+          "precondition-recognition",
+          "repeated-exploration",
+          "tool-calls",
+          "tokens",
+          "latency"
+        ],
+        "regressions": [],
+        "artifactHash": "b24c82083c18abd9cd8ffb0c2aac3efcbe4f2c14dde13f7aefc68268ecd70a7d"
+      }
+    },
+    {
+      "name": "adapt-environment-specific-transfer",
+      "input": {
+        "schemaVersion": 1,
+        "evaluationId": "procedure-transfer-adapt",
+        "scoringRule": "chatlog/procedure-transfer-v1",
+        "sourceHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "taskIds": ["claude-router-lock", "codex-router-lock"],
+        "source": {
+          "provider": "anthropic",
+          "harness": "claude-code"
+        },
+        "target": {
+          "provider": "google",
+          "harness": "pi"
+        },
+        "arms": {
+          "noMemory": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 3,
+            "toolCalls": 7,
+            "tokens": 2200,
+            "latencyMs": 1200,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "evidenceOnly": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 2,
+            "toolCalls": 5,
+            "tokens": 1800,
+            "latencyMs": 1000,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "procedure": {
+            "gatePassed": true,
+            "recognizedPreconditions": 2,
+            "totalPreconditions": 2,
+            "repeatedExploration": 0,
+            "toolCalls": 3,
+            "tokens": 1300,
+            "latencyMs": 700,
+            "corrections": 0,
+            "environmentMistakes": 1
+          }
+        }
+      },
+      "expected": {
+        "recommendation": "adapt",
+        "improved": [
+          "precondition-recognition",
+          "repeated-exploration",
+          "tool-calls",
+          "tokens",
+          "latency"
+        ],
+        "regressions": ["environment-mistakes"],
+        "artifactHash": "723bb32bf446609e102626e8bd9a8a13e5b391ccf6092de214ef28c7f14948e6"
+      }
+    },
+    {
+      "name": "reject-gate-regression",
+      "input": {
+        "schemaVersion": 1,
+        "evaluationId": "procedure-transfer-reject",
+        "scoringRule": "chatlog/procedure-transfer-v1",
+        "sourceHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "taskIds": ["claude-router-lock", "codex-router-lock"],
+        "source": {
+          "provider": "anthropic",
+          "harness": "claude-code"
+        },
+        "target": {
+          "provider": "openai",
+          "harness": "omp"
+        },
+        "arms": {
+          "noMemory": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 3,
+            "toolCalls": 7,
+            "tokens": 2200,
+            "latencyMs": 1200,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "evidenceOnly": {
+            "gatePassed": true,
+            "recognizedPreconditions": 1,
+            "totalPreconditions": 2,
+            "repeatedExploration": 2,
+            "toolCalls": 5,
+            "tokens": 1800,
+            "latencyMs": 1000,
+            "corrections": 0,
+            "environmentMistakes": 0
+          },
+          "procedure": {
+            "gatePassed": false,
+            "recognizedPreconditions": 2,
+            "totalPreconditions": 2,
+            "repeatedExploration": 0,
+            "toolCalls": 3,
+            "tokens": 1300,
+            "latencyMs": 700,
+            "corrections": 0,
+            "environmentMistakes": 0
+          }
+        }
+      },
+      "expected": {
+        "recommendation": "reject",
+        "improved": [
+          "precondition-recognition",
+          "repeated-exploration",
+          "tool-calls",
+          "tokens",
+          "latency"
+        ],
+        "regressions": ["task-gate"],
+        "artifactHash": "84e7931071fd136c84ebc014cb9de1d224e280c36fc0ed3aff972c116a386426"
+      }
+    }
+  ]
+}

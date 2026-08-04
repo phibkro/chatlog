@@ -3,14 +3,17 @@ import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { indexConversation, openAnalysis } from "../src/analysis";
+import { indexConversation, indexEventBatch, openAnalysis } from "../src/analysis";
 import {
   ActiveProjectionDriftError,
   ActiveProjectionGuard,
   assertActiveProjection,
   reconcileActiveSources,
   reconcileSourceAuthority,
+  type ManifestSourceEntry,
 } from "../src/source-authority";
+import { buildSourceReceipt, persistSourceReceipt } from "../src/source-receipts";
+import { syntheticEventBatch } from "./event-fixture";
 import type { Conversation } from "../src/types";
 
 function conversation(contentHash: string, endedAt: string, content: string): Conversation {
@@ -42,13 +45,10 @@ function hashedConversation(endedAt: string, content: string): Conversation {
 
 async function writeManifest(
   root: string,
-  sources: Record<string, { contentHash: string }>,
+  sources: Record<string, ManifestSourceEntry>,
 ): Promise<void> {
   await mkdir(join(root, "corpus"), { recursive: true });
-  await writeFile(
-    join(root, "corpus", "manifest.json"),
-    JSON.stringify({ version: 1, sources }),
-  );
+  await writeFile(join(root, "corpus", "manifest.json"), JSON.stringify({ version: 1, sources }));
 }
 
 test("migrates legacy newest-row authority and prevents historical resurrection", async () => {
@@ -83,21 +83,21 @@ test("migrates legacy newest-row authority and prevents historical resurrection"
     "/source": { contentHash: currentHash },
   });
   expect(receipt.activeSources).toBe(1);
-  expect(reconcileActiveSources(db, {
-    "/source": { contentHash: currentHash },
-  }).reconciledAt).toBe(receipt.reconciledAt);
-  expect(db.query("SELECT content_hash FROM current_conversations").get())
-    .toEqual({ content_hash: currentHash });
-  expect(assertActiveProjection(root, db).manifestSourcesHash)
-    .toBe(receipt.manifestSourcesHash);
+  expect(
+    reconcileActiveSources(db, {
+      "/source": { contentHash: currentHash },
+    }).reconciledAt,
+  ).toBe(receipt.reconciledAt);
+  expect(db.query("SELECT content_hash FROM current_conversations").get()).toEqual({
+    content_hash: currentHash,
+  });
+  expect(assertActiveProjection(root, db).manifestSourcesHash).toBe(receipt.manifestSourcesHash);
 
   await writeManifest(root, {});
   expect(() => assertActiveProjection(root, db)).toThrow(ActiveProjectionDriftError);
   reconcileActiveSources(db, {});
-  expect(db.query("SELECT count(*) count FROM current_conversations").get())
-    .toEqual({ count: 0 });
-  expect(db.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 2 });
+  expect(db.query("SELECT count(*) count FROM current_conversations").get()).toEqual({ count: 0 });
+  expect(db.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 2 });
   expect(assertActiveProjection(root, db).activeSources).toBe(0);
   db.close();
 });
@@ -135,6 +135,46 @@ test("detects manifest, metadata, and active-row drift", async () => {
   corruptor.close();
 });
 
+test("long-lived projection guards revalidate mapped source receipts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chatlog-source-authority-receipt-drift-"));
+  const path = join(root, "analysis", "chatlog.sqlite");
+  const canonical = hashedConversation("2026-07-01T00:01:00Z", "active");
+  const { contentHash, ...withoutHash } = canonical;
+  const batch = syntheticEventBatch(withoutHash);
+  const receipt = buildSourceReceipt({
+    batch,
+    conversationProjectionHash: contentHash,
+  });
+  await persistSourceReceipt(root, receipt);
+  const sources: Record<string, ManifestSourceEntry> = {
+    "/source": {
+      contentHash,
+      eventBatchHash: receipt.eventBatchHash,
+      conversationProjectionHash: contentHash,
+      receiptHash: receipt.receiptHash,
+    },
+  };
+  await writeManifest(root, sources);
+
+  const db = openAnalysis(path);
+  indexConversation(db, canonical, 1, 1);
+  indexEventBatch(db, batch, receipt.eventBatchHash);
+  reconcileActiveSources(db, sources);
+  const guard = new ActiveProjectionGuard(root);
+  expect(guard.assert(db).activeSources).toBe(1);
+
+  const receiptPath = join(
+    root,
+    "receipts",
+    "sources",
+    receipt.receiptHash.slice(0, 2),
+    `${receipt.receiptHash}.json`,
+  );
+  await writeFile(receiptPath, "{}");
+  expect(() => guard.assert(db)).toThrow("source receipt");
+  db.close();
+});
+
 test("failed reconciliation rolls back the prior projection receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-source-authority-rollback-"));
   const path = join(root, "analysis", "chatlog.sqlite");
@@ -144,11 +184,14 @@ test("failed reconciliation rolls back the prior projection receipt", async () =
   indexConversation(db, conversation(hash, "2026-07-01T00:01:00Z", "active"), 1, 1);
   const before = reconcileActiveSources(db, { "/source": { contentHash: hash } });
 
-  expect(() => reconcileActiveSources(db, {
-    "/missing": { contentHash: "f".repeat(64) },
-  })).toThrow("manifest source is not indexed");
-  expect(db.query("SELECT source_path sourcePath, content_hash contentHash FROM active_sources").all())
-    .toEqual([{ sourcePath: "/source", contentHash: hash }]);
+  expect(() =>
+    reconcileActiveSources(db, {
+      "/missing": { contentHash: "f".repeat(64) },
+    }),
+  ).toThrow("manifest source is not indexed");
+  expect(
+    db.query("SELECT source_path sourcePath, content_hash contentHash FROM active_sources").all(),
+  ).toEqual([{ sourcePath: "/source", contentHash: hash }]);
   expect(assertActiveProjection(root, db)).toMatchObject({
     manifestSourcesHash: before.manifestSourcesHash,
     activeSources: 1,
@@ -164,20 +207,14 @@ test("operator reconciliation command rebuilds a manifest projection", async () 
   await writeManifest(root, { "/source": { contentHash: hash } });
   const objectDir = join(root, "corpus", "objects", hash.slice(0, 2));
   await mkdir(objectDir, { recursive: true });
-  await writeFile(
-    join(objectDir, `${hash}.json`),
-    JSON.stringify(canonical),
-  );
+  await writeFile(join(objectDir, `${hash}.json`), JSON.stringify(canonical));
 
-  const child = Bun.spawn(
-    ["bun", "run", "src/cli.ts", "source", "reconcile"],
-    {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, CHATLOG_DATA_ROOT: root },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  const child = Bun.spawn(["bun", "run", "src/cli.ts", "source", "reconcile"], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, CHATLOG_DATA_ROOT: root },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -201,21 +238,21 @@ test("rebuilds a lost analysis database from immutable active corpus objects", a
   await writeManifest(root, sources);
   const objectDir = join(root, "corpus", "objects", hash.slice(0, 2));
   await mkdir(objectDir, { recursive: true });
-  await writeFile(
-    join(objectDir, `${hash}.json`),
-    JSON.stringify(canonical),
-  );
+  await writeFile(join(objectDir, `${hash}.json`), JSON.stringify(canonical));
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   const receipt = await reconcileSourceAuthority(root, db, sources);
   expect(receipt).toMatchObject({ activeSources: 1, reindexed: 1 });
-  expect(db.query(`SELECT source_path sourcePath, source_mtime sourceMtime,
-    source_size sourceSize FROM current_conversations`).get()).toEqual({
+  expect(
+    db
+      .query(`SELECT source_path sourcePath, source_mtime sourceMtime,
+    source_size sourceSize FROM current_conversations`)
+      .get(),
+  ).toEqual({
     sourcePath: "/source",
     sourceMtime: 23,
     sourceSize: 17,
   });
-  expect(db.query("SELECT content FROM current_turns").get())
-    .toEqual({ content: "recoverable" });
+  expect(db.query("SELECT content FROM current_turns").get()).toEqual({ content: "recoverable" });
   db.close();
 });
 
@@ -226,10 +263,7 @@ test("repairing missing active rows mints a new projection receipt", async () =>
   await writeManifest(root, sources);
   const objectDir = join(root, "corpus", "objects", canonical.contentHash.slice(0, 2));
   await mkdir(objectDir, { recursive: true });
-  await writeFile(
-    join(objectDir, `${canonical.contentHash}.json`),
-    JSON.stringify(canonical),
-  );
+  await writeFile(join(objectDir, `${canonical.contentHash}.json`), JSON.stringify(canonical));
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   indexConversation(db, canonical, 1, 1);
   const before = reconcileActiveSources(db, sources);
@@ -240,8 +274,7 @@ test("repairing missing active rows mints a new projection receipt", async () =>
   const repaired = await reconcileSourceAuthority(root, db, sources);
   expect(repaired.reindexed).toBe(1);
   expect(repaired.reconciledAt).not.toBe(before.reconciledAt);
-  expect(db.query("SELECT content FROM current_turns").get())
-    .toEqual({ content: "repairable" });
+  expect(db.query("SELECT content FROM current_turns").get()).toEqual({ content: "repairable" });
   db.close();
 });
 
@@ -260,10 +293,10 @@ test("rebuild rejects a parseable canonical object whose content hash is invalid
     }),
   );
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
-  await expect(reconcileSourceAuthority(root, db, sources))
-    .rejects.toThrow("canonical object does not match manifest source mapping");
-  expect(db.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 0 });
+  await expect(reconcileSourceAuthority(root, db, sources)).rejects.toThrow(
+    "canonical object does not match manifest source mapping",
+  );
+  expect(db.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 0 });
   db.close();
 });
 
@@ -281,8 +314,9 @@ test("legacy read-only databases fail closed with an actionable migration error"
 
   const reader = new Database(path, { readonly: true, create: false });
   try {
-    expect(() => assertActiveProjection(root, reader))
-      .toThrow("active source projection is not initialized");
+    expect(() => assertActiveProjection(root, reader)).toThrow(
+      "active source projection is not initialized",
+    );
   } finally {
     reader.close();
   }
@@ -293,15 +327,12 @@ test("CLI queries fail closed until the source projection is reconciled", async 
   await writeManifest(root, {});
   const db = openAnalysis(join(root, "analysis", "chatlog.sqlite"));
   db.close();
-  const child = Bun.spawn(
-    ["bun", "run", "src/cli.ts", "query", "stats"],
-    {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, CHATLOG_DATA_ROOT: root },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  const child = Bun.spawn(["bun", "run", "src/cli.ts", "query", "stats"], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, CHATLOG_DATA_ROOT: root },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),

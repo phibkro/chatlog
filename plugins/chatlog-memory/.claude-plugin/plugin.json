@@ -1,0 +1,8 @@
+{
+  "name": "chatlog-memory",
+  "version": "0.1.0",
+  "description": "Inject a bounded experience-memory index at session startup and recall accepted cards on demand.",
+  "author": {
+    "name": "Chatlog"
+  }
+}

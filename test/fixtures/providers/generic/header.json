@@ -1,0 +1,24 @@
+{
+  "schema": "chatlog/generic-events-v1",
+  "schemaVersion": 1,
+  "type": "header",
+  "producer": {
+    "name": "synthetic-producer",
+    "version": "1.0.0"
+  },
+  "provider": "synthetic-provider",
+  "harness": "synthetic-harness",
+  "sourceKind": "generic-jsonl",
+  "domain": "coding",
+  "capturePolicyVersion": "chatlog-redacted-capture-v1",
+  "ordering": {
+    "key": "sequence",
+    "contiguous": true,
+    "relations": "prior-only"
+  },
+  "identity": {
+    "key": "eventId",
+    "algorithm": "sha256"
+  },
+  "adapterRecipe": "chatlog-generic-events-v1:synthetic-producer@1.0.0"
+}

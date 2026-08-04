@@ -1,0 +1,23 @@
+{"type":"started","sessionId":"claude-fixture","cwd":"/synthetic/project","project":"fixture","model":"model-fixture","timestamp":"2026-08-01T00:00:00.000Z"}
+{"type":"user","uuid":"msg-user","message":{"role":"user","content":[{"type":"text","text":"fixture input"}]},"timestamp":"2026-08-01T00:00:01.000Z"}
+{"type":"assistant","uuid":"msg-assistant","parentUuid":"msg-user","message":{"role":"assistant","content":[{"type":"text","text":"fixture response"},{"type":"thinking","thinking":"inert reasoning"},{"type":"redacted_thinking"},{"type":"tool_use","id":"tool-1","name":"fixture_tool","input":{"arg":"fixture"}},{"type":"tool_result","tool_use_id":"tool-1","content":"fixture result"},{"type":"tool_reference","id":"tool-ref","text":"fixture reference"},{"type":"fallback","text":"fixture fallback"},{"type":"image","id":"image-1","source":{"type":"base64","data":"fixture-canary"}},{"type":"document","id":"document-1","source":{"type":"base64","data":"fixture-canary"}},{"type":"server_tool_use","id":"server-1","name":"server_fixture","input":{"arg":"fixture"}},{"type":"advisor_tool_result","id":"advisor-1","content":"fixture advisor"},{"type":"web_search_tool_result","id":"search-1","content":"fixture search"},{"type":"web_fetch_tool_result","id":"fetch-1","content":"fixture fetch"}]},"timestamp":"2026-08-01T00:00:02.000Z"}
+{"type":"permission-mode","id":"permission-approved-1","toolCallId":"tool-1","decision":"approved","timestamp":"2026-08-01T00:00:02.500Z"}
+{"type":"system","content":"fixture system","timestamp":"2026-08-01T00:00:03.000Z"}
+{"type":"attachment","id":"attachment-1","filename":"fixture.txt","metadata":{"marker":"fixture"}}
+{"type":"file-history-snapshot","id":"snapshot-1","files":[{"path":"fixture.txt"}]}
+{"type":"file-history-delta","id":"delta-1","files":[{"path":"fixture.txt"}]}
+{"type":"queue-operation","id":"queue-1","operation":"fixture"}
+{"type":"mode","id":"mode-1","mode":"fixture"}
+{"type":"permission-mode","id":"permission-1","status":"unknown"}
+{"type":"bridge-session","id":"bridge-1","sessionId":"bridge-fixture"}
+{"type":"custom-title","id":"title-1","title":"fixture title"}
+{"type":"ai-title","id":"title-2","title":"fixture ai title"}
+{"type":"last-prompt","id":"prompt-1","prompt":"fixture prompt"}
+{"type":"agent-name","id":"agent-1","name":"fixture-agent"}
+{"type":"agent-setting","id":"setting-1","setting":"fixture"}
+{"type":"frame-link","id":"frame-1","target":"fixture"}
+{"type":"pr-link","id":"pr-1","target":"fixture"}
+{"type":"result","id":"result-1","result":"fixture complete","timestamp":"2026-08-01T00:00:04.000Z"}
+{"type":"branch","id":"branch-1","branchId":"branch-1","summary":"fixture branch","timestamp":"2026-08-01T00:00:04.500Z"}
+{"type":"unknown_fixture_record","id":"unknown-1","payload":"sk-ant-inert-canary"}
+{"type":"result","id":"dangling-result","tool_use_id":"missing-tool","result":"fixture unresolved","timestamp":"2026-08-01T00:00:05.000Z"}

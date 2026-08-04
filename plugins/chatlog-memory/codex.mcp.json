@@ -1,0 +1,6 @@
+{
+  "chatlog": {
+    "command": "bun",
+    "args": ["${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/scripts/chatlog-mcp.js"]
+  }
+}

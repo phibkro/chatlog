@@ -1,0 +1,84 @@
+[
+  {
+    "uuid": "anthropic-fixture",
+    "name": "fixture conversation",
+    "created_at": "2026-08-01T00:00:00.000Z",
+    "updated_at": "2026-08-01T00:00:10.000Z",
+    "branch_id": "branch-1",
+    "chat_messages": [
+      {
+        "uuid": "message-user",
+        "sender": "human",
+        "created_at": "2026-08-01T00:00:01.000Z",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture input"
+          }
+        ]
+      },
+      {
+        "uuid": "message-assistant",
+        "sender": "assistant",
+        "created_at": "2026-08-01T00:00:02.000Z",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture output"
+          },
+          {
+            "type": "thinking",
+            "thinking": "fixture reasoning"
+          },
+          {
+            "type": "tool_use",
+            "id": "tool-1",
+            "name": "fixture_tool",
+            "input": {
+              "arg": "fixture"
+            },
+            "approval": "approved"
+          },
+          {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "content": "fixture result"
+          },
+          {
+            "type": "image",
+            "id": "image-1",
+            "source": {
+              "type": "base64",
+              "data": "fixture-image"
+            }
+          },
+          {
+            "type": "document",
+            "id": "document-1",
+            "source": {
+              "type": "base64",
+              "data": "fixture-document"
+            }
+          },
+          {
+            "type": "unknown_block",
+            "id": "unknown-1",
+            "marker": "sk-ant-inert-canary"
+          }
+        ]
+      },
+      {
+        "uuid": "message-dangling-result",
+        "sender": "assistant",
+        "created_at": "2026-08-01T00:00:03.000Z",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "missing-tool",
+            "content": "fixture dangling"
+          }
+        ]
+      }
+    ]
+  }
+]

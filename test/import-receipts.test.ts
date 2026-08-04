@@ -68,43 +68,47 @@ test("writes private bounded receipts and lists only the requested newest record
 
   expect(await listImportReceipts(root, 1)).toEqual([second]);
   expect((await listImportReceipts(root, 200))[1]).toEqual(first);
-  const paths = [...new Bun.Glob("*.json").scanSync({
-    cwd: join(root, "receipts", "imports"),
-    onlyFiles: true,
-  })];
+  const paths = [
+    ...new Bun.Glob("*.json").scanSync({
+      cwd: join(root, "receipts", "imports"),
+      onlyFiles: true,
+    }),
+  ];
   expect(paths).toHaveLength(2);
   expect((await stat(join(root, "receipts", "imports", paths[0]))).mode & 0o777).toBe(0o600);
 });
 
 test("rejects fields that exceed the receipt contract", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-receipts-bounds-"));
-  await expect(writeImportReceipt(root, {
-    source: {
-      path: "/export.zip",
-      contentHash: hash("a"),
-      bytes: -1,
-      modifiedAt: "2026-07-24T10:00:00.000Z",
-    },
-    domain: "personal",
-    counts: {
-      discovered: 0,
-      imported: 0,
-      skipped: 0,
-      turns: 0,
-      attachments: 0,
-      files: 0,
-    },
-    manifest: {
-      beforeHash: hash("b"),
-      afterHash: hash("b"),
-      beforeSources: 0,
-      afterSources: 0,
-      added: 0,
-      replaced: 0,
-      unchanged: 0,
-    },
-    deriveEnabled: false,
-  })).rejects.toThrow("source bytes is not a bounded count");
+  await expect(
+    writeImportReceipt(root, {
+      source: {
+        path: "/export.zip",
+        contentHash: hash("a"),
+        bytes: -1,
+        modifiedAt: "2026-07-24T10:00:00.000Z",
+      },
+      domain: "personal",
+      counts: {
+        discovered: 0,
+        imported: 0,
+        skipped: 0,
+        turns: 0,
+        attachments: 0,
+        files: 0,
+      },
+      manifest: {
+        beforeHash: hash("b"),
+        afterHash: hash("b"),
+        beforeSources: 0,
+        afterSources: 0,
+        added: 0,
+        replaced: 0,
+        unchanged: 0,
+      },
+      deriveEnabled: false,
+    }),
+  ).rejects.toThrow("source bytes is not a bounded count");
   expect(await listImportReceipts(root)).toEqual([]);
 });
 
@@ -155,19 +159,13 @@ test("CLI rejects receipt limits outside the bounded contract", async () => {
     ["abc", "receipt limit must be a positive integer"],
     ["201", "receipt limit must be at most 200"],
   ]) {
-    const child = Bun.spawn(
-      ["bun", "run", "src/cli.ts", "receipts", "imports", limit],
-      {
-        cwd: join(import.meta.dir, ".."),
-        env: { ...process.env, CHATLOG_DATA_ROOT: root },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [exitCode, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stderr).text(),
-    ]);
+    const child = Bun.spawn(["bun", "run", "src/cli.ts", "receipts", "imports", limit], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, CHATLOG_DATA_ROOT: root },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain(message);
   }

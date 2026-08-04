@@ -12,7 +12,7 @@ import { loadRefinery, refineCorpus } from "../src/refinery";
 import { indexConversation, openAnalysis } from "../src/analysis";
 import { reconcileActiveSources } from "../src/source-authority";
 import { WorkbenchData } from "../src/workbench/data";
-import { workbenchHandler } from "../src/workbench/server";
+import { workbenchHandler } from "./workbench-handler";
 import { duckTokenUsage } from "../src/duckdb";
 import type { Conversation } from "../src/types";
 
@@ -56,10 +56,13 @@ test("derived projection and aggregate readers reject stale or modified state", 
     }),
   );
   const manifestPath = join(root, "corpus", "manifest.json");
-  await writeFile(manifestPath, JSON.stringify({
-    version: 1,
-    sources: { [conversation.sourcePath]: { contentHash: hash } },
-  }));
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      version: 1,
+      sources: { [conversation.sourcePath]: { contentHash: hash } },
+    }),
+  );
 
   await deriveCorpus(root);
   await refineCorpus(root, 3);
@@ -113,9 +116,7 @@ test("derived projection and aggregate readers reject stale or modified state", 
   reconcileActiveSources(driftDb, {});
   driftDb.close();
   const data = new WorkbenchData(root);
-  const response = await workbenchHandler(data)(
-    new Request("http://localhost/api/insights"),
-  );
+  const response = await workbenchHandler(data)(new Request("http://localhost/api/insights"));
   expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
     error: "derived projection is unavailable or stale; run `chatlog derive` and `chatlog refine`",
@@ -144,15 +145,15 @@ test("derived projection and aggregate readers reject stale or modified state", 
     join(root, "derived", "refinery-manifest.json"),
     JSON.stringify(restoredManifest),
   );
-  await expect(
-    loadCurrentDerivedArtifact(root, "refinery-manifest.json"),
-  ).rejects.toThrow("invalid artifact path");
+  await expect(loadCurrentDerivedArtifact(root, "refinery-manifest.json")).rejects.toThrow(
+    "invalid artifact path",
+  );
   await writeFile(join(root, "derived", "refinery-manifest.json"), restoredManifestText);
 
   await writeFile(artifactPath, `${await readFile(artifactPath, "utf8")} `);
-  await expect(
-    loadCurrentDerivedArtifact(root, "refinery-manifest.json"),
-  ).rejects.toThrow("integrity validation");
+  await expect(loadCurrentDerivedArtifact(root, "refinery-manifest.json")).rejects.toThrow(
+    "integrity validation",
+  );
   expect(await refineCorpus(root, 3)).toMatchObject({ processed: true });
   expect((await loadRefinery(root)).inputProjectionHash).toHaveLength(64);
 });

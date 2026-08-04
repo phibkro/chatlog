@@ -13,11 +13,14 @@ export function normalizeConversationDomains(
   values: string[],
   fallback = DEFAULT_CONVERSATION_DOMAIN,
 ): string[] {
-  const domains = [...new Set(values
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map(normalizeConversationDomain))]
-    .sort();
+  const domains = [
+    ...new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map(normalizeConversationDomain),
+    ),
+  ].toSorted();
   if (!domains.length) return [normalizeConversationDomain(fallback)];
   return domains;
 }

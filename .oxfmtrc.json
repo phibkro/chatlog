@@ -1,0 +1,15 @@
+{
+  "singleQuote": false,
+  "semi": true,
+  "printWidth": 100,
+  "trailingComma": "all",
+  "ignorePatterns": [
+    "corpus/**",
+    "derived/**",
+    "analysis/**",
+    "memory/**",
+    "node_modules/**",
+    "src/workbench/public/memory/**",
+    "plugins/chatlog-memory/scripts/**"
+  ]
+}

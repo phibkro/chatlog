@@ -1,0 +1,6 @@
+{"type":"session","id":"pi-synthetic","cwd":"/tmp/project","timestamp":"2026-08-01T12:00:00.000Z"}
+{"type":"model_change","id":"model-1","provider":"anthropic","modelId":"claude-test","timestamp":"2026-08-01T12:00:01.000Z"}
+{"type":"message","id":"m1","timestamp":"2026-08-01T12:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I will run the tool."},{"type":"thinking","thinking":"private"},{"type":"toolCall","id":"call-1","name":"shell","arguments":{"cmd":"false"}}]}}
+{"type":"message","id":"m2","timestamp":"2026-08-01T12:00:03.000Z","message":{"role":"toolResult","content":[{"type":"toolResult","toolCallId":"call-1","toolName":"shell","content":"failed","isError":true},{"type":"image","id":"image-1","data":"synthetic-image"}]}}
+{"type":"message","id":"m3","timestamp":"2026-08-01T12:00:03.500Z","message":{"role":"toolResult","content":[{"type":"toolResult","toolCallId":"missing-call","toolName":"shell","content":"fallback result","isError":false}]}}
+{"type":"compaction","id":"compact-1","timestamp":"2026-08-01T12:00:04.000Z","summary":"prior context"}

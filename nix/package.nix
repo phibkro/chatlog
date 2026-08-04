@@ -32,6 +32,9 @@ stdenvNoCC.mkDerivation {
 
     mkdir -p "$out/share/chatlog"
     cp -r src package.json tsconfig.json "$out/share/chatlog/"
+    test -f "$out/share/chatlog/src/workbench/public/memory/index.html"
+    test -f "$out/share/chatlog/src/workbench/public/memory/assets/app.js"
+    test -f "$out/share/chatlog/src/workbench/public/memory/assets/index.css"
 
     mkdir -p "$out/bin"
 

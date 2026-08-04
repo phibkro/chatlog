@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { ingest } from "../src/ingest";
 import { assertActiveProjection } from "../src/source-authority";
 import type { SourceAdapter } from "../src/types";
+import { syntheticEventBatch } from "./event-fixture";
 
 test("local ingestion reconciles the manifest-backed active projection", async () => {
   const root = await mkdtemp(join(tmpdir(), "chatlog-ingest-projection-"));
@@ -19,23 +20,20 @@ test("local ingestion reconciles the manifest-backed active projection", async (
       return [{ path: sourcePath, size: info.size, mtimeMs: info.mtimeMs }];
     },
     async adapt() {
-      return {
-        partialTail: false,
-        conversation: {
-          id: "session",
-          provider: "test",
-          harness: "test-harness",
-          domain: "coding",
-          sourceKind: "session-log",
-          project: "/project",
-          cwd: "/project",
-          model: "model",
-          startedAt: "2026-07-24T00:00:00Z",
-          endedAt: "2026-07-24T00:01:00Z",
-          sourcePath,
-          turns: [{ role: "user", content }],
-        },
-      };
+      return syntheticEventBatch({
+        id: "session",
+        provider: "test",
+        harness: "test-harness",
+        domain: "coding",
+        sourceKind: "session-log",
+        project: "/project",
+        cwd: "/project",
+        model: "model",
+        startedAt: "2026-07-24T00:00:00Z",
+        endedAt: "2026-07-24T00:01:00Z",
+        sourcePath,
+        turns: [{ role: "user", content }],
+      });
     },
   };
 
@@ -72,9 +70,9 @@ test("local ingestion reconciles the manifest-backed active projection", async (
   expect(after.sources[sourcePath].contentHash).toBe(beforeHash);
   db = new Database(databasePath, { readonly: true, create: false });
   expect(assertActiveProjection(root, db).activeSources).toBe(1);
-  expect(db.query("SELECT content_hash contentHash FROM current_conversations").get())
-    .toEqual({ contentHash: beforeHash });
-  expect(db.query("SELECT count(*) count FROM conversations").get())
-    .toEqual({ count: 2 });
+  expect(db.query("SELECT content_hash contentHash FROM current_conversations").get()).toEqual({
+    contentHash: beforeHash,
+  });
+  expect(db.query("SELECT count(*) count FROM conversations").get()).toEqual({ count: 2 });
   db.close();
 });

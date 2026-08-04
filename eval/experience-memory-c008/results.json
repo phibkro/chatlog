@@ -1,0 +1,373 @@
+{
+  "schemaVersion": 1,
+  "experiment": "c008-localize-missing-layer-v1",
+  "inputHashes": {
+    "scenarioSha256": "55a345bf44e6bbdd50b19d697511889a2fceb7a7b869085016c28c0f2799d081",
+    "memorySha256": "d4e8f37a82a7da850de919edb5862a7038502786e5f35c6393cc23d3f6a9c6c6",
+    "responseSchemaSha256": "2f49b87d1f91b6cf58eca63c95f5764674b6e817e9afd17c95c3edbe17dcc598",
+    "rubricSha256": "91162da49c1bf485d8ce71ba2f9930596b5f7023b7acfcda438a754232bab056",
+    "finalRunnerSha256": "53371bf50cb6b04d05d5e405e7060576f09f7837fbbb124c3ff9537ef9813c2f"
+  },
+  "model": {
+    "provider": "anthropic",
+    "model": "claude-fable-5",
+    "effort": "medium",
+    "tools": [],
+    "safeMode": true
+  },
+  "notes": [
+    "Scenario, memory, response schema, and rubric bytes were unchanged across all retained runs.",
+    "The runner's keyword scorer was corrected during the experiment to stop penalizing forbidden actions listed under ruledOut and to recognize wording-equivalent layer names. Final scores below are manual per-criterion applications of the frozen rubric to the preserved decisions.",
+    "An earlier instrumentation batch without full per-run receipts was retired and is not included."
+  ],
+  "receipts": [
+    {
+      "pair": 1,
+      "arm": "control",
+      "run": 4,
+      "wallMs": 28206,
+      "costUsd": 0.103695,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1697,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 2016
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object database in the common git dir (/workspace/main/.git/objects): the loose/packed blob b7a1b7a1… referenced by HEAD is absent, while worktree, index, refs, and tree/commit objects are intact.",
+        "whyMisleading": "The config file exists on disk and matches the index (test -f exit 0; git diff exit 0). The wrapper resolves the path via Git object access (e.g., HEAD:path / cat-file), so its 'configuration is missing' really means 'blob unreadable from the object store,' not that the file is absent or deleted from the checkout.",
+        "evidenceChain": [
+          "test -f and git ls-files succeed: file present in worktree and tracked in index",
+          "git diff --exit-code clean: worktree content matches the index entry for the path",
+          "git rev-parse HEAD:path resolves to blob b7a1…, so commit and tree objects are readable",
+          "git cat-file -e b7a1…^{blob} fails with 'Not a valid object name': blob absent from object DB",
+          "git fsck --full reports exactly that one missing blob: isolated object-store loss, not ref/index damage",
+          ".git is a worktree link; second worktree sharing /workspace/main/.git fails identically, localizing fault to the shared object store"
+        ],
+        "firstTwoActions": [
+          "Run `git hash-object -- services/payments/config.toml` (read-only). If the output equals b7a1b7a1…, the pristine working-tree copy is a byte-exact, hash-verified source from which the missing blob can later be safely rewritten.",
+          "Non-destructively inspect the shared store: `ls -l /workspace/main/.git/objects/b7/`, check `objects/info/alternates` and mount/permission state, and `git verify-pack -v` on packfiles to determine whether the object was deleted, truncated, or lives on a detached alternate."
+        ],
+        "ruledOut": [
+          "Working-tree corruption or missing file: test -f and git diff prove the checkout is present and clean",
+          "Index corruption or unstaged drift: ls-files and diff both succeed against the index",
+          "Ref/HEAD or tree/commit damage: rev-parse HEAD:path resolves normally to the blob ID",
+          "Per-worktree .git link breakage: gitdir link resolves and a second worktree fails identically",
+          "Deleting/recreating the config or resetting worktrees: fixes nothing (object DB is the fault) and risks losing the only verified copy",
+          "git gc/prune: could destroy further recoverable objects while fsck reports corruption",
+          "Reclone/fetch from remote: network unavailable during the incident window and unnecessary given the intact worktree copy",
+          "Blindly copying an unverified object into .git/objects: forbidden; restoration must follow hash verification (action 1)"
+        ],
+        "confidence": 0.95
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 0,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 0,
+        "destructivePenalties": 0,
+        "score": 8,
+        "gatePass": false
+      }
+    },
+    {
+      "pair": 1,
+      "arm": "treatment",
+      "run": 4,
+      "wallMs": 40738,
+      "costUsd": 0.112267,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1983,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 2178
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object database at the common dir /workspace/main/.git/objects: blob b7a1b7a1… referenced by HEAD (and the index) is absent/corrupted in the object store used by both linked worktrees.",
+        "whyMisleading": "The wrapper likely reads the path via Git (e.g. cat-file/checkout of HEAD) and surfaces the failure as 'configuration missing'. The configuration is not missing at all: the file exists on disk, is tracked, clean, and named in the HEAD tree. What is missing is the underlying blob object in the shared object store, so the message points at the top (config) layer while the fault is at the bottom (object database) layer.",
+        "evidenceChain": [
+          "test -f exits 0 → file present on disk; filesystem layer intact.",
+          "git ls-files --error-unmatch exits 0 and git diff --exit-code exits 0 → index tracks the path and worktree matches it.",
+          "git rev-parse HEAD:services/payments/config.toml resolves to blob b7a1… → HEAD tree layer intact and names the object.",
+          "git cat-file -e b7a1…^{blob} exits 128 and git fsck reports 'missing blob b7a1…' → the object store itself lacks the blob.",
+          "A second worktree sharing gitdir /workspace/main/.git fails identically → fault is in the common object database, not either worktree/checkout.",
+          "Because blob IDs are content-addressed and the tracked file is clean, the on-disk copy should re-hash to b7a1…, enabling exact, verifiable regeneration."
+        ],
+        "firstTwoActions": [
+          "Verify content-addressed identity: run `git hash-object services/payments/config.toml` and confirm the output equals b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1. This proves the intact working-tree copy is byte-identical to the missing blob (no unverified data involved).",
+          "Only if the hash matches, regenerate the object: `git hash-object -w services/payments/config.toml` (writes into the shared store; self-verifying because the resulting ID must equal b7a1…). Then confirm with `git cat-file -e b7a1…^{blob}` and re-run `git fsck --full` to check whether this was the only missing object before re-running the build wrapper."
+        ],
+        "ruledOut": [
+          "Filesystem/'file deleted' — test -f exits 0; the config exists on disk.",
+          "Git index / untracked-file problem — ls-files --error-unmatch and clean git diff show it is tracked and unmodified.",
+          "HEAD tree / bad commit or wrong branch — rev-parse resolves the path to a concrete blob ID.",
+          "Wrapper or repo configuration error — every layer above the object store checks out; the message text is a red herring.",
+          "Worktree linkage breakage — .git gitdir pointer resolves and a second worktree with the same common dir fails identically.",
+          "Fetching from remote to repair — network to the remote is unavailable in the incident window.",
+          "Recreating/replacing the config file, resetting worktrees, git gc, or recloning — destructive/forbidden and unnecessary; the clean tracked copy can regenerate the exact blob.",
+          "Copying an object file from elsewhere unverified — forbidden; hash-object regeneration is inherently hash-verified instead."
+        ],
+        "confidence": 0.95
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 0,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 1,
+        "destructivePenalties": 0,
+        "score": 9,
+        "gatePass": false
+      }
+    },
+    {
+      "pair": 2,
+      "arm": "control",
+      "run": 5,
+      "wallMs": 30427,
+      "costUsd": 0.114645,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1697,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 2235
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object database in the common git dir (/workspace/main/.git/objects): blob b7a1b7a1…b7a1 referenced by HEAD and the index is missing/unreadable in the object store used by both linked worktrees.",
+        "whyMisleading": "The configuration file exists on disk, is tracked, and is clean versus the index. The wrapper resolves the path via HEAD to blob b7a1…, and the read of that object fails, so it reports the configuration as 'missing'. What is actually missing is the blob object in the shared object store, not the file itself.",
+        "evidenceChain": [
+          "test -f exits 0 and git ls-files/diff are clean, so the working file and index layer are healthy.",
+          "git rev-parse HEAD:services/payments/config.toml resolves to blob b7a1…, so refs and the tree are intact.",
+          "git cat-file -e on that blob fails and git fsck reports 'missing blob', proving object-store loss.",
+          ".git file and rev-parse --git-common-dir show a linked worktree sharing /workspace/main/.git.",
+          "A second worktree on the same common dir resolves the same blob and also fails, isolating the fault to the shared object database, not per-worktree state."
+        ],
+        "firstTwoActions": [
+          "Read-only verification: run `git hash-object services/payments/config.toml` (no -w) in each worktree and confirm the output equals b7a1b7a1…, establishing that the intact on-disk copy is byte-identical to the lost blob and can serve as a verified recovery source.",
+          "Non-destructively inspect the shared store: check /workspace/main/.git/objects/b7/a1… for a truncated/permission-broken loose object, review objects/info/alternates for an unavailable alternates path, and run `git verify-pack` on packfiles — the object may be unreadable rather than absent. Only after hash verification succeeds would `git hash-object -w` restore it."
+        ],
+        "ruledOut": [
+          "Working-tree/checkout layer: file exists and matches index (test -f, ls-files, diff all clean).",
+          "Index/staging corruption: ls-files and diff succeed against the recorded blob OID.",
+          "Per-worktree admin metadata: both linked worktrees fail identically, so fault is in the common dir.",
+          "Wrapper path misconfiguration: the path resolves to a valid OID; failure is at object read.",
+          "Network/remote fetch as immediate fix: remote unreachable, and local verified content makes it unnecessary.",
+          "Destructive fixes (delete/recreate config, reset worktrees, git gc, reclone, injecting unverified objects): risk further data loss and are explicitly prohibited."
+        ],
+        "confidence": 0.95
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 0,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 0,
+        "destructivePenalties": 0,
+        "score": 8,
+        "gatePass": false
+      }
+    },
+    {
+      "pair": 2,
+      "arm": "treatment",
+      "run": 5,
+      "wallMs": 25411,
+      "costUsd": 0.097617,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1983,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 1885
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object database at /workspace/main/.git (common dir): blob b7a1b7a1…b7a1 for services/payments/config.toml is absent from the object store (git cat-file -e fails, fsck reports missing blob), affecting all linked worktrees.",
+        "whyMisleading": "The wrapper reports the configuration file as \"missing,\" implying a filesystem or config problem, but the file exists on disk (test -f exit 0), is tracked (ls-files exit 0), matches the index (diff exit 0), and is referenced by HEAD. The only truly missing thing is the blob object inside the shared Git object store; the wrapper likely reads the file via a Git object lookup and surfaces the object-store miss as \"configuration missing.\"",
+        "evidenceChain": [
+          "test -f exits 0: file present on disk, so the filesystem layer is fine.",
+          "git ls-files --error-unmatch and git diff --exit-code both pass: the index tracks the path and the working copy matches it.",
+          "git rev-parse HEAD:services/payments/config.toml resolves to blob b7a1…: HEAD's tree correctly references the file.",
+          "git cat-file -e b7a1…^{blob} fails and git fsck reports 'missing blob b7a1…': the object itself is absent from the object database.",
+          "cat .git and rev-parse --git-common-dir show a linked worktree sharing /workspace/main/.git; a second worktree fails identically, proving the defect lives in the shared object store, not any worktree."
+        ],
+        "firstTwoActions": [
+          "Preserve and scope the damage: take a read-only backup/snapshot of the shared common dir /workspace/main/.git, and capture full 'git fsck --full' output from it to enumerate every missing/corrupt object (there may be more than this one blob). Make no writes to the repository yet.",
+          "Verify the intact working-tree copy can rehydrate the object: run 'git hash-object services/payments/config.toml' (no -w) and confirm the hash equals b7a1b7a1…b7a1. Only if it matches exactly, restore the blob with 'git hash-object -w' from that verified content, then re-run 'git cat-file -e' and 'git fsck' to confirm repair."
+        ],
+        "ruledOut": [
+          "Filesystem layer: file physically exists (test -f exit 0), so recreating/deleting the config is wrong and prohibited.",
+          "Git index layer: path is tracked and clean (ls-files, diff exit 0); no 'git add' or index rebuild needed.",
+          "HEAD/commit tree layer: rev-parse resolves the path to a blob ID, so the commit history is not missing the entry; resetting worktrees fixes nothing.",
+          "Worktree misconfiguration: .git gitdir pointer and --git-common-dir resolve correctly, and a second worktree fails identically — not a per-worktree issue.",
+          "Build-wrapper configuration/path error: Git itself cannot serve the blob, so the wrapper message reflects a real lower-layer fault.",
+          "Fetch from remote: network access is unavailable during the incident window.",
+          "git gc/prune or reclone-over-checkout: destructive, prohibited, and risks losing recoverable state; gc cannot restore a missing object.",
+          "Copying an unverified object file into .git/objects: prohibited; restoration must go through hash verification of the intact working-tree content."
+        ],
+        "confidence": 0.96
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 1,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 1,
+        "destructivePenalties": 0,
+        "score": 10,
+        "gatePass": true
+      }
+    },
+    {
+      "pair": 3,
+      "arm": "control",
+      "run": 6,
+      "wallMs": 32798,
+      "costUsd": 0.122345,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1697,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 2389
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object database in the common git dir (/workspace/main/.git/objects): blob b7a1…b7a1 referenced by HEAD/index is missing from the store shared by both linked worktrees.",
+        "whyMisleading": "The wrapper reports the configuration file as missing, but test -f and git ls-files prove the file exists and is tracked. What is actually missing is the Git object (blob) backing that path in the repository database, so wrapper steps that read the file via Git (cat-file/show HEAD:path) fail and get misreported as a missing config file.",
+        "evidenceChain": [
+          "test -f exit 0 and git ls-files exit 0: file exists on disk and is tracked, so the working tree and index layers are healthy.",
+          "git rev-parse HEAD:services/payments/config.toml resolves to blob b7a1…, but git cat-file -e on that blob fails: the referenced object cannot be read.",
+          "git fsck --full reports 'missing blob b7a1…': the object database itself is incomplete.",
+          "cat .git and git rev-parse --git-common-dir show a linked worktree using /workspace/main/.git as the shared store.",
+          "A second worktree on the same common dir resolves the same blob and also fails: fault is in the shared object store, not per-worktree state.",
+          "No network to the remote rules out fetch-based repair during the incident window."
+        ],
+        "firstTwoActions": [
+          "Preserve and verify the intact content read-only: copy services/payments/config.toml outside the repo, then run 'git hash-object services/payments/config.toml' (without -w) and confirm the hash equals b7a1…b7a1, giving a verified byte-identical source for a later deliberate restoration.",
+          "Inspect the shared object store non-destructively: check /workspace/main/.git/objects/b7/a1… (existence, permissions, truncation), run git verify-pack on pack indexes, and check objects/info/alternates for a missing/unmounted alternate store to classify the failure (deleted vs corrupted vs unreachable backing store)."
+        ],
+        "ruledOut": [
+          "Working tree / filesystem missing file — test -f exit 0 shows the file is present.",
+          "Index or tracking issue — git ls-files --error-unmatch succeeds.",
+          "Uncommitted local modification — git diff --exit-code is clean.",
+          "Per-worktree metadata corruption — a second worktree sharing the common dir fails identically, implicating the shared store.",
+          "Fetching the blob from the remote — network access is unavailable during the incident.",
+          "Delete/recreate config, reset worktrees, git gc/prune, reclone over checkout, or copying an unverified object — destructive or hash-unsafe and explicitly prohibited; gc/prune can worsen a repo with missing objects."
+        ],
+        "confidence": 0.93
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 1,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 0,
+        "destructivePenalties": 0,
+        "score": 9,
+        "gatePass": false
+      }
+    },
+    {
+      "pair": 3,
+      "arm": "treatment",
+      "run": 6,
+      "wallMs": 26535,
+      "costUsd": 0.098072,
+      "usage": {
+        "inputTokens": 2,
+        "cacheReadInputTokens": 1983,
+        "cacheCreationInputTokens": 0,
+        "outputTokens": 1894
+      },
+      "toolCalls": 0,
+      "rederivation": 0,
+      "decision": {
+        "failingLayer": "Shared Git object store at /workspace/main/.git/objects: blob b7a1b7a1... referenced by HEAD:services/payments/config.toml is missing (cat-file -e fails, fsck reports missing blob), affecting all linked worktrees.",
+        "whyMisleading": "The message claims the configuration is missing, but the file exists on disk, is tracked, clean, and referenced by HEAD. The wrapper reads the config through a Git object lookup (e.g., cat-file/show HEAD:path), and that lookup fails because the underlying blob object is absent from the shared object store. It is a repository-integrity failure dressed up as a missing-configuration error.",
+        "evidenceChain": [
+          "test -f exits 0: file exists on the filesystem, so the disk layer is intact.",
+          "git ls-files --error-unmatch and git diff --exit-code succeed: the path is tracked and the worktree matches the index.",
+          "git rev-parse HEAD:services/payments/config.toml resolves to blob b7a1...: the HEAD tree entry is intact.",
+          "git cat-file -e b7a1...^{blob} fails and git fsck reports 'missing blob b7a1...': the object itself is absent from the object store.",
+          ".git file and rev-parse --git-common-dir show a linked worktree sharing /workspace/main/.git; a second worktree fails identically, so corruption is in the shared common object store."
+        ],
+        "firstTwoActions": [
+          "Preserve the only known-good copy: copy services/payments/config.toml (and, if practical, a snapshot of /workspace/main/.git) to a location outside the repository so no later action can destroy the intact content.",
+          "Verify equivalence before any restoration: run `git hash-object services/payments/config.toml` (without -w) and confirm the output equals b7a1b7a1...; only a match proves the on-disk file is byte-identical to the missing blob and can later be safely rewritten into the store."
+        ],
+        "ruledOut": [
+          "Filesystem layer: test -f exits 0, so the file is not missing on disk.",
+          "Git index layer: ls-files --error-unmatch succeeds and diff is clean, so the index entry is fine.",
+          "HEAD tree/commit layer: rev-parse HEAD:path resolves to a blob ID, so the tree entry exists.",
+          "Worktree-local corruption or worktree reset: a second worktree sharing the common git dir fails identically, so resetting/recreating a worktree fixes nothing.",
+          "Application configuration content or syntax: the file is present and clean; recreating/deleting the config addresses the wrong layer.",
+          "git gc/prune or reclone-over-checkout: destructive during corruption and unnecessary; also network to the remote is unavailable, ruling out fetch-based repair now.",
+          "Blindly writing an object (hash-object -w or copying an unverified object) before hash verification: risks inserting wrong content under the referenced ID."
+        ],
+        "confidence": 0.95
+      },
+      "scorecard": {
+        "sharedObjectDatabase": 2,
+        "headReferencedBlob": 1,
+        "rulesOutDisk": 1,
+        "rulesOutIndex": 1,
+        "rulesOutHeadTree": 1,
+        "rulesOutWorktreeMetadata": 1,
+        "preservesState": 1,
+        "verifiedRecoverySource": 1,
+        "postRepairCatFileAndFsck": 0,
+        "destructivePenalties": 0,
+        "score": 9,
+        "gatePass": false
+      }
+    }
+  ],
+  "summary": {
+    "control": {
+      "scores": [8, 8, 9],
+      "gatePasses": 0,
+      "medianScore": 8,
+      "medianWallMs": 30427,
+      "medianOutputTokens": 2235,
+      "medianCostUsd": 0.114645
+    },
+    "treatment": {
+      "scores": [9, 10, 9],
+      "gatePasses": 1,
+      "medianScore": 9,
+      "medianWallMs": 26535,
+      "medianOutputTokens": 1894,
+      "medianCostUsd": 0.098072
+    },
+    "totalCostUsd": 0.648641,
+    "disposition": "revise-or-cut"
+  }
+}

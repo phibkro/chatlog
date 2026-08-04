@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-primary: var(--chatlog-primary);
+  --color-on-primary: var(--chatlog-on-primary);
+  --color-primary-container: var(--chatlog-primary-container);
+  --color-surface: var(--chatlog-surface);
+  --color-surface-container-low: var(--chatlog-surface-container-low);
+  --color-surface-container: var(--chatlog-surface-container);
+  --color-surface-container-high: var(--chatlog-surface-container-high);
+  --color-surface-container-highest: var(--chatlog-surface-container-highest);
+  --color-on-surface: var(--chatlog-on-surface);
+  --color-on-surface-variant: var(--chatlog-on-surface-variant);
+  --color-muted: var(--chatlog-muted);
+  --color-line: var(--chatlog-line);
+  --color-warning: var(--chatlog-warning);
+  --color-warning-container: var(--chatlog-warning-container);
+  --color-on-warning-container: var(--chatlog-on-warning-container);
+  --color-error: var(--chatlog-error);
+  --color-valid: var(--chatlog-valid);
+}
+
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --chatlog-primary: #9ed7a6;
+  --chatlog-on-primary: #102116;
+  --chatlog-primary-container: #23452c;
+  --chatlog-surface: #0d110f;
+  --chatlog-surface-container-low: #151b17;
+  --chatlog-surface-container: #19211c;
+  --chatlog-surface-container-high: #202a23;
+  --chatlog-surface-container-highest: #29342c;
+  --chatlog-on-surface: #edf2ed;
+  --chatlog-on-surface-variant: #b6c0b7;
+  --chatlog-muted: #818d83;
+  --chatlog-line: rgb(210 225 214 / 14%);
+  --chatlog-warning: #ddb871;
+  --chatlog-warning-container: #493817;
+  --chatlog-on-warning-container: #f5dfb2;
+  --chatlog-error: #e5a29a;
+  --chatlog-valid: #9ed7a6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chatlog/generic-events-v1",
+  "title": "Chatlog generic observed event stream",
+  "description": "The first JSONL record is a header. Remaining records are AgentEventEnvelope objects or bounded batch envelopes. External producers may provide observed origins only.",
+  "type": "object",
+  "required": [
+    "schema",
+    "schemaVersion",
+    "type",
+    "producer",
+    "provider",
+    "harness",
+    "sourceKind",
+    "domain",
+    "capturePolicyVersion",
+    "ordering",
+    "identity"
+  ],
+  "properties": {
+    "schema": {
+      "const": "chatlog/generic-events-v1"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "type": {
+      "const": "header"
+    },
+    "producer": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "harness": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sourceKind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "not": {
+        "const": "chatlog-closed-loop-evaluator"
+      }
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "capturePolicyVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "ordering": {
+      "type": "object",
+      "required": ["key", "contiguous", "relations"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "const": "sequence"
+        },
+        "contiguous": {
+          "const": true
+        },
+        "relations": {
+          "const": "prior-only"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["key", "algorithm"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "const": "eventId"
+        },
+        "algorithm": {
+          "const": "sha256"
+        }
+      }
+    },
+    "adapterRecipe": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "not": {
+        "const": "chatlog-closed-loop-evaluator-v1"
+      }
+    }
+  },
+  "additionalProperties": false
+}

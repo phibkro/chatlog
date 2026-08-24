@@ -1,0 +1,17 @@
+# generated-by: foundry@v1
+# Declared divergences from foundry@v1; conventions-check skips these keys.
+# Undeclared divergence = checker failure. Declared divergence = first-class citizen.
+divergences: []
+# Examples (uncomment and adapt):
+#  - key: package-manager   # enum: bun|pnpm|deno|nix-only
+#    value: deno
+#    reason: flow runtime requires Deno APIs
+#  - key: ci                # absent = intentionally local-first
+#    value: none
+#    reason: personal local-first tool
+#
+# Convention keys the checker honors:
+#   state-md | agents-md | design-specs | stamped-artifacts
+# Whole-repo opt-out (sparingly):
+# skip: true
+# reason: <why this repo sits outside the contract>

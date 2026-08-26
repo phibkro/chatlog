@@ -20,6 +20,7 @@
     "memory:publish": "bun run src/cli.ts memory publish",
     "memory:plugin:build": "bun run scripts/build-memory-plugin.ts",
     "context": "bun run src/cli.ts context",
+    "hindsight": "bun run src/hindsight-cli.ts",
     "memory:plugin:check": "bun run scripts/build-memory-plugin.ts --check",
     "gate:verify": "bun run scripts/verify-closed-loop-gate.ts",
     "mcp": "bun run src/mcp/server.ts",
@@ -36,7 +37,7 @@
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-beta.101"
+    "effect": "^4.0.0-rc.112"
   },
   "devDependencies": {
     "@foldkit/oxlint-plugin": "0.4.0",

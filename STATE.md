@@ -1,4 +1,5 @@
 <!-- generated-by: foundry@v1 -->
+
 # State
 
 Lifecycle: build
@@ -39,4 +40,3 @@ Next:
 - Deferred hosted-companion direction per `docs/product-direction.md` (hosted sync, team accounts, remote raw-transcript storage remain unimplemented).
 
 Blocked:
-

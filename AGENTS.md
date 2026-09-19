@@ -1,4 +1,5 @@
 <!-- generated-by: foundry@v1 -->
+
 # AGENTS.md — project contract
 
 Generated boilerplate from `homelab/foundry/profile-v1` (single source:

@@ -31,7 +31,8 @@ Workbench, and MCP server"). It turns Claude Code, Codex, Pi, OMP, ChatGPT, and
 Anthropic activity into portable evidence, governed insights, and bounded
 context for later sessions.
 
-- Runtime / package manager: Bun (single package, not a workspace). Nix flake
+- Runtime / package manager: Bun. Workspace membership is declared by
+  [`package.json`](package.json); consult it when selecting package commands. Nix flake
   provides the package and dev shell (`nix build .#chatlog`,
   `nix run .#workbench`); direnv via `.envrc`.
 - Build, typecheck, test entry points: `bun run check` is the full gate

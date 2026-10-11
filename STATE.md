@@ -2,6 +2,7 @@
 
 # State
 
+Historical note: The Hindsight pilot was retired; Chatlog no longer integrates with that service.
 Lifecycle: build
 
 Now:
